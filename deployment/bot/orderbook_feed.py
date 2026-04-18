@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 import websocket
@@ -12,15 +11,19 @@ from deployment.strategy.obi_trailing import OrderBookLevel, OrderBookSnapshot
 
 
 class OkxOrderBookFeed:
-    def __init__(self, inst_id: str = "BTC-USDT-SWAP", channel: str = "books5"):
+    def __init__(self, inst_id: str = "BTC-USDT-SWAP", channel: str = "books5", url: str | None = None):
         self.inst_id = inst_id
         self.channel = channel
-        self.url = "wss://ws.okx.com:8443/ws/v5/public"
+        self.urls = [url] if url else [
+            "wss://ws.okx.com:8443/ws/v5/public",
+            "wss://wsus.okx.com:8443/ws/v5/public",
+        ]
         self._latest_snapshot: OrderBookSnapshot | None = None
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._ws: websocket.WebSocketApp | None = None
+        self._last_error: str | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -43,21 +46,29 @@ class OkxOrderBookFeed:
         with self._lock:
             return self._latest_snapshot
 
+    def last_error(self) -> str | None:
+        with self._lock:
+            return self._last_error
+
     def _run(self) -> None:
         while not self._stop.is_set():
-            self._ws = websocket.WebSocketApp(
-                self.url,
-                on_open=self._on_open,
-                on_message=self._on_message,
-                on_error=self._on_error,
-                on_close=self._on_close,
-            )
-            try:
-                self._ws.run_forever(ping_interval=20, ping_timeout=10)
-            except Exception:
-                pass
-            if not self._stop.is_set():
-                time.sleep(1)
+            for url in self.urls:
+                if self._stop.is_set():
+                    break
+                self._ws = websocket.WebSocketApp(
+                    url,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close,
+                )
+                try:
+                    self._ws.run_forever(ping_interval=20, ping_timeout=10)
+                except Exception as exc:
+                    with self._lock:
+                        self._last_error = repr(exc)
+                if not self._stop.is_set():
+                    time.sleep(1)
 
     def _on_open(self, ws: websocket.WebSocketApp) -> None:
         ws.send(
@@ -87,7 +98,8 @@ class OkxOrderBookFeed:
             )
 
     def _on_error(self, ws: websocket.WebSocketApp, error: Any) -> None:
-        return
+        with self._lock:
+            self._last_error = repr(error)
 
     def _on_close(self, ws: websocket.WebSocketApp, status_code: Any, message: Any) -> None:
         return
