@@ -76,6 +76,9 @@ class ExecutorConfig:
     slippage_bps: float = 2.0
     enable_exchange_brackets: bool = False
     exchange_trigger_price_type: str = "mark"
+    enable_manual_position_sync: bool = True
+    manual_position_sync_size_tolerance_ratio: float = 0.02
+    manual_position_sync_entry_price_tolerance_bps: float = 10.0
     telegram_enabled: bool = False
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
@@ -824,6 +827,330 @@ class OkxExecutionEngine:
                 }
         return {"attach_algo_id": None, "attach_algo_client_id": None}
 
+    def _safe_float(self, value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _extract_total_usdt(self, balance: dict[str, Any]) -> float:
+        candidates = []
+        usdt_entry = balance.get("USDT") if isinstance(balance, dict) else None
+        if isinstance(usdt_entry, dict):
+            for key in ("total", "cash", "equity", "free"):
+                value = usdt_entry.get(key)
+                if value is not None:
+                    candidates.append(value)
+
+        info = balance.get("info") if isinstance(balance, dict) else None
+        if isinstance(info, dict):
+            details = info.get("data")
+            if isinstance(details, list):
+                for row in details:
+                    if not isinstance(row, dict):
+                        continue
+                    details_list = row.get("details")
+                    if not isinstance(details_list, list):
+                        continue
+                    for detail in details_list:
+                        if not isinstance(detail, dict) or detail.get("ccy") != "USDT":
+                            continue
+                        for key in ("eq", "cashBal", "availEq", "availBal"):
+                            value = detail.get(key)
+                            if value not in (None, ""):
+                                candidates.append(value)
+
+        for value in candidates:
+            numeric = self._safe_float(value)
+            if numeric is not None and numeric > 0:
+                return numeric
+        raise ValueError("Unable to extract positive total USDT balance from exchange response")
+
+    def _fetch_pending_algo_orders(self, ord_type: str = "oco") -> list[dict[str, Any]]:
+        response = self.client.fetch_pending_algo_orders({"ordType": ord_type})
+        data = response.get("data")
+        return data if isinstance(data, list) else []
+
+    def _select_pending_algo_order(self, pos_side: str, local_position: Any | None = None) -> dict[str, Any] | None:
+        try:
+            pending_orders = self._fetch_pending_algo_orders("oco")
+        except Exception:
+            return None
+        market_id = self._market()["id"]
+        candidates = []
+        for order in pending_orders:
+            if not isinstance(order, dict):
+                continue
+            if order.get("instId") != market_id:
+                continue
+            if order.get("ordType") != "oco":
+                continue
+            if order.get("state") not in {"live", "effective"}:
+                continue
+            if order.get("posSide") != pos_side:
+                continue
+            candidates.append(order)
+
+        if not candidates:
+            return None
+
+        local_algo_id = str(getattr(local_position, "exchange_attach_algo_id", "") or "")
+        local_algo_client_id = str(getattr(local_position, "exchange_attach_algo_client_id", "") or "")
+        for order in candidates:
+            algo_id = str(order.get("algoId") or "")
+            algo_client_id = str(order.get("algoClOrdId") or "")
+            if local_algo_id and algo_id == local_algo_id:
+                return order
+            if local_algo_client_id and algo_client_id == local_algo_client_id:
+                return order
+        return candidates[0]
+
+    def _extract_pending_algo_metadata(self, algo_order: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(algo_order, dict):
+            return {
+                "algo_id": None,
+                "algo_client_id": None,
+                "stop_price": None,
+                "target_price": None,
+            }
+        return {
+            "algo_id": str(algo_order.get("algoId")) if algo_order.get("algoId") else None,
+            "algo_client_id": str(algo_order.get("algoClOrdId")) if algo_order.get("algoClOrdId") else None,
+            "stop_price": self._safe_float(algo_order.get("slTriggerPx")),
+            "target_price": self._safe_float(algo_order.get("tpTriggerPx")),
+        }
+
+    def _extract_exchange_entry_price(self, exchange_state: dict[str, Any], fallback: float | None = None) -> float | None:
+        raw = exchange_state.get("raw")
+        if isinstance(raw, dict):
+            for key in ("entryPrice", "avgPx"):
+                value = self._safe_float(raw.get(key))
+                if value is not None and value > 0:
+                    return value
+            info = raw.get("info")
+            if isinstance(info, dict):
+                for key in ("avgPx", "entryPrice"):
+                    value = self._safe_float(info.get(key))
+                    if value is not None and value > 0:
+                        return value
+        return fallback
+
+    def _extract_position_fee(self, exchange_state: dict[str, Any], fallback: float | None = None) -> float | None:
+        raw = exchange_state.get("raw")
+        if isinstance(raw, dict):
+            info = raw.get("info")
+            if isinstance(info, dict):
+                fee_value = self._safe_float(info.get("fee"))
+                if fee_value is not None and fee_value != 0:
+                    return abs(fee_value)
+        return fallback
+
+    def _scale_value_by_quantity(self, value: float | None, old_quantity: float, new_quantity: float) -> float:
+        if value is None:
+            return 0.0
+        if old_quantity <= 0:
+            return float(value)
+        return float(value) * (new_quantity / old_quantity)
+
+    def _save_engine_snapshot(self, engine: Any) -> dict[str, Any]:
+        snapshot = engine.snapshot()
+        self.store.save_snapshot(snapshot)
+        return asdict(snapshot)
+
+    def _sync_manual_flat_position(self, engine: Any, *, context: str) -> None:
+        position = getattr(engine, "position", None)
+        if position is None:
+            return
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        payload = {
+            "context": context,
+            "direction": getattr(position, "direction", None),
+            "previous_quantity": float(getattr(position, "quantity", 0.0) or 0.0),
+            "message": "Exchange position no longer exists; cleared local snapshot.",
+        }
+        engine.position = None
+        snapshot = self._save_engine_snapshot(engine)
+        payload["snapshot"] = snapshot
+        self.store.append_action(timestamp, "MANUAL_POSITION_SYNC", payload)
+        direction = "做多" if payload["direction"] == "BULL" else "做空" if payload["direction"] == "BEAR" else "-"
+        self._send_telegram(
+            "\n".join(
+                [
+                    "[手动平仓已同步]",
+                    f"标的: {self.config.symbol}",
+                    f"方向: {direction}",
+                    f"来源: {context}",
+                    "检测到交易所仓位已被手动平掉，本地状态已清空",
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                ]
+            )
+        )
+
+    def _position_requires_manual_sync(
+        self,
+        local_position: Any,
+        exchange_state: dict[str, Any],
+        pending_algo: dict[str, Any] | None,
+    ) -> bool:
+        local_quantity = abs(float(getattr(local_position, "quantity", 0.0) or 0.0))
+        exchange_quantity = abs(float(exchange_state.get("base_amount_btc", 0.0) or 0.0))
+        if exchange_quantity <= 0:
+            return False
+        tolerance_ratio = max(float(self.config.manual_position_sync_size_tolerance_ratio), 0.0)
+        quantity_base = max(local_quantity, exchange_quantity, 1e-9)
+        quantity_diff_ratio = abs(exchange_quantity - local_quantity) / quantity_base
+        if quantity_diff_ratio > tolerance_ratio:
+            return True
+
+        exchange_entry_price = self._extract_exchange_entry_price(exchange_state, getattr(local_position, "entry_price", None))
+        local_entry_price = self._safe_float(getattr(local_position, "entry_price", None))
+        if exchange_entry_price and local_entry_price and local_entry_price > 0:
+            entry_diff_bps = abs(exchange_entry_price - local_entry_price) / local_entry_price * 10000
+            if entry_diff_bps > max(float(self.config.manual_position_sync_entry_price_tolerance_bps), 0.0):
+                return True
+
+        pending = self._extract_pending_algo_metadata(pending_algo)
+        if pending["algo_id"] and pending["algo_id"] != getattr(local_position, "exchange_attach_algo_id", None):
+            return True
+        if pending["algo_client_id"] and pending["algo_client_id"] != getattr(local_position, "exchange_attach_algo_client_id", None):
+            return True
+        for local_field, pending_key in (("sl_price", "stop_price"), ("target_price", "target_price")):
+            pending_price = pending[pending_key]
+            local_price = self._safe_float(getattr(local_position, local_field, None))
+            if pending_price is None or local_price is None or local_price <= 0:
+                continue
+            if abs(pending_price - local_price) / local_price > 0.00001:
+                return True
+        return False
+
+    def _reconcile_manual_position(
+        self,
+        engine: Any,
+        *,
+        exchange_state: dict[str, Any],
+        pos_side: str,
+        context: str,
+        pending_algo: dict[str, Any] | None,
+    ) -> None:
+        position = getattr(engine, "position", None)
+        if position is None:
+            return
+
+        quantity = abs(float(exchange_state.get("base_amount_btc", 0.0) or 0.0))
+        if quantity <= 0:
+            return
+
+        pending = self._extract_pending_algo_metadata(pending_algo)
+        old_quantity = abs(float(getattr(position, "quantity", 0.0) or 0.0))
+        old_entry_price = self._safe_float(getattr(position, "entry_price", None)) or 0.0
+        old_stop_price = self._safe_float(getattr(position, "sl_price", None))
+        old_target_price = self._safe_float(getattr(position, "target_price", None))
+
+        entry_price = self._extract_exchange_entry_price(exchange_state, getattr(position, "entry_price", None))
+        if entry_price is None or entry_price <= 0:
+            raise ValueError(f"Unable to reconcile live position ({context}): missing exchange entry price")
+
+        stop_price = pending["stop_price"] or self._safe_float(getattr(position, "sl_price", None))
+        initial_sl_price = self._safe_float(getattr(position, "initial_sl_price", None))
+        if initial_sl_price is None or initial_sl_price <= 0:
+            initial_sl_price = stop_price
+        stage = getattr(position, "stage", -1)
+        if stage is None:
+            stage = -1
+        if stage < 0 and stop_price is not None:
+            initial_sl_price = stop_price
+        if initial_sl_price is None or initial_sl_price <= 0:
+            initial_sl_price = entry_price
+
+        target_rr = float(getattr(position, "target_rr", self.config.rr_ratio) or self.config.rr_ratio)
+        target_price = pending["target_price"] or self._safe_float(getattr(position, "target_price", None))
+        if target_price is None and initial_sl_price > 0:
+            risk_price = abs(entry_price - initial_sl_price)
+            target_price = entry_price + risk_price * target_rr if pos_side == "long" else entry_price - risk_price * target_rr
+
+        notional = self._safe_float(exchange_state.get("notional_usdt"))
+        if notional is None or notional <= 0:
+            notional = quantity * entry_price
+
+        risk_price = abs(entry_price - initial_sl_price)
+        if risk_price <= 0 and stop_price is not None:
+            risk_price = abs(entry_price - stop_price)
+        risk_amount = quantity * risk_price
+
+        entry_fee = self._extract_position_fee(
+            exchange_state,
+            fallback=self._scale_value_by_quantity(getattr(position, "entry_fee", 0.0), old_quantity, quantity),
+        )
+        entry_slippage_cost = self._scale_value_by_quantity(
+            getattr(position, "entry_slippage_cost", 0.0),
+            old_quantity,
+            quantity,
+        )
+
+        try:
+            balance = self.client.fetch_balance()
+            available_usdt, _ = self._extract_available_usdt(balance)
+            total_usdt = self._extract_total_usdt(balance)
+            engine.capital = available_usdt
+            capital_at_entry = total_usdt
+        except Exception:
+            capital_at_entry = float(getattr(position, "capital_at_entry", engine.capital) or engine.capital)
+
+        setattr(position, "entry_price", entry_price)
+        setattr(position, "sl_price", stop_price if stop_price is not None else getattr(position, "sl_price", None))
+        setattr(position, "initial_sl_price", initial_sl_price)
+        setattr(position, "target_price", target_price if target_price is not None else getattr(position, "target_price", None))
+        setattr(position, "capital_at_entry", capital_at_entry)
+        setattr(position, "risk_amount", risk_amount)
+        setattr(position, "notional", notional)
+        setattr(position, "quantity", quantity)
+        setattr(position, "entry_fee", float(entry_fee or 0.0))
+        setattr(position, "entry_slippage_cost", float(entry_slippage_cost))
+        if pending["algo_id"]:
+            setattr(position, "exchange_attach_algo_id", pending["algo_id"])
+        if pending["algo_client_id"]:
+            setattr(position, "exchange_attach_algo_client_id", pending["algo_client_id"])
+
+        snapshot = self._save_engine_snapshot(engine)
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        payload = {
+            "context": context,
+            "direction": getattr(position, "direction", None),
+            "pos_side": pos_side,
+            "old_quantity": old_quantity,
+            "new_quantity": quantity,
+            "old_entry_price": old_entry_price,
+            "new_entry_price": entry_price,
+            "old_stop_price": old_stop_price,
+            "new_stop_price": getattr(position, "sl_price", None),
+            "old_target_price": old_target_price,
+            "new_target_price": getattr(position, "target_price", None),
+            "exchange_attach_algo_id": getattr(position, "exchange_attach_algo_id", None),
+            "exchange_attach_algo_client_id": getattr(position, "exchange_attach_algo_client_id", None),
+            "snapshot": snapshot,
+        }
+        self.store.append_action(timestamp, "MANUAL_POSITION_SYNC", payload)
+        self._send_telegram(
+            "\n".join(
+                [
+                    "[手动仓位已对齐]",
+                    f"方向: {'做多' if pos_side == 'long' else '做空'}",
+                    f"标的: {self.config.symbol}",
+                    f"数量: {old_quantity:.6f} BTC -> {quantity:.6f} BTC",
+                    f"均价: {old_entry_price:.1f} -> {entry_price:.1f}",
+                    (
+                        f"止损/止盈: {getattr(position, 'sl_price', 0.0):.1f} / {getattr(position, 'target_price', 0.0):.1f}"
+                        if getattr(position, "sl_price", None) is not None and getattr(position, "target_price", None) is not None
+                        else "止损/止盈: -"
+                    ),
+                    f"来源: {context}",
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                ]
+            )
+        )
+
     def _apply_open_execution_metadata(
         self,
         engine: Any,
@@ -1027,6 +1354,9 @@ class OkxExecutionEngine:
         short_state = self._fetch_position_state("short")
         exchange_has_position = long_state["contracts"] > 0 or short_state["contracts"] > 0
         if local_has_position != exchange_has_position:
+            if self.config.enable_manual_position_sync and local_has_position and not exchange_has_position:
+                self._sync_manual_flat_position(engine, context=context)
+                return
             raise ValueError(
                 f"Live state mismatch ({context}): local_position={local_has_position}, "
                 f"exchange_position={exchange_has_position}"
@@ -1040,11 +1370,27 @@ class OkxExecutionEngine:
             raise ValueError(
                 f"Live direction mismatch ({context}): local={expected_pos_side}, exchange={actual_pos_side}"
             )
+        pending_algo = self._select_pending_algo_order(expected_pos_side, local_position)
+        if self.config.enable_manual_position_sync and self._position_requires_manual_sync(
+            local_position,
+            exchange_state,
+            pending_algo,
+        ):
+            self._reconcile_manual_position(
+                engine,
+                exchange_state=exchange_state,
+                pos_side=expected_pos_side,
+                context=context,
+                pending_algo=pending_algo,
+            )
+            return
         local_base_amount = abs(float(getattr(local_position, "quantity", 0.0) or 0.0))
         exchange_base_amount = abs(float(exchange_state["base_amount_btc"] or 0.0))
         if local_base_amount > 0:
-            ratio = exchange_base_amount / local_base_amount
-            if ratio < 0.7 or ratio > 1.3:
+            tolerance_ratio = max(float(self.config.manual_position_sync_size_tolerance_ratio), 0.0)
+            quantity_base = max(local_base_amount, exchange_base_amount, 1e-9)
+            quantity_diff_ratio = abs(exchange_base_amount - local_base_amount) / quantity_base
+            if quantity_diff_ratio > tolerance_ratio:
                 raise ValueError(
                     f"Live size mismatch ({context}): local_base_amount={local_base_amount:.8f} BTC, "
                     f"exchange_base_amount={exchange_base_amount:.8f} BTC"

@@ -92,5 +92,8 @@ class OkxClient:
     def amend_algo_order(self, request: dict[str, Any]) -> dict[str, Any]:
         return self.exchange.privatePostTradeAmendAlgos(request)
 
+    def fetch_pending_algo_orders(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self.exchange.privateGetTradeOrdersAlgoPending(params or {})
+
     def cancel_order(self, order_id: str, symbol: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.exchange.cancel_order(order_id, symbol, params or {})
