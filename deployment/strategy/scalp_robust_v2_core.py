@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import math
+from bisect import bisect_right
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -9,6 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+from deployment.strategy.funding_oi_trailing import FundingOIOverlay, FundingOIOverlayConfig, FundingOISnapshot
+from deployment.strategy.price_band_trailing import PriceBandTrailingConfig, PriceBandTrailingOverlay
 
 
 class Direction:
@@ -97,6 +101,13 @@ class StrategyConfig:
     bear_weak_short_trail_style_override: str | None = None
     taker_fee_rate: float = 0.0005
     slippage_bps: float = 2.0
+    # 动态价格带 trailing 配置
+    enable_price_band_trailing: bool = False
+    price_band_trailing_config: PriceBandTrailingConfig | None = None
+    disable_fixed_target: bool = False
+    enable_funding_oi_trailing: bool = False
+    funding_oi_trailing_config: FundingOIOverlayConfig | None = None
+    funding_oi_snapshots: list[FundingOISnapshot] | None = None
 
 
 @dataclass
@@ -475,6 +486,16 @@ class ScalpRobustEngine:
         self.position: PositionState | None = None
         self.exit_reasons: dict[str, int] = {}
 
+        # 初始化动态价格带 trailing overlay
+        band_config = self.config.price_band_trailing_config or PriceBandTrailingConfig()
+        self.price_band_overlay = PriceBandTrailingOverlay(band_config)
+        funding_config = self.config.funding_oi_trailing_config or FundingOIOverlayConfig()
+        self.funding_oi_overlay = FundingOIOverlay(funding_config)
+        funding_snapshots = self.config.funding_oi_snapshots or []
+        funding_snapshots = sorted(funding_snapshots, key=lambda item: item.timestamp_ms)
+        self._funding_oi_snapshots = funding_snapshots
+        self._funding_oi_timestamps = [item.timestamp_ms for item in funding_snapshots]
+
     @classmethod
     def from_candles(
         cls,
@@ -642,20 +663,118 @@ class ScalpRobustEngine:
             if curr.l <= pos.sl_price:
                 actions.append(self.close_position(idx, "stop_loss", pos.sl_price))
                 return actions
+
+            if self.config.enable_funding_oi_trailing:
+                funding_snapshot = self._funding_oi_snapshot_for_idx(idx)
+                if funding_snapshot is not None:
+                    funding_decision = self.funding_oi_overlay.evaluate(funding_snapshot, pos)
+                    if funding_decision.action == "exit":
+                        actions.append(
+                            self.close_position(
+                                idx,
+                                funding_decision.reason or "funding_oi_exit",
+                                funding_decision.exit_price,
+                            )
+                        )
+                        return actions
+                    if funding_decision.action == "tighten" and funding_decision.stop_price is not None:
+                        if funding_decision.stop_price > pos.sl_price:
+                            pos.sl_price = funding_decision.stop_price
+                            actions.append(
+                                StrategyAction(
+                                    type=ActionType.UPDATE_STOP,
+                                    timestamp=self._timestamp_for_idx(idx),
+                                    direction=pos.direction,
+                                    stop_price=funding_decision.stop_price,
+                                    reason=funding_decision.reason or "funding_oi_tighten",
+                                    metadata=funding_decision.metrics or {},
+                                )
+                            )
+
+            # 检查动态价格带 trailing overlay
+            if self.config.enable_price_band_trailing:
+                band_decision = self.price_band_overlay.evaluate(curr, pos)
+                if band_decision.action == "exit":
+                    actions.append(self.close_position(idx, band_decision.reason or "band_exit", band_decision.exit_price))
+                    return actions
+                elif band_decision.action == "tighten" and band_decision.stop_price is not None:
+                    if band_decision.stop_price > pos.sl_price:
+                        pos.sl_price = band_decision.stop_price
+                        actions.append(StrategyAction(
+                            type=ActionType.UPDATE_STOP,
+                            timestamp=self._timestamp_for_idx(idx),
+                            direction=pos.direction,
+                            stop_price=band_decision.stop_price,
+                            reason=band_decision.reason or "band_tighten",
+                            metadata=band_decision.metrics or {},
+                        ))
+
+            # 标准 trailing
             update = self._apply_trailing_bull(pos, curr, idx)
             if update:
                 actions.append(update)
-            if self.position and curr.h >= self.position.target_price:
+
+            # 固定目标平仓
+            if not self.config.disable_fixed_target and self.position and curr.h >= self.position.target_price:
                 actions.append(self.close_position(idx, "target_4r", self.position.target_price))
                 return actions
         else:
             if curr.h >= pos.sl_price:
                 actions.append(self.close_position(idx, "stop_loss", pos.sl_price))
                 return actions
+
+            if self.config.enable_funding_oi_trailing:
+                funding_snapshot = self._funding_oi_snapshot_for_idx(idx)
+                if funding_snapshot is not None:
+                    funding_decision = self.funding_oi_overlay.evaluate(funding_snapshot, pos)
+                    if funding_decision.action == "exit":
+                        actions.append(
+                            self.close_position(
+                                idx,
+                                funding_decision.reason or "funding_oi_exit",
+                                funding_decision.exit_price,
+                            )
+                        )
+                        return actions
+                    if funding_decision.action == "tighten" and funding_decision.stop_price is not None:
+                        if funding_decision.stop_price < pos.sl_price:
+                            pos.sl_price = funding_decision.stop_price
+                            actions.append(
+                                StrategyAction(
+                                    type=ActionType.UPDATE_STOP,
+                                    timestamp=self._timestamp_for_idx(idx),
+                                    direction=pos.direction,
+                                    stop_price=funding_decision.stop_price,
+                                    reason=funding_decision.reason or "funding_oi_tighten",
+                                    metadata=funding_decision.metrics or {},
+                                )
+                            )
+
+            # 检查动态价格带 trailing overlay
+            if self.config.enable_price_band_trailing:
+                band_decision = self.price_band_overlay.evaluate(curr, pos)
+                if band_decision.action == "exit":
+                    actions.append(self.close_position(idx, band_decision.reason or "band_exit", band_decision.exit_price))
+                    return actions
+                elif band_decision.action == "tighten" and band_decision.stop_price is not None:
+                    if band_decision.stop_price < pos.sl_price:
+                        pos.sl_price = band_decision.stop_price
+                        actions.append(StrategyAction(
+                            type=ActionType.UPDATE_STOP,
+                            timestamp=self._timestamp_for_idx(idx),
+                            direction=pos.direction,
+                            stop_price=band_decision.stop_price,
+                            reason=band_decision.reason or "band_tighten",
+                            metadata=band_decision.metrics or {},
+                        ))
+
+            # 标准 trailing
             update = self._apply_trailing_bear(pos, curr, idx)
             if update:
                 actions.append(update)
-            if self.position and curr.l <= self.position.target_price:
+
+            # 固定目标平仓
+            if not self.config.disable_fixed_target and self.position and curr.l <= self.position.target_price:
                 actions.append(self.close_position(idx, "target_4r", self.position.target_price))
                 return actions
 
@@ -726,6 +845,15 @@ class ScalpRobustEngine:
             reason=f"trail_stage_{new_stage}",
             metadata={"index": idx},
         )
+
+    def _funding_oi_snapshot_for_idx(self, idx: int) -> FundingOISnapshot | None:
+        if not self._funding_oi_timestamps:
+            return None
+        timestamp_ms = int(self.c15m[idx].ts * 1000)
+        pos = bisect_right(self._funding_oi_timestamps, timestamp_ms) - 1
+        if pos < 0:
+            return None
+        return self._funding_oi_snapshots[pos]
 
     def run_backtest(self, start_date: str = "2023-01-01") -> dict[str, Any]:
         start_dt = datetime.fromisoformat(start_date)
