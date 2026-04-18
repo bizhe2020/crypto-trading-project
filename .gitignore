@@ -19,3 +19,9 @@ live_bot*.log
 backup/
 /okx_executor.py
 /scalp_robust_v2_core.py
+
+# Local research/runtime outputs
+var/funding_oi/recorded/
+var/log/
+var/run/
+var/orderbook/
