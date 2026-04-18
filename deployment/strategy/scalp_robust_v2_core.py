@@ -101,6 +101,10 @@ class StrategyConfig:
     bear_weak_short_trail_style_override: str | None = None
     taker_fee_rate: float = 0.0005
     slippage_bps: float = 2.0
+    enable_target_rr_cap: bool = False
+    loose_target_rr_cap: float | None = None
+    normal_target_rr_cap: float | None = None
+    tight_target_rr_cap: float | None = None
     # 动态价格带 trailing 配置
     enable_price_band_trailing: bool = False
     price_band_trailing_config: PriceBandTrailingConfig | None = None
@@ -534,6 +538,7 @@ class ScalpRobustEngine:
         filled_entry_price = self._apply_entry_slippage(entry_price, direction)
         position_size_pct = self._position_size_pct_for_idx(idx)
         entry_regime_score, target_rr, max_hold_bars, trail_style = self._exit_template_for_idx(idx, direction)
+        filled_target_price = self._target_price_from_rr(filled_entry_price, sl_price, direction, target_rr)
         max_notional = (
             float(self.config.fixed_notional_usdt)
             if self.config.fixed_notional_usdt is not None
@@ -555,7 +560,7 @@ class ScalpRobustEngine:
             entry_price=filled_entry_price,
             sl_price=sl_price,
             initial_sl_price=sl_price,
-            target_price=target_price,
+            target_price=filled_target_price,
             entry_time=datetime.fromtimestamp(self.c15m[idx].ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M"),
             capital_at_entry=self.capital,
             risk_amount=risk_amount,
@@ -575,7 +580,7 @@ class ScalpRobustEngine:
             direction=direction,
             entry_price=filled_entry_price,
             stop_price=sl_price,
-            target_price=target_price,
+            target_price=filled_target_price,
             metadata={
                 "index": idx,
                 "position_size_pct": position_size_pct,
@@ -584,6 +589,7 @@ class ScalpRobustEngine:
                 "max_hold_bars": max_hold_bars,
                 "trail_style": trail_style,
                 "signal_entry_price": entry_price,
+                "signal_target_price": target_price,
                 "notional": notional,
                 "max_notional": max_notional,
                 "risk_based_notional": risk_based_notional,
@@ -716,7 +722,7 @@ class ScalpRobustEngine:
 
             # 固定目标平仓
             if not self.config.disable_fixed_target and self.position and curr.h >= self.position.target_price:
-                actions.append(self.close_position(idx, "target_4r", self.position.target_price))
+                actions.append(self.close_position(idx, "target_rr", self.position.target_price))
                 return actions
         else:
             if curr.h >= pos.sl_price:
@@ -775,7 +781,7 @@ class ScalpRobustEngine:
 
             # 固定目标平仓
             if not self.config.disable_fixed_target and self.position and curr.l <= self.position.target_price:
-                actions.append(self.close_position(idx, "target_4r", self.position.target_price))
+                actions.append(self.close_position(idx, "target_rr", self.position.target_price))
                 return actions
 
         return actions
@@ -804,13 +810,15 @@ class ScalpRobustEngine:
             return None
         pos.sl_price = new_stop
         pos.stage = new_stage
+        target_update = self._maybe_cap_target_price(pos)
         return StrategyAction(
             type=ActionType.UPDATE_STOP,
             timestamp=self._timestamp_for_idx(idx),
             direction=pos.direction,
             stop_price=new_stop,
             reason=f"trail_stage_{new_stage}",
-            metadata={"index": idx},
+            target_price=target_update,
+            metadata={"index": idx, "target_price": target_update, "target_rr": pos.target_rr},
         )
 
     def _apply_trailing_bear(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
@@ -837,14 +845,39 @@ class ScalpRobustEngine:
             return None
         pos.sl_price = new_stop
         pos.stage = new_stage
+        target_update = self._maybe_cap_target_price(pos)
         return StrategyAction(
             type=ActionType.UPDATE_STOP,
             timestamp=self._timestamp_for_idx(idx),
             direction=pos.direction,
             stop_price=new_stop,
             reason=f"trail_stage_{new_stage}",
-            metadata={"index": idx},
+            target_price=target_update,
+            metadata={"index": idx, "target_price": target_update, "target_rr": pos.target_rr},
         )
+
+    def _target_rr_cap_for_style(self, trail_style: str) -> float | None:
+        if trail_style == "loose":
+            return self.config.loose_target_rr_cap
+        if trail_style == "tight":
+            return self.config.tight_target_rr_cap
+        return self.config.normal_target_rr_cap
+
+    def _target_price_from_rr(self, entry_price: float, sl_price: float, direction: str, target_rr: float) -> float:
+        risk_price = abs(entry_price - sl_price)
+        if direction == Direction.BULL:
+            return entry_price + risk_price * target_rr
+        return entry_price - risk_price * target_rr
+
+    def _maybe_cap_target_price(self, pos: PositionState) -> float | None:
+        if not self.config.enable_target_rr_cap:
+            return None
+        cap_rr = self._target_rr_cap_for_style(pos.trail_style)
+        if cap_rr is None or pos.target_rr <= cap_rr:
+            return None
+        pos.target_rr = cap_rr
+        pos.target_price = self._target_price_from_rr(pos.entry_price, pos.initial_sl_price, pos.direction, cap_rr)
+        return pos.target_price
 
     def _funding_oi_snapshot_for_idx(self, idx: int) -> FundingOISnapshot | None:
         if not self._funding_oi_timestamps:

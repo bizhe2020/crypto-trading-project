@@ -55,6 +55,10 @@ class ExecutorConfig:
     short_strong_rr_ratio: float = 5.0
     short_mid_rr_ratio: float = 4.0
     short_weak_rr_ratio: float = 3.0
+    enable_target_rr_cap: bool = False
+    loose_target_rr_cap: float | None = None
+    normal_target_rr_cap: float | None = None
+    tight_target_rr_cap: float | None = None
     enable_regime_directional_risk: bool = False
     bull_strong_long_risk_per_trade: float | None = None
     bull_strong_short_risk_per_trade: float | None = None
@@ -114,6 +118,10 @@ class ExecutorConfig:
             short_strong_rr_ratio=self.short_strong_rr_ratio,
             short_mid_rr_ratio=self.short_mid_rr_ratio,
             short_weak_rr_ratio=self.short_weak_rr_ratio,
+            enable_target_rr_cap=self.enable_target_rr_cap,
+            loose_target_rr_cap=self.loose_target_rr_cap,
+            normal_target_rr_cap=self.normal_target_rr_cap,
+            tight_target_rr_cap=self.tight_target_rr_cap,
             enable_regime_directional_risk=self.enable_regime_directional_risk,
             bull_strong_long_risk_per_trade=self.bull_strong_long_risk_per_trade,
             bull_strong_short_risk_per_trade=self.bull_strong_short_risk_per_trade,
