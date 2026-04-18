@@ -17,5 +17,5 @@ deployment/config/*.bak*
 deployment/state/
 live_bot*.log
 backup/
-okx_executor.py
-scalp_robust_v2_core.py
+/okx_executor.py
+/scalp_robust_v2_core.py
