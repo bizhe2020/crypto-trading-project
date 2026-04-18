@@ -1,0 +1,22 @@
+.DS_Store
+.venv/
+.venv312/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+user_data/backtest_results/
+user_data/hyperopt_results/
+user_data/logs/
+user_data/plot/
+user_data/notebooks/
+user_data/freqaimodels/
+user_data/data/binance/
+
+# Local live trading configs with real exchange credentials
+freqtrade_data/config-live-*-final.json
+freqtrade_data/config-live-*.local.json
+execution/config.live*.json
+execution/*.bak*
+execution/state/
+live_bot*.log
