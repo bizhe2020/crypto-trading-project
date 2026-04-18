@@ -82,6 +82,10 @@ class StrategyConfig:
     short_strong_rr_ratio: float = 5.0
     short_mid_rr_ratio: float = 4.0
     short_weak_rr_ratio: float = 3.0
+    enable_target_rr_cap: bool = False
+    loose_target_rr_cap: float | None = None
+    normal_target_rr_cap: float | None = None
+    tight_target_rr_cap: float | None = None
     enable_regime_directional_risk: bool = False
     bull_strong_long_risk_per_trade: float | None = None
     bull_strong_short_risk_per_trade: float | None = None
@@ -685,13 +689,15 @@ class ScalpRobustEngine:
             return None
         pos.sl_price = new_stop
         pos.stage = new_stage
+        target_update = self._maybe_cap_target_price(pos)
         return StrategyAction(
             type=ActionType.UPDATE_STOP,
             timestamp=self._timestamp_for_idx(idx),
             direction=pos.direction,
             stop_price=new_stop,
             reason=f"trail_stage_{new_stage}",
-            metadata={"index": idx},
+            target_price=target_update,
+            metadata={"index": idx, "target_price": target_update, "target_rr": pos.target_rr},
         )
 
     def _apply_trailing_bear(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
@@ -718,14 +724,39 @@ class ScalpRobustEngine:
             return None
         pos.sl_price = new_stop
         pos.stage = new_stage
+        target_update = self._maybe_cap_target_price(pos)
         return StrategyAction(
             type=ActionType.UPDATE_STOP,
             timestamp=self._timestamp_for_idx(idx),
             direction=pos.direction,
             stop_price=new_stop,
             reason=f"trail_stage_{new_stage}",
-            metadata={"index": idx},
+            target_price=target_update,
+            metadata={"index": idx, "target_price": target_update, "target_rr": pos.target_rr},
         )
+
+    def _target_rr_cap_for_style(self, trail_style: str) -> float | None:
+        if trail_style == "loose":
+            return self.config.loose_target_rr_cap
+        if trail_style == "tight":
+            return self.config.tight_target_rr_cap
+        return self.config.normal_target_rr_cap
+
+    def _target_price_from_rr(self, entry_price: float, sl_price: float, direction: str, target_rr: float) -> float:
+        risk_price = abs(entry_price - sl_price)
+        if direction == Direction.BULL:
+            return entry_price + risk_price * target_rr
+        return entry_price - risk_price * target_rr
+
+    def _maybe_cap_target_price(self, pos: PositionState) -> float | None:
+        if not self.config.enable_target_rr_cap:
+            return None
+        cap_rr = self._target_rr_cap_for_style(pos.trail_style)
+        if cap_rr is None or pos.target_rr <= cap_rr:
+            return None
+        pos.target_rr = cap_rr
+        pos.target_price = self._target_price_from_rr(pos.entry_price, pos.initial_sl_price, pos.direction, cap_rr)
+        return pos.target_price
 
     def run_backtest(self, start_date: str = "2023-01-01") -> dict[str, Any]:
         start_dt = datetime.fromisoformat(start_date)
@@ -898,6 +929,10 @@ class ScalpRobustEngine:
                 "short_strong_rr_ratio": self.config.short_strong_rr_ratio,
                 "short_mid_rr_ratio": self.config.short_mid_rr_ratio,
                 "short_weak_rr_ratio": self.config.short_weak_rr_ratio,
+                "enable_target_rr_cap": self.config.enable_target_rr_cap,
+                "loose_target_rr_cap": self.config.loose_target_rr_cap,
+                "normal_target_rr_cap": self.config.normal_target_rr_cap,
+                "tight_target_rr_cap": self.config.tight_target_rr_cap,
                 "taker_fee_rate": self.config.taker_fee_rate,
                 "slippage_bps": self.config.slippage_bps,
             },

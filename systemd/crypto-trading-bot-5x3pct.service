@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/root/projects/crypto-trading-project
-ExecStart=/usr/local/bin/python3 /root/projects/crypto-trading-project/deployment/bot/run_bot.py --config /root/projects/crypto-trading-project/deployment/config/config.live.5x-3pct.json --run-loop
+ExecStart=/root/projects/crypto-trading-project/.venv/bin/python /root/projects/crypto-trading-project/bot/run_bot.py --config /root/projects/crypto-trading-project/config/config.live.5x-3pct.json --run-loop
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

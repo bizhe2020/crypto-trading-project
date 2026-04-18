@@ -9,11 +9,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from deployment.bot.market_data import OhlcvRepository
-from deployment.bot.okx_client import OkxClient, OkxCredentials
-from deployment.bot.state_store import StateStore
-from deployment.strategy.ema_cross_volume_core import EmaCrossVolumeConfig, EmaCrossVolumeEngine
-from deployment.strategy.scalp_robust_v2_core import (
+from bot.market_data import OhlcvRepository
+from bot.okx_client import OkxClient, OkxCredentials
+from bot.state_store import StateStore
+from strategy.ema_cross_volume_core import EmaCrossVolumeConfig, EmaCrossVolumeEngine
+from strategy.scalp_robust_v2_core import (
     ActionType,
     ScalpRobustEngine,
     StrategyAction,
@@ -37,7 +37,7 @@ class ExecutorConfig:
     position_size_pct: float = 0.35
     fixed_notional_usdt: float | None = None
     pos_side: str = "long"
-    data_root: str = "deployment/data/okx/futures"
+    data_root: str = "data/okx/futures"
     rr_ratio: float = 4.0
     pullback_window: int = 30
     sl_buffer_pct: float = 1.0
@@ -55,6 +55,10 @@ class ExecutorConfig:
     short_strong_rr_ratio: float = 5.0
     short_mid_rr_ratio: float = 4.0
     short_weak_rr_ratio: float = 3.0
+    enable_target_rr_cap: bool = False
+    loose_target_rr_cap: float | None = None
+    normal_target_rr_cap: float | None = None
+    tight_target_rr_cap: float | None = None
     enable_regime_directional_risk: bool = False
     bull_strong_long_risk_per_trade: float | None = None
     bull_strong_short_risk_per_trade: float | None = None
@@ -114,6 +118,10 @@ class ExecutorConfig:
             short_strong_rr_ratio=self.short_strong_rr_ratio,
             short_mid_rr_ratio=self.short_mid_rr_ratio,
             short_weak_rr_ratio=self.short_weak_rr_ratio,
+            enable_target_rr_cap=self.enable_target_rr_cap,
+            loose_target_rr_cap=self.loose_target_rr_cap,
+            normal_target_rr_cap=self.normal_target_rr_cap,
+            tight_target_rr_cap=self.tight_target_rr_cap,
             enable_regime_directional_risk=self.enable_regime_directional_risk,
             bull_strong_long_risk_per_trade=self.bull_strong_long_risk_per_trade,
             bull_strong_short_risk_per_trade=self.bull_strong_short_risk_per_trade,

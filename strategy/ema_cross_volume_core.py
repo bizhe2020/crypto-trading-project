@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from deployment.strategy.scalp_robust_v2_core import (
+from strategy.scalp_robust_v2_core import (
     ActionType,
     Candle,
     Direction,

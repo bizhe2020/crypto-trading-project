@@ -6,16 +6,23 @@ __pycache__/
 .ipynb_checkpoints/
 
 user_data/
-deployment/data/*
-!deployment/data/.gitkeep
+data/*
+!data/.gitkeep
+state/*
+!state/.gitkeep
+var/funding_oi/recorded/*
+!var/funding_oi/recorded/.gitkeep
+var/log/*
+!var/log/.gitkeep
+var/run/
+var/orderbook/
 
 # Local live trading configs with real exchange credentials
 freqtrade_data/config-live-*-final.json
 freqtrade_data/config-live-*.local.json
-deployment/config/config.live*.json
-deployment/config/*.bak*
-deployment/state/
+config/config.live*.json
+!config/config.live.5x-3pct.json
+!config/config.live.5x-3pct.template.json
+config/*.bak*
 live_bot*.log
 backup/
-/okx_executor.py
-/scalp_robust_v2_core.py
