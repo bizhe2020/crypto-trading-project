@@ -18,9 +18,9 @@
 1. 导出标准交易输入
 
 ```bash
-python3 deployment/bot/export_obi_replay_trades.py \
-  --config deployment/config/config.live.5x-3pct.json \
-  --data-root deployment/data/okx/futures \
+python3 bot/export_obi_replay_trades.py \
+  --config config/config.example.json \
+  --data-root data/okx/futures \
   --start-date 2023-01-01 \
   --output-json var/research/obi_replay_input_20230101_cap.json \
   --output-csv var/research/obi_replay_input_20230101_cap.csv
@@ -29,7 +29,7 @@ python3 deployment/bot/export_obi_replay_trades.py \
 2. 录盘口
 
 ```bash
-python3 deployment/bot/record_orderbook.py \
+python3 bot/record_orderbook.py \
   --inst-id BTC-USDT-SWAP \
   --channel books5 \
   --output var/orderbook/btc_books5_$(date +%Y%m%d_%H%M).jsonl \
@@ -39,7 +39,7 @@ python3 deployment/bot/record_orderbook.py \
 3. 批量回放
 
 ```bash
-python3 deployment/bot/batch_replay_obi_overlay.py \
+python3 bot/batch_replay_obi_overlay.py \
   --trades-json var/research/obi_replay_input_20230101_cap.json \
   --orderbook-input var/orderbook/<books5>.jsonl \
   --output-json var/replay/obi_forward_batch.json \

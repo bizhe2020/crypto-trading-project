@@ -3,21 +3,21 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-from dataclasses import fields
+from dataclasses import asdict, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from deployment.bot.market_data import OhlcvRepository
-from deployment.bot.okx_executor import ExecutorConfig
-from deployment.strategy.scalp_robust_v2_core import (
+from bot.market_data import OhlcvRepository
+from strategy.scalp_robust_v2_core import (
     ActionType,
     ScalpRobustEngine,
+    StrategyConfig,
     StrategyAction,
     Trade,
     dataframe_to_candles,
@@ -27,7 +27,7 @@ from deployment.strategy.scalp_robust_v2_core import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export backtest trades into standard OBI replay input format")
     parser.add_argument("--config", required=True)
-    parser.add_argument("--data-root", default="deployment/data/okx/futures")
+    parser.add_argument("--data-root", default="data/okx/futures")
     parser.add_argument("--start-date", default="2023-01-01")
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--output-csv", required=True)
@@ -35,19 +35,40 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _supported_executor_config(payload: dict[str, Any]) -> dict[str, Any]:
-    allowed = {field.name for field in fields(ExecutorConfig)}
+class BacktestExportConfig:
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        informative_timeframe: str,
+        data_root: str,
+        strategy: StrategyConfig,
+    ):
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.informative_timeframe = informative_timeframe
+        self.data_root = data_root
+        self.strategy = strategy
+
+
+def _supported_strategy_config(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = {field.name for field in fields(StrategyConfig)}
     return {key: value for key, value in payload.items() if key in allowed}
 
 
-def _load_executor_config(config_path: str | Path, data_root: str) -> ExecutorConfig:
+def _load_backtest_config(config_path: str | Path, data_root: str) -> BacktestExportConfig:
     raw = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    filtered = _supported_executor_config(raw)
-    filtered["data_root"] = data_root
-    return ExecutorConfig.from_dict(filtered)
+    return BacktestExportConfig(
+        symbol=str(raw.get("symbol", "BTC/USDT:USDT")),
+        timeframe=str(raw.get("timeframe", "15m")),
+        informative_timeframe=str(raw.get("informative_timeframe", "4h")),
+        data_root=data_root,
+        strategy=StrategyConfig(**_supported_strategy_config(raw)),
+    )
 
 
-def _load_engine(config: ExecutorConfig) -> ScalpRobustEngine:
+def _load_engine(config: BacktestExportConfig) -> ScalpRobustEngine:
     repo = OhlcvRepository(config.data_root)
     bundle = repo.load_pair(
         config.symbol,
@@ -60,7 +81,7 @@ def _load_engine(config: ExecutorConfig) -> ScalpRobustEngine:
     return ScalpRobustEngine.from_candles(
         informative_candles,
         primary_candles,
-        config.to_scalp_strategy_config(),
+        config.strategy,
     )
 
 
@@ -227,7 +248,7 @@ def _write_csv(path: Path, trades: list[dict[str, Any]]) -> None:
 
 def main() -> None:
     args = parse_args()
-    config = _load_executor_config(args.config, args.data_root)
+    config = _load_backtest_config(args.config, args.data_root)
     engine = _load_engine(config)
     actions, metrics = _run_backtest_with_actions(engine, args.start_date)
     standard_trades = _build_standard_trades(actions, engine.trades, args.orderbook_inst_id)
@@ -243,7 +264,13 @@ def main() -> None:
             "start_date": args.start_date,
             "orderbook_inst_id": args.orderbook_inst_id,
             "trade_count": len(standard_trades),
-            "metrics_summary": metrics,
+            "metrics_summary": {
+                **metrics,
+                "parameters": {
+                    **asdict(config.strategy),
+                    "data_root": config.data_root,
+                },
+            },
             "exported_at_utc": datetime.now(timezone.utc).isoformat(),
         },
         "trades": standard_trades,

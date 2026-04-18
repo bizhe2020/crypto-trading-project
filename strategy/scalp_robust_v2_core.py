@@ -11,8 +11,8 @@ from typing import Any
 
 import pandas as pd
 
-from deployment.strategy.funding_oi_trailing import FundingOIOverlay, FundingOIOverlayConfig, FundingOISnapshot
-from deployment.strategy.price_band_trailing import PriceBandTrailingConfig, PriceBandTrailingOverlay
+from strategy.funding_oi_trailing import FundingOIOverlay, FundingOIOverlayConfig, FundingOISnapshot
+from strategy.price_band_trailing import PriceBandTrailingConfig, PriceBandTrailingOverlay
 
 
 class Direction:

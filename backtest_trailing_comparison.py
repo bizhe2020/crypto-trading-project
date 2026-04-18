@@ -10,9 +10,9 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from deployment.bot.market_data import OhlcvRepository
-from deployment.strategy.price_band_trailing import PriceBandTrailingConfig
-from deployment.strategy.scalp_robust_v2_core import (
+from bot.market_data import OhlcvRepository
+from strategy.price_band_trailing import PriceBandTrailingConfig
+from strategy.scalp_robust_v2_core import (
     ScalpRobustEngine,
     StrategyConfig,
     dataframe_to_candles,
@@ -20,7 +20,7 @@ from deployment.strategy.scalp_robust_v2_core import (
 
 
 def load_market_data(symbol: str = "BTC/USDT:USDT"):
-    repo = OhlcvRepository("deployment/data/okx/futures")
+    repo = OhlcvRepository("data/okx/futures")
     bundle = repo.load_pair(symbol, timeframe="15m", informative_timeframe="4h")
     return dataframe_to_candles(bundle.informative_candles), dataframe_to_candles(bundle.primary_candles)
 

@@ -7,7 +7,7 @@ from typing import Any
 
 import websocket
 
-from deployment.strategy.obi_trailing import OrderBookLevel, OrderBookSnapshot
+from strategy.obi_trailing import OrderBookLevel, OrderBookSnapshot
 
 
 class OkxOrderBookFeed:
