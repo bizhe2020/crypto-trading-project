@@ -1,0 +1,16 @@
+.DS_Store
+.venv/
+.venv312/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+user_data/
+data/*
+!data/.gitkeep
+
+# Local research/runtime outputs
+var/funding_oi/recorded/
+var/log/
+var/run/
+var/orderbook/
