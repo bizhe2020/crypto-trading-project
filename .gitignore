@@ -5,22 +5,16 @@ __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
 
-user_data/backtest_results/
-user_data/hyperopt_results/
-user_data/logs/
-user_data/plot/
-user_data/notebooks/
-user_data/freqaimodels/
-user_data/data/binance/
-user_data/data/
-!user_data/data/.gitkeep
+user_data/
+deployment/data/*
+!deployment/data/.gitkeep
 
 # Local live trading configs with real exchange credentials
 freqtrade_data/config-live-*-final.json
 freqtrade_data/config-live-*.local.json
-execution/config.live*.json
-execution/*.bak*
-execution/state/
+deployment/config/config.live*.json
+deployment/config/*.bak*
+deployment/state/
 live_bot*.log
 backup/
 okx_executor.py

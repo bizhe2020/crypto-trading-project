@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from execution.okx_client import OkxClient
+from deployment.bot.okx_client import OkxClient
 
 
 @dataclass

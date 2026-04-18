@@ -6,7 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from simple_backtest.scalp_robust_v2_core import StrategySnapshot
+from deployment.strategy.scalp_robust_v2_core import StrategySnapshot
 
 
 class StateStore:
