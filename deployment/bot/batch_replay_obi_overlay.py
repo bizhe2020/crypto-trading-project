@@ -41,6 +41,9 @@ class ReplayTrade:
     exit_count: int = 0
     final_stop_price: float | None = None
     latest_metrics: dict[str, Any] | None = None
+    first_snapshot_timestamp_ms: int | None = None
+    last_snapshot_timestamp_ms: int | None = None
+    decisions: list[dict[str, Any]] = field(default_factory=list)
 
     def effective_end_timestamp_ms(self) -> int | None:
         return self.end_timestamp_ms if self.end_timestamp_ms is not None else self.fallback_end_timestamp_ms
@@ -233,6 +236,9 @@ def main() -> None:
                 break
             decision = overlay.evaluate(current_snapshot, position)
             trade.snapshot_count += 1
+            if trade.first_snapshot_timestamp_ms is None:
+                trade.first_snapshot_timestamp_ms = current_snapshot.timestamp_ms
+            trade.last_snapshot_timestamp_ms = current_snapshot.timestamp_ms
             trade.latest_metrics = decision.metrics
             if decision.action == "tighten" and decision.stop_price is not None:
                 position.sl_price = decision.stop_price
@@ -240,9 +246,27 @@ def main() -> None:
                 trade.final_stop_price = decision.stop_price
                 trade.decision_count += 1
                 trade.tighten_count += 1
+                trade.decisions.append(
+                    {
+                        "timestamp_ms": current_snapshot.timestamp_ms,
+                        "action": decision.action,
+                        "reason": decision.reason,
+                        "stop_price": decision.stop_price,
+                        "metrics": decision.metrics,
+                    }
+                )
             elif decision.action == "exit":
                 trade.decision_count += 1
                 trade.exit_count += 1
+                trade.decisions.append(
+                    {
+                        "timestamp_ms": current_snapshot.timestamp_ms,
+                        "action": decision.action,
+                        "reason": decision.reason,
+                        "exit_price": decision.exit_price,
+                        "metrics": decision.metrics,
+                    }
+                )
                 current_snapshot = next(orderbook_iter, None)
                 break
             current_snapshot = next(orderbook_iter, None)
@@ -287,6 +311,7 @@ def main() -> None:
                         "tighten_count": trade.tighten_count,
                         "exit_count": trade.exit_count,
                         "close_reason": trade.close_reason,
+                        "final_stop_price": trade.final_stop_price,
                     }
                 )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
