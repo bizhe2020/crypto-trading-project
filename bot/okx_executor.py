@@ -211,6 +211,23 @@ class OkxExecutionEngine:
         except Exception:
             pass
 
+    def _send_startup_telegram(self, bootstrap_status: dict[str, Any]) -> None:
+        status_text = "成功" if not bootstrap_status.get("bootstrap_error") else "异常"
+        snapshot_loaded = "是" if bootstrap_status.get("snapshot_loaded") else "否"
+        market_loaded = "是" if bootstrap_status.get("market_loaded") else "否"
+        lines = [
+            "[Bot启动]",
+            f"状态: {status_text}",
+            f"标的: {self.config.symbol}",
+            f"模式: {self.config.mode}",
+            f"市场加载: {market_loaded}",
+            f"快照加载: {snapshot_loaded}",
+            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        ]
+        if bootstrap_status.get("bootstrap_error"):
+            lines.append(f"错误: {bootstrap_status['bootstrap_error']}")
+        self._send_telegram("\n".join(lines))
+
     def bootstrap(self) -> dict[str, Any]:
         self.check_safety()
         markets = None
@@ -336,6 +353,7 @@ class OkxExecutionEngine:
     def run_loop(self, poll_interval_seconds: int = 5, close_buffer_seconds: int = 5) -> None:
         bootstrap_status = self.bootstrap()
         print(json.dumps({"event": "bootstrap", **bootstrap_status}, ensure_ascii=False))
+        self._send_startup_telegram(bootstrap_status)
         while True:
             try:
                 wait_seconds = self.seconds_until_next_close(close_buffer_seconds)
