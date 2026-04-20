@@ -1,0 +1,391 @@
+[
+  {
+    "name": "baseline_dfe=False",
+    "return": 675.0547595638241,
+    "sharpe": 1.4864880141372614,
+    "dd": 63.193823839488,
+    "trades": 428,
+    "params": {
+      "disable_fixed_target_exit": false,
+      "enable_atr_trailing": false
+    }
+  },
+  {
+    "name": "atr_act=1.5_mult=(3.0,2.5,2.0)_reg=all",
+    "return": 295.7055099827309,
+    "sharpe": 1.0701913697012966,
+    "dd": 63.577343405453334,
+    "trades": 578,
+    "params": {
+      "activation_rr": 1.5,
+      "loose": 3.0,
+      "normal": 2.5,
+      "tight": 2.0,
+      "regime_filter": "all"
+    }
+  },
+  {
+    "name": "atr_act=1.5_mult=(3.0,2.5,2.0)_reg=tight_style_off",
+    "return": 294.98269552840264,
+    "sharpe": 1.0703262777588747,
+    "dd": 63.577343405453334,
+    "trades": 577,
+    "params": {
+      "activation_rr": 1.5,
+      "loose": 3.0,
+      "normal": 2.5,
+      "tight": 2.0,
+      "regime_filter": "tight_style_off"
+    }
+  },
+  {
+    "name": "atr_act=1.5_mult=(3.0,2.5,2.0)_reg=bear_weak_off",
+    "return": 290.3328422064944,
+    "sharpe": 1.0653356520744364,
+    "dd": 63.577343405453334,
+    "trades": 577,
+    "params": {
+      "activation_rr": 1.5,
+      "loose": 3.0,
+      "normal": 2.5,
+      "tight": 2.0,
+      "regime_filter": "bear_weak_off"
+    }
+  },
+  {
+    "name": "atr_act=1.5_mult=(2.7,2.25,1.8)_reg=all",
+    "return": 348.9097696370975,
+    "sharpe": 1.1205302096429501,
+    "dd": 62.3737372694111,
+    "trades": 582,
+    "params": {
+      "activation_rr": 1.5,
+      "loose": 2.7,
+      "normal": 2.25,
+      "tight": 1.8,
+      "regime_filter": "all"
+    }
+  },
+  {
+    "name": "atr_act=1.5_mult=(2.7,2.25,1.8)_reg=tight_style_off",
+    "return": 350.1580922871781,
+    "sharpe": 1.1226315638801947,
+    "dd": 62.3737372694111,
+    "trades": 581,
+    "params": {
+      "activation_rr": 1.5,
+      "loose": 2.7,
+      "normal": 2.25,
+      "tight": 1.8,
+      "regime_filter": "tight_style_off"
+    }
+  },
+  {
+    "name": "atr_act=1.5_mult=(2.7,2.25,1.8)_reg=bear_weak_off",
+    "return": 345.0810377801401,
+    "sharpe": 1.1178722615121859,
+    "dd": 62.3737372694111,
+    "trades": 581,
+    "params": {
+      "activation_rr": 1.5,
+      "loose": 2.7,
+      "normal": 2.25,
+      "tight": 1.8,
+      "regime_filter": "bear_weak_off"
+    }
+  },
+  {
+    "name": "atr_act=1.5_mult=(2.85,2.375,1.9)_reg=all",
+    "return": 359.63703111296417,
+    "sharpe": 1.1332754947380093,
+    "dd": 62.97942819689416,
+    "trades": 579,
+    "params": {
+      "activation_rr": 1.5,
+      "loose": 2.85,
+      "normal": 2.375,
+      "tight": 1.9,
+      "regime_filter": "all"
+    }
+  },
+  {
+    "name": "atr_act=1.5_mult=(2.85,2.375,1.9)_reg=tight_style_off",
+    "return": 362.03796246878557,
+    "sharpe": 1.1364219689990096,
+    "dd": 62.97942819689416,
+    "trades": 578,
+    "params": {
+      "activation_rr": 1.5,
+      "loose": 2.85,
+      "normal": 2.375,
+      "tight": 1.9,
+      "regime_filter": "tight_style_off"
+    }
+  },
+  {
+    "name": "atr_act=1.5_mult=(2.85,2.375,1.9)_reg=bear_weak_off",
+    "return": 356.826908563191,
+    "sharpe": 1.1316546076131584,
+    "dd": 62.97942819689416,
+    "trades": 578,
+    "params": {
+      "activation_rr": 1.5,
+      "loose": 2.85,
+      "normal": 2.375,
+      "tight": 1.9,
+      "regime_filter": "bear_weak_off"
+    }
+  },
+  {
+    "name": "atr_act=2.0_mult=(3.0,2.5,2.0)_reg=all",
+    "return": 1020.5361285456096,
+    "sharpe": 1.5694604271758428,
+    "dd": 62.61008044548334,
+    "trades": 514,
+    "params": {
+      "activation_rr": 2.0,
+      "loose": 3.0,
+      "normal": 2.5,
+      "tight": 2.0,
+      "regime_filter": "all"
+    }
+  },
+  {
+    "name": "atr_act=2.0_mult=(3.0,2.5,2.0)_reg=tight_style_off",
+    "return": 1033.8845534697869,
+    "sharpe": 1.5744435290440213,
+    "dd": 62.61008044548334,
+    "trades": 514,
+    "params": {
+      "activation_rr": 2.0,
+      "loose": 3.0,
+      "normal": 2.5,
+      "tight": 2.0,
+      "regime_filter": "tight_style_off"
+    }
+  },
+  {
+    "name": "atr_act=2.0_mult=(3.0,2.5,2.0)_reg=bear_weak_off",
+    "return": 1020.5361285456096,
+    "sharpe": 1.5694604271758428,
+    "dd": 62.61008044548334,
+    "trades": 514,
+    "params": {
+      "activation_rr": 2.0,
+      "loose": 3.0,
+      "normal": 2.5,
+      "tight": 2.0,
+      "regime_filter": "bear_weak_off"
+    }
+  },
+  {
+    "name": "atr_act=2.0_mult=(2.7,2.25,1.8)_reg=all",
+    "return": 1337.3878371992164,
+    "sharpe": 1.6701576235517095,
+    "dd": 62.35559222027764,
+    "trades": 515,
+    "params": {
+      "activation_rr": 2.0,
+      "loose": 2.7,
+      "normal": 2.25,
+      "tight": 1.8,
+      "regime_filter": "all"
+    }
+  },
+  {
+    "name": "atr_act=2.0_mult=(2.7,2.25,1.8)_reg=tight_style_off",
+    "return": 1353.7841690528737,
+    "sharpe": 1.6748756314200146,
+    "dd": 62.35559222027764,
+    "trades": 515,
+    "params": {
+      "activation_rr": 2.0,
+      "loose": 2.7,
+      "normal": 2.25,
+      "tight": 1.8,
+      "regime_filter": "tight_style_off"
+    }
+  },
+  {
+    "name": "atr_act=2.0_mult=(2.7,2.25,1.8)_reg=bear_weak_off",
+    "return": 1337.3878371992164,
+    "sharpe": 1.6701576235517095,
+    "dd": 62.35559222027764,
+    "trades": 515,
+    "params": {
+      "activation_rr": 2.0,
+      "loose": 2.7,
+      "normal": 2.25,
+      "tight": 1.8,
+      "regime_filter": "bear_weak_off"
+    }
+  },
+  {
+    "name": "atr_act=2.0_mult=(2.85,2.375,1.9)_reg=all",
+    "return": 1162.2985374428492,
+    "sharpe": 1.611636774092801,
+    "dd": 62.48283633288047,
+    "trades": 516,
+    "params": {
+      "activation_rr": 2.0,
+      "loose": 2.85,
+      "normal": 2.375,
+      "tight": 1.9,
+      "regime_filter": "all"
+    }
+  },
+  {
+    "name": "atr_act=2.0_mult=(2.85,2.375,1.9)_reg=tight_style_off",
+    "return": 1176.6976579855925,
+    "sharpe": 1.6163444476043651,
+    "dd": 62.48283633288047,
+    "trades": 516,
+    "params": {
+      "activation_rr": 2.0,
+      "loose": 2.85,
+      "normal": 2.375,
+      "tight": 1.9,
+      "regime_filter": "tight_style_off"
+    }
+  },
+  {
+    "name": "atr_act=2.0_mult=(2.85,2.375,1.9)_reg=bear_weak_off",
+    "return": 1162.2985374428492,
+    "sharpe": 1.611636774092801,
+    "dd": 62.48283633288047,
+    "trades": 516,
+    "params": {
+      "activation_rr": 2.0,
+      "loose": 2.85,
+      "normal": 2.375,
+      "tight": 1.9,
+      "regime_filter": "bear_weak_off"
+    }
+  },
+  {
+    "name": "atr_act=2.5_mult=(3.0,2.5,2.0)_reg=all",
+    "return": 471.6979144539397,
+    "sharpe": 1.3101574618769691,
+    "dd": 62.63101530568592,
+    "trades": 487,
+    "params": {
+      "activation_rr": 2.5,
+      "loose": 3.0,
+      "normal": 2.5,
+      "tight": 2.0,
+      "regime_filter": "all"
+    }
+  },
+  {
+    "name": "atr_act=2.5_mult=(3.0,2.5,2.0)_reg=tight_style_off",
+    "return": 471.6979144539397,
+    "sharpe": 1.3101574618769691,
+    "dd": 62.63101530568592,
+    "trades": 487,
+    "params": {
+      "activation_rr": 2.5,
+      "loose": 3.0,
+      "normal": 2.5,
+      "tight": 2.0,
+      "regime_filter": "tight_style_off"
+    }
+  },
+  {
+    "name": "atr_act=2.5_mult=(3.0,2.5,2.0)_reg=bear_weak_off",
+    "return": 471.6979144539397,
+    "sharpe": 1.3101574618769691,
+    "dd": 62.63101530568592,
+    "trades": 487,
+    "params": {
+      "activation_rr": 2.5,
+      "loose": 3.0,
+      "normal": 2.5,
+      "tight": 2.0,
+      "regime_filter": "bear_weak_off"
+    }
+  },
+  {
+    "name": "atr_act=2.5_mult=(2.7,2.25,1.8)_reg=all",
+    "return": 598.9141716734341,
+    "sharpe": 1.3968682930202267,
+    "dd": 62.37443359445996,
+    "trades": 487,
+    "params": {
+      "activation_rr": 2.5,
+      "loose": 2.7,
+      "normal": 2.25,
+      "tight": 1.8,
+      "regime_filter": "all"
+    }
+  },
+  {
+    "name": "atr_act=2.5_mult=(2.7,2.25,1.8)_reg=tight_style_off",
+    "return": 598.9141716734341,
+    "sharpe": 1.3968682930202267,
+    "dd": 62.37443359445996,
+    "trades": 487,
+    "params": {
+      "activation_rr": 2.5,
+      "loose": 2.7,
+      "normal": 2.25,
+      "tight": 1.8,
+      "regime_filter": "tight_style_off"
+    }
+  },
+  {
+    "name": "atr_act=2.5_mult=(2.7,2.25,1.8)_reg=bear_weak_off",
+    "return": 598.9141716734341,
+    "sharpe": 1.3968682930202267,
+    "dd": 62.37443359445996,
+    "trades": 487,
+    "params": {
+      "activation_rr": 2.5,
+      "loose": 2.7,
+      "normal": 2.25,
+      "tight": 1.8,
+      "regime_filter": "bear_weak_off"
+    }
+  },
+  {
+    "name": "atr_act=2.5_mult=(2.85,2.375,1.9)_reg=all",
+    "return": 454.22807323104274,
+    "sharpe": 1.2936151089192267,
+    "dd": 62.50272445007292,
+    "trades": 489,
+    "params": {
+      "activation_rr": 2.5,
+      "loose": 2.85,
+      "normal": 2.375,
+      "tight": 1.9,
+      "regime_filter": "all"
+    }
+  },
+  {
+    "name": "atr_act=2.5_mult=(2.85,2.375,1.9)_reg=tight_style_off",
+    "return": 454.22807323104274,
+    "sharpe": 1.2936151089192267,
+    "dd": 62.50272445007292,
+    "trades": 489,
+    "params": {
+      "activation_rr": 2.5,
+      "loose": 2.85,
+      "normal": 2.375,
+      "tight": 1.9,
+      "regime_filter": "tight_style_off"
+    }
+  },
+  {
+    "name": "atr_act=2.5_mult=(2.85,2.375,1.9)_reg=bear_weak_off",
+    "return": 454.22807323104274,
+    "sharpe": 1.2936151089192267,
+    "dd": 62.50272445007292,
+    "trades": 489,
+    "params": {
+      "activation_rr": 2.5,
+      "loose": 2.85,
+      "normal": 2.375,
+      "tight": 1.9,
+      "regime_filter": "bear_weak_off"
+    }
+  }
+]
