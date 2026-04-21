@@ -1,0 +1,923 @@
+{
+  "date_range": {
+    "start": "2023-01-01",
+    "end": "2026-04-18"
+  },
+  "applied_optimized_overrides": {
+    "atr_regime_filter": "tight_style_off",
+    "atr_activation_rr": 2.0,
+    "atr_loose_multiplier": 2.7,
+    "atr_normal_multiplier": 2.25,
+    "atr_tight_multiplier": 1.8,
+    "disable_fixed_target_exit": false,
+    "enable_atr_trailing": true,
+    "allow_bear_strong_short": true,
+    "bear_strong_short_pullback_window": 10,
+    "bear_strong_short_sl_buffer_pct": 0.5,
+    "bear_strong_short_retrace_min_ob_fill_pct": 0.8,
+    "bear_strong_short_entry_min_ob_fill_pct": 0.55,
+    "bear_strong_short_rr_ratio_override": 2.5,
+    "bear_strong_short_trail_style_override": "tight",
+    "bear_strong_short_max_hold_bars": 96,
+    "bear_strong_short_atr_activation_rr": 1.5,
+    "bear_strong_short_atr_loose_multiplier": 1.5
+  },
+  "cases": {
+    "baseline_3247_rerun": {
+      "overall": {
+        "total_return_pct": 1116.07,
+        "sharpe": 1.478,
+        "max_drawdown": 62.36,
+        "total_trades": 598,
+        "win_rate": 38.8,
+        "profit_factor": 1.106,
+        "final_capital": 12160.74
+      },
+      "annual_returns": [
+        {
+          "year": 2023,
+          "period": "Full",
+          "days": 365,
+          "pnl": 1936.92,
+          "return_pct": 193.69,
+          "annualized_return_pct": 193.69,
+          "start_capital": 1000.0,
+          "end_capital": 2936.92
+        },
+        {
+          "year": 2024,
+          "period": "Full",
+          "days": 366,
+          "pnl": 10663.84,
+          "return_pct": 363.1,
+          "annualized_return_pct": 363.1,
+          "start_capital": 2936.92,
+          "end_capital": 13600.76
+        },
+        {
+          "year": 2025,
+          "period": "Full",
+          "days": 365,
+          "pnl": -488.26,
+          "return_pct": -3.59,
+          "annualized_return_pct": -3.59,
+          "start_capital": 13600.76,
+          "end_capital": 13112.5
+        },
+        {
+          "year": 2026,
+          "period": "YTD",
+          "days": 108,
+          "pnl": -951.76,
+          "return_pct": -7.26,
+          "annualized_return_pct": -22.48,
+          "start_capital": 13112.5,
+          "end_capital": 12160.74
+        }
+      ],
+      "direction_breakdown": [
+        {
+          "trades": 294,
+          "pnl": 11544.78,
+          "total_return_pct": 1154.48,
+          "win_rate": 38.1,
+          "profit_factor": 1.161,
+          "avg_pnl": 39.27,
+          "avg_rr": 0.232,
+          "direction": "LONG"
+        },
+        {
+          "trades": 304,
+          "pnl": -384.04,
+          "total_return_pct": -38.4,
+          "win_rate": 39.47,
+          "profit_factor": 0.988,
+          "avg_pnl": -1.26,
+          "avg_rr": -0.01,
+          "direction": "SHORT"
+        }
+      ],
+      "regime_direction_breakdown": [
+        {
+          "trades": 207,
+          "pnl": 12714.42,
+          "total_return_pct": 1271.44,
+          "win_rate": 41.06,
+          "profit_factor": 1.206,
+          "avg_pnl": 61.42,
+          "avg_rr": 0.298,
+          "entry_risk_regime": "bull_strong",
+          "direction": "LONG"
+        },
+        {
+          "trades": 1,
+          "pnl": 1.45,
+          "total_return_pct": 0.15,
+          "win_rate": 100.0,
+          "profit_factor": 0.0,
+          "avg_pnl": 1.45,
+          "avg_rr": 0.139,
+          "entry_risk_regime": "bull_strong",
+          "direction": "SHORT"
+        },
+        {
+          "trades": 87,
+          "pnl": -1169.64,
+          "total_return_pct": -116.96,
+          "win_rate": 31.03,
+          "profit_factor": 0.884,
+          "avg_pnl": -13.44,
+          "avg_rr": 0.077,
+          "entry_risk_regime": "bull_weak",
+          "direction": "LONG"
+        },
+        {
+          "trades": 56,
+          "pnl": 1274.34,
+          "total_return_pct": 127.43,
+          "win_rate": 30.36,
+          "profit_factor": 1.296,
+          "avg_pnl": 22.76,
+          "avg_rr": 0.005,
+          "entry_risk_regime": "bull_weak",
+          "direction": "SHORT"
+        },
+        {
+          "trades": 171,
+          "pnl": -1659.88,
+          "total_return_pct": -165.99,
+          "win_rate": 34.5,
+          "profit_factor": 0.932,
+          "avg_pnl": -9.71,
+          "avg_rr": -0.011,
+          "entry_risk_regime": "bear_strong",
+          "direction": "SHORT"
+        },
+        {
+          "trades": 76,
+          "pnl": 0.05,
+          "total_return_pct": 0.0,
+          "win_rate": 56.58,
+          "profit_factor": 1.0,
+          "avg_pnl": 0.0,
+          "avg_rr": -0.022,
+          "entry_risk_regime": "bear_weak",
+          "direction": "SHORT"
+        }
+      ],
+      "bear_strong_short": {
+        "trades": 171,
+        "pnl": -1659.88,
+        "total_return_pct": -165.99,
+        "win_rate": 34.5,
+        "profit_factor": 0.932,
+        "avg_pnl": -9.71,
+        "avg_rr": -0.011,
+        "stop_loss_pct": 97.66,
+        "target_pct": 2.34,
+        "avg_hold_hours": 24.85,
+        "median_hold_hours": 14.25
+      }
+    },
+    "optimized_full": {
+      "overall": {
+        "total_return_pct": 1013.61,
+        "sharpe": 1.524,
+        "max_drawdown": 62.36,
+        "total_trades": 541,
+        "win_rate": 39.74,
+        "profit_factor": 1.111,
+        "final_capital": 11136.13
+      },
+      "annual_returns": [
+        {
+          "year": 2023,
+          "period": "Full",
+          "days": 365,
+          "pnl": 1896.42,
+          "return_pct": 189.64,
+          "annualized_return_pct": 189.64,
+          "start_capital": 1000.0,
+          "end_capital": 2896.42
+        },
+        {
+          "year": 2024,
+          "period": "Full",
+          "days": 366,
+          "pnl": 12211.54,
+          "return_pct": 421.61,
+          "annualized_return_pct": 421.61,
+          "start_capital": 2896.42,
+          "end_capital": 15107.96
+        },
+        {
+          "year": 2025,
+          "period": "Full",
+          "days": 365,
+          "pnl": -3860.74,
+          "return_pct": -25.55,
+          "annualized_return_pct": -25.55,
+          "start_capital": 15107.96,
+          "end_capital": 11247.22
+        },
+        {
+          "year": 2026,
+          "period": "YTD",
+          "days": 108,
+          "pnl": -111.09,
+          "return_pct": -0.99,
+          "annualized_return_pct": -3.3,
+          "start_capital": 11247.22,
+          "end_capital": 11136.13
+        }
+      ],
+      "direction_breakdown": [
+        {
+          "trades": 294,
+          "pnl": 12071.09,
+          "total_return_pct": 1207.11,
+          "win_rate": 38.44,
+          "profit_factor": 1.171,
+          "avg_pnl": 41.06,
+          "avg_rr": 0.24,
+          "direction": "LONG"
+        },
+        {
+          "trades": 247,
+          "pnl": -1934.96,
+          "total_return_pct": -193.5,
+          "win_rate": 41.3,
+          "profit_factor": 0.905,
+          "avg_pnl": -7.83,
+          "avg_rr": -0.051,
+          "direction": "SHORT"
+        }
+      ],
+      "regime_direction_breakdown": [
+        {
+          "trades": 207,
+          "pnl": 13214.05,
+          "total_return_pct": 1321.41,
+          "win_rate": 41.06,
+          "profit_factor": 1.217,
+          "avg_pnl": 63.84,
+          "avg_rr": 0.298,
+          "entry_risk_regime": "bull_strong",
+          "direction": "LONG"
+        },
+        {
+          "trades": 1,
+          "pnl": 1.45,
+          "total_return_pct": 0.15,
+          "win_rate": 100.0,
+          "profit_factor": 0.0,
+          "avg_pnl": 1.45,
+          "avg_rr": 0.139,
+          "entry_risk_regime": "bull_strong",
+          "direction": "SHORT"
+        },
+        {
+          "trades": 87,
+          "pnl": -1142.96,
+          "total_return_pct": -114.3,
+          "win_rate": 32.18,
+          "profit_factor": 0.883,
+          "avg_pnl": -13.14,
+          "avg_rr": 0.103,
+          "entry_risk_regime": "bull_weak",
+          "direction": "LONG"
+        },
+        {
+          "trades": 56,
+          "pnl": 1430.87,
+          "total_return_pct": 143.09,
+          "win_rate": 30.36,
+          "profit_factor": 1.343,
+          "avg_pnl": 25.55,
+          "avg_rr": 0.005,
+          "entry_risk_regime": "bull_weak",
+          "direction": "SHORT"
+        },
+        {
+          "trades": 113,
+          "pnl": -3105.2,
+          "total_return_pct": -310.52,
+          "win_rate": 36.28,
+          "profit_factor": 0.732,
+          "avg_pnl": -27.48,
+          "avg_rr": -0.09,
+          "entry_risk_regime": "bear_strong",
+          "direction": "SHORT"
+        },
+        {
+          "trades": 77,
+          "pnl": -262.08,
+          "total_return_pct": -26.21,
+          "win_rate": 55.84,
+          "profit_factor": 0.944,
+          "avg_pnl": -3.4,
+          "avg_rr": -0.036,
+          "entry_risk_regime": "bear_weak",
+          "direction": "SHORT"
+        }
+      ],
+      "trail_style_distribution": [
+        {
+          "trades": 207,
+          "pnl": 13214.05,
+          "total_return_pct": 1321.41,
+          "win_rate": 41.06,
+          "profit_factor": 1.217,
+          "avg_pnl": 63.84,
+          "avg_rr": 0.298,
+          "trail_style": "B",
+          "share_pct": 38.26
+        },
+        {
+          "trades": 137,
+          "pnl": 151.66,
+          "total_return_pct": 15.17,
+          "win_rate": 29.2,
+          "profit_factor": 1.011,
+          "avg_pnl": 1.11,
+          "avg_rr": 0.053,
+          "trail_style": "M",
+          "share_pct": 25.32
+        },
+        {
+          "trades": 197,
+          "pnl": -3229.58,
+          "total_return_pct": -322.96,
+          "win_rate": 45.69,
+          "profit_factor": 0.805,
+          "avg_pnl": -16.39,
+          "avg_rr": -0.055,
+          "trail_style": "S",
+          "share_pct": 36.41
+        }
+      ],
+      "exit_reason_distribution": [
+        {
+          "trades": 475,
+          "pnl": -11411.63,
+          "total_return_pct": -1141.16,
+          "win_rate": 32.21,
+          "profit_factor": 0.874,
+          "avg_pnl": -24.02,
+          "avg_rr": -0.187,
+          "exit_reason": "stop_loss",
+          "avg_hold_hours": 24.36
+        },
+        {
+          "trades": 62,
+          "pnl": 21794.91,
+          "total_return_pct": 2179.49,
+          "win_rate": 100.0,
+          "profit_factor": 0.0,
+          "avg_pnl": 351.53,
+          "avg_rr": 2.392,
+          "exit_reason": "target_4r",
+          "avg_hold_hours": 21.06
+        },
+        {
+          "trades": 4,
+          "pnl": -247.16,
+          "total_return_pct": -24.72,
+          "win_rate": 0.0,
+          "profit_factor": 0.0,
+          "avg_pnl": -61.79,
+          "avg_rr": -0.363,
+          "exit_reason": "time_exit",
+          "avg_hold_hours": 24.0
+        }
+      ],
+      "monthly_breakdown": [
+        {
+          "month": "2023-01",
+          "trades": 0,
+          "pnl": 0.0,
+          "return_pct": 0.0,
+          "start_capital": 1000.0,
+          "end_capital": 1000.0
+        },
+        {
+          "month": "2023-02",
+          "trades": 11,
+          "pnl": 76.69,
+          "return_pct": 7.67,
+          "start_capital": 1000.0,
+          "end_capital": 1076.69
+        },
+        {
+          "month": "2023-03",
+          "trades": 26,
+          "pnl": 345.68,
+          "return_pct": 32.11,
+          "start_capital": 1076.69,
+          "end_capital": 1422.37
+        },
+        {
+          "month": "2023-04",
+          "trades": 14,
+          "pnl": 164.64,
+          "return_pct": 11.58,
+          "start_capital": 1422.37,
+          "end_capital": 1587.01
+        },
+        {
+          "month": "2023-05",
+          "trades": 13,
+          "pnl": -44.53,
+          "return_pct": -2.81,
+          "start_capital": 1587.01,
+          "end_capital": 1542.48
+        },
+        {
+          "month": "2023-06",
+          "trades": 9,
+          "pnl": 15.21,
+          "return_pct": 0.99,
+          "start_capital": 1542.48,
+          "end_capital": 1557.69
+        },
+        {
+          "month": "2023-07",
+          "trades": 12,
+          "pnl": -21.76,
+          "return_pct": -1.4,
+          "start_capital": 1557.69,
+          "end_capital": 1535.93
+        },
+        {
+          "month": "2023-08",
+          "trades": 9,
+          "pnl": 9.76,
+          "return_pct": 0.64,
+          "start_capital": 1535.93,
+          "end_capital": 1545.69
+        },
+        {
+          "month": "2023-09",
+          "trades": 12,
+          "pnl": -155.19,
+          "return_pct": -10.04,
+          "start_capital": 1545.69,
+          "end_capital": 1390.5
+        },
+        {
+          "month": "2023-10",
+          "trades": 12,
+          "pnl": 713.79,
+          "return_pct": 51.33,
+          "start_capital": 1390.5,
+          "end_capital": 2104.29
+        },
+        {
+          "month": "2023-11",
+          "trades": 13,
+          "pnl": 1409.58,
+          "return_pct": 66.99,
+          "start_capital": 2104.29,
+          "end_capital": 3513.87
+        },
+        {
+          "month": "2023-12",
+          "trades": 22,
+          "pnl": -617.45,
+          "return_pct": -17.57,
+          "start_capital": 3513.87,
+          "end_capital": 2896.42
+        },
+        {
+          "month": "2024-01",
+          "trades": 14,
+          "pnl": -501.4,
+          "return_pct": -17.31,
+          "start_capital": 2896.42,
+          "end_capital": 2395.03
+        },
+        {
+          "month": "2024-02",
+          "trades": 12,
+          "pnl": 4207.3,
+          "return_pct": 175.67,
+          "start_capital": 2395.03,
+          "end_capital": 6602.32
+        },
+        {
+          "month": "2024-03",
+          "trades": 27,
+          "pnl": -1511.02,
+          "return_pct": -22.89,
+          "start_capital": 6602.32,
+          "end_capital": 5091.31
+        },
+        {
+          "month": "2024-04",
+          "trades": 22,
+          "pnl": -405.23,
+          "return_pct": -7.96,
+          "start_capital": 5091.31,
+          "end_capital": 4686.08
+        },
+        {
+          "month": "2024-05",
+          "trades": 11,
+          "pnl": 260.64,
+          "return_pct": 5.56,
+          "start_capital": 4686.08,
+          "end_capital": 4946.72
+        },
+        {
+          "month": "2024-06",
+          "trades": 11,
+          "pnl": 593.15,
+          "return_pct": 11.99,
+          "start_capital": 4946.72,
+          "end_capital": 5539.87
+        },
+        {
+          "month": "2024-07",
+          "trades": 19,
+          "pnl": 505.43,
+          "return_pct": 9.12,
+          "start_capital": 5539.87,
+          "end_capital": 6045.3
+        },
+        {
+          "month": "2024-08",
+          "trades": 14,
+          "pnl": -853.57,
+          "return_pct": -14.12,
+          "start_capital": 6045.3,
+          "end_capital": 5191.73
+        },
+        {
+          "month": "2024-09",
+          "trades": 14,
+          "pnl": 215.3,
+          "return_pct": 4.15,
+          "start_capital": 5191.73,
+          "end_capital": 5407.03
+        },
+        {
+          "month": "2024-10",
+          "trades": 12,
+          "pnl": 3110.08,
+          "return_pct": 57.52,
+          "start_capital": 5407.03,
+          "end_capital": 8517.11
+        },
+        {
+          "month": "2024-11",
+          "trades": 16,
+          "pnl": 6085.68,
+          "return_pct": 71.45,
+          "start_capital": 8517.11,
+          "end_capital": 14602.79
+        },
+        {
+          "month": "2024-12",
+          "trades": 21,
+          "pnl": 505.17,
+          "return_pct": 3.46,
+          "start_capital": 14602.79,
+          "end_capital": 15107.96
+        },
+        {
+          "month": "2025-01",
+          "trades": 22,
+          "pnl": -1473.78,
+          "return_pct": -9.75,
+          "start_capital": 15107.96,
+          "end_capital": 13634.18
+        },
+        {
+          "month": "2025-02",
+          "trades": 11,
+          "pnl": -1030.31,
+          "return_pct": -7.56,
+          "start_capital": 13634.18,
+          "end_capital": 12603.87
+        },
+        {
+          "month": "2025-03",
+          "trades": 11,
+          "pnl": -1538.35,
+          "return_pct": -12.21,
+          "start_capital": 12603.87,
+          "end_capital": 11065.52
+        },
+        {
+          "month": "2025-04",
+          "trades": 16,
+          "pnl": -2077.27,
+          "return_pct": -18.77,
+          "start_capital": 11065.52,
+          "end_capital": 8988.25
+        },
+        {
+          "month": "2025-05",
+          "trades": 12,
+          "pnl": 1542.72,
+          "return_pct": 17.16,
+          "start_capital": 8988.25,
+          "end_capital": 10530.98
+        },
+        {
+          "month": "2025-06",
+          "trades": 15,
+          "pnl": -1651.87,
+          "return_pct": -15.69,
+          "start_capital": 10530.98,
+          "end_capital": 8879.11
+        },
+        {
+          "month": "2025-07",
+          "trades": 10,
+          "pnl": -231.0,
+          "return_pct": -2.6,
+          "start_capital": 8879.11,
+          "end_capital": 8648.11
+        },
+        {
+          "month": "2025-08",
+          "trades": 11,
+          "pnl": 2157.02,
+          "return_pct": 24.94,
+          "start_capital": 8648.11,
+          "end_capital": 10805.13
+        },
+        {
+          "month": "2025-09",
+          "trades": 6,
+          "pnl": -294.71,
+          "return_pct": -2.73,
+          "start_capital": 10805.13,
+          "end_capital": 10510.42
+        },
+        {
+          "month": "2025-10",
+          "trades": 11,
+          "pnl": 1278.12,
+          "return_pct": 12.16,
+          "start_capital": 10510.42,
+          "end_capital": 11788.54
+        },
+        {
+          "month": "2025-11",
+          "trades": 7,
+          "pnl": 405.2,
+          "return_pct": 3.44,
+          "start_capital": 11788.54,
+          "end_capital": 12193.74
+        },
+        {
+          "month": "2025-12",
+          "trades": 7,
+          "pnl": -946.52,
+          "return_pct": -7.76,
+          "start_capital": 12193.74,
+          "end_capital": 11247.22
+        },
+        {
+          "month": "2026-01",
+          "trades": 14,
+          "pnl": 1328.56,
+          "return_pct": 11.81,
+          "start_capital": 11247.22,
+          "end_capital": 12575.78
+        },
+        {
+          "month": "2026-02",
+          "trades": 10,
+          "pnl": 1607.84,
+          "return_pct": 12.79,
+          "start_capital": 12575.78,
+          "end_capital": 14183.62
+        },
+        {
+          "month": "2026-03",
+          "trades": 21,
+          "pnl": -3386.47,
+          "return_pct": -23.88,
+          "start_capital": 14183.62,
+          "end_capital": 10797.16
+        },
+        {
+          "month": "2026-04",
+          "trades": 11,
+          "pnl": 338.97,
+          "return_pct": 3.14,
+          "start_capital": 10797.16,
+          "end_capital": 11136.13
+        }
+      ],
+      "bear_strong_short": {
+        "trades": 113,
+        "pnl": -3105.2,
+        "total_return_pct": -310.52,
+        "win_rate": 36.28,
+        "profit_factor": 0.732,
+        "avg_pnl": -27.48,
+        "avg_rr": -0.09,
+        "stop_loss_pct": 68.14,
+        "target_pct": 28.32,
+        "avg_hold_hours": 4.54,
+        "median_hold_hours": 2.0
+      }
+    },
+    "raw_head_config_reference": {
+      "overall": {
+        "total_return_pct": 606.03,
+        "sharpe": 1.385,
+        "max_drawdown": 63.86,
+        "total_trades": 466,
+        "win_rate": 28.76,
+        "profit_factor": 1.249,
+        "final_capital": 7060.35
+      },
+      "annual_returns": [
+        {
+          "year": 2023,
+          "period": "Full",
+          "days": 365,
+          "pnl": -25.51,
+          "return_pct": -2.55,
+          "annualized_return_pct": -2.55,
+          "start_capital": 1000.0,
+          "end_capital": 974.49
+        },
+        {
+          "year": 2024,
+          "period": "Full",
+          "days": 366,
+          "pnl": 3001.55,
+          "return_pct": 308.01,
+          "annualized_return_pct": 308.01,
+          "start_capital": 974.49,
+          "end_capital": 3976.04
+        },
+        {
+          "year": 2025,
+          "period": "Full",
+          "days": 365,
+          "pnl": 1036.64,
+          "return_pct": 26.07,
+          "annualized_return_pct": 26.07,
+          "start_capital": 3976.04,
+          "end_capital": 5012.68
+        },
+        {
+          "year": 2026,
+          "period": "YTD",
+          "days": 108,
+          "pnl": 2047.67,
+          "return_pct": 40.85,
+          "annualized_return_pct": 218.23,
+          "start_capital": 5012.68,
+          "end_capital": 7060.35
+        }
+      ],
+      "direction_breakdown": [
+        {
+          "trades": 221,
+          "pnl": 4489.08,
+          "total_return_pct": 448.91,
+          "win_rate": 27.15,
+          "profit_factor": 1.279,
+          "avg_pnl": 20.31,
+          "avg_rr": 0.243,
+          "direction": "LONG"
+        },
+        {
+          "trades": 245,
+          "pnl": 1571.27,
+          "total_return_pct": 157.13,
+          "win_rate": 30.2,
+          "profit_factor": 1.19,
+          "avg_pnl": 6.41,
+          "avg_rr": 0.004,
+          "direction": "SHORT"
+        }
+      ],
+      "regime_direction_breakdown": [
+        {
+          "trades": 142,
+          "pnl": 5427.82,
+          "total_return_pct": 542.78,
+          "win_rate": 24.65,
+          "profit_factor": 1.423,
+          "avg_pnl": 38.22,
+          "avg_rr": 0.396,
+          "entry_risk_regime": "bull_strong",
+          "direction": "LONG"
+        },
+        {
+          "trades": 1,
+          "pnl": 1.17,
+          "total_return_pct": 0.12,
+          "win_rate": 100.0,
+          "profit_factor": 0.0,
+          "avg_pnl": 1.17,
+          "avg_rr": 0.139,
+          "entry_risk_regime": "bull_strong",
+          "direction": "SHORT"
+        },
+        {
+          "trades": 79,
+          "pnl": -938.75,
+          "total_return_pct": -93.87,
+          "win_rate": 31.65,
+          "profit_factor": 0.712,
+          "avg_pnl": -11.88,
+          "avg_rr": -0.032,
+          "entry_risk_regime": "bull_weak",
+          "direction": "LONG"
+        },
+        {
+          "trades": 53,
+          "pnl": 647.1,
+          "total_return_pct": 64.71,
+          "win_rate": 30.19,
+          "profit_factor": 1.441,
+          "avg_pnl": 12.21,
+          "avg_rr": 0.121,
+          "entry_risk_regime": "bull_weak",
+          "direction": "SHORT"
+        },
+        {
+          "trades": 122,
+          "pnl": 1050.46,
+          "total_return_pct": 105.05,
+          "win_rate": 16.39,
+          "profit_factor": 1.196,
+          "avg_pnl": 8.61,
+          "avg_rr": -0.006,
+          "entry_risk_regime": "bear_strong",
+          "direction": "SHORT"
+        },
+        {
+          "trades": 69,
+          "pnl": -127.46,
+          "total_return_pct": -12.75,
+          "win_rate": 53.62,
+          "profit_factor": 0.913,
+          "avg_pnl": -1.85,
+          "avg_rr": -0.069,
+          "entry_risk_regime": "bear_weak",
+          "direction": "SHORT"
+        }
+      ],
+      "bear_strong_short": {
+        "trades": 122,
+        "pnl": 1050.46,
+        "total_return_pct": 105.05,
+        "win_rate": 16.39,
+        "profit_factor": 1.196,
+        "avg_pnl": 8.61,
+        "avg_rr": -0.006,
+        "stop_loss_pct": 83.61,
+        "target_pct": 16.39,
+        "avg_hold_hours": 41.02,
+        "median_hold_hours": 25.38
+      }
+    }
+  },
+  "delta_vs_baseline_3247_rerun": {
+    "overall": {
+      "total_return_pct": -102.46,
+      "sharpe": 0.046,
+      "max_drawdown": 0.0,
+      "total_trades": -57,
+      "win_rate": 0.94,
+      "profit_factor": 0.005
+    },
+    "bear_strong_short": {
+      "trades": -58,
+      "pnl": -1445.32,
+      "total_return_pct": -144.53,
+      "win_rate": 1.78,
+      "profit_factor": -0.2,
+      "stop_loss_pct": -29.52
+    }
+  },
+  "delta_vs_raw_head_config": {
+    "overall": {
+      "total_return_pct": 407.58,
+      "sharpe": 0.139,
+      "max_drawdown": -1.5,
+      "total_trades": 75,
+      "win_rate": 10.98,
+      "profit_factor": -0.138
+    },
+    "bear_strong_short": {
+      "trades": -9,
+      "pnl": -4155.66,
+      "total_return_pct": -415.57,
+      "win_rate": 19.89,
+      "profit_factor": -0.464,
+      "stop_loss_pct": -15.47
+    }
+  }
+}

@@ -72,6 +72,14 @@ class ExecutorConfig:
     bull_weak_long_trail_style_override: str | None = None
     bear_weak_short_rr_ratio_override: float | None = None
     bear_weak_short_trail_style_override: str | None = None
+    enable_atr_trailing: bool = False
+    atr_period: int = 14
+    atr_activation_rr: float = 2.0
+    atr_loose_multiplier: float = 2.7
+    atr_normal_multiplier: float = 2.25
+    atr_tight_multiplier: float = 1.8
+    atr_regime_filter: str = "all"
+    disable_fixed_target_exit: bool = False
     ema_fast_period: int = 9
     ema_slow_period: int = 21
     volume_ma_period: int = 20
@@ -93,7 +101,12 @@ class ExecutorConfig:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ExecutorConfig":
-        return cls(**payload)
+        filtered_payload = {
+            key: value
+            for key, value in payload.items()
+            if key in cls.__dataclass_fields__
+        }
+        return cls(**filtered_payload)
 
     def to_scalp_strategy_config(self) -> StrategyConfig:
         return StrategyConfig(
@@ -135,6 +148,14 @@ class ExecutorConfig:
             bull_weak_long_trail_style_override=self.bull_weak_long_trail_style_override,
             bear_weak_short_rr_ratio_override=self.bear_weak_short_rr_ratio_override,
             bear_weak_short_trail_style_override=self.bear_weak_short_trail_style_override,
+            enable_atr_trailing=self.enable_atr_trailing,
+            atr_period=self.atr_period,
+            atr_activation_rr=self.atr_activation_rr,
+            atr_loose_multiplier=self.atr_loose_multiplier,
+            atr_normal_multiplier=self.atr_normal_multiplier,
+            atr_tight_multiplier=self.atr_tight_multiplier,
+            atr_regime_filter=self.atr_regime_filter,
+            disable_fixed_target_exit=self.disable_fixed_target_exit,
             taker_fee_rate=self.taker_fee_rate,
             slippage_bps=self.slippage_bps,
         )
