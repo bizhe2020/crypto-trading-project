@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import math
 from bisect import bisect_right
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -117,6 +118,11 @@ class StrategyConfig:
     atr_tight_multiplier: float = 1.8
     atr_regime_filter: str = "all"
     disable_fixed_target_exit: bool = False
+    enable_regime_switching: bool = False
+    regime_switcher_thresholds: dict[str, Any] | None = None
+    regime_switcher_hg_overrides: dict[str, Any] | None = None
+    regime_switcher_normal_overrides: dict[str, Any] | None = None
+    regime_switcher_flat_overrides: dict[str, Any] | None = None
     taker_fee_rate: float = 0.0005
     slippage_bps: float = 2.0
 
@@ -491,11 +497,13 @@ class ScalpRobustEngine:
         self.mapping = mapping
         self.precomputed = precomputed
         self.config = config or StrategyConfig()
+        self._base_config = deepcopy(self.config)
         self.capital = self.config.initial_capital
         self.trades: list[Trade] = []
         self.restored_trade_count = 0
         self.position: PositionState | None = None
         self.exit_reasons: dict[str, int] = {}
+        self._regime_switch_cache: dict[int, tuple[str, StrategyConfig]] = {}
         band_config = self.config.price_band_trailing_config or PriceBandTrailingConfig()
         self.price_band_overlay = PriceBandTrailingOverlay(band_config)
         funding_config = self.config.funding_oi_trailing_config or FundingOIOverlayConfig()
@@ -1045,6 +1053,7 @@ class ScalpRobustEngine:
         actions: list[StrategyAction] = []
 
         for i in range(start_idx, end_idx):
+            self._apply_regime_switch_for_idx(i)
             if self.position:
                 position_actions = self.manage_position(i)
                 actions.extend(position_actions)
@@ -1109,6 +1118,53 @@ class ScalpRobustEngine:
                     waiting_pullback_window = pending.pullback_window
 
         return actions
+
+    def _effective_regime_history(self, idx: int) -> list[Candle]:
+        if idx < 0 or idx >= len(self.mapping):
+            return []
+        c4h_idx = self.mapping[idx]
+        if c4h_idx <= 0:
+            return []
+        return self.c4h[:c4h_idx]
+
+    def _regime_switch_overrides(self, regime: str) -> dict[str, Any]:
+        if regime == "high_growth":
+            return dict(self._base_config.regime_switcher_hg_overrides or {})
+        if regime == "flat":
+            return dict(self._base_config.regime_switcher_flat_overrides or {})
+        return dict(self._base_config.regime_switcher_normal_overrides or {})
+
+    def _config_for_regime(self, regime: str) -> StrategyConfig:
+        config_copy = deepcopy(self._base_config)
+        for field_name, value in self._regime_switch_overrides(regime).items():
+            if hasattr(config_copy, field_name):
+                setattr(config_copy, field_name, value)
+        return config_copy
+
+    def _regime_label_for_idx(self, idx: int) -> str:
+        history = self._effective_regime_history(idx)
+        if not history:
+            return "flat"
+        try:
+            from scripts.regime_detector import detect_regime
+
+            thresholds = self._base_config.regime_switcher_thresholds
+            return detect_regime(history, thresholds)
+        except Exception:
+            return "flat"
+
+    def _apply_regime_switch_for_idx(self, idx: int) -> str:
+        if not self._base_config.enable_regime_switching:
+            self.config = self._base_config
+            return "static"
+        c4h_idx = self.mapping[idx]
+        cached = self._regime_switch_cache.get(c4h_idx)
+        if cached is None:
+            regime = self._regime_label_for_idx(idx)
+            cached = (regime, self._config_for_regime(regime))
+            self._regime_switch_cache[c4h_idx] = cached
+        self.config = cached[1]
+        return cached[0]
 
     def compute_metrics(self) -> dict[str, Any]:
         if not self.trades:

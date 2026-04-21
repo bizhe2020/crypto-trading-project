@@ -80,6 +80,11 @@ class ExecutorConfig:
     atr_tight_multiplier: float = 1.8
     atr_regime_filter: str = "all"
     disable_fixed_target_exit: bool = False
+    enable_regime_switching: bool = False
+    regime_switcher_thresholds: dict[str, Any] | None = None
+    regime_switcher_hg_overrides: dict[str, Any] | None = None
+    regime_switcher_normal_overrides: dict[str, Any] | None = None
+    regime_switcher_flat_overrides: dict[str, Any] | None = None
     ema_fast_period: int = 9
     ema_slow_period: int = 21
     volume_ma_period: int = 20
@@ -156,6 +161,11 @@ class ExecutorConfig:
             atr_tight_multiplier=self.atr_tight_multiplier,
             atr_regime_filter=self.atr_regime_filter,
             disable_fixed_target_exit=self.disable_fixed_target_exit,
+            enable_regime_switching=self.enable_regime_switching,
+            regime_switcher_thresholds=self.regime_switcher_thresholds,
+            regime_switcher_hg_overrides=self.regime_switcher_hg_overrides,
+            regime_switcher_normal_overrides=self.regime_switcher_normal_overrides,
+            regime_switcher_flat_overrides=self.regime_switcher_flat_overrides,
             taker_fee_rate=self.taker_fee_rate,
             slippage_bps=self.slippage_bps,
         )
