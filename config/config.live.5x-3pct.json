@@ -48,17 +48,7 @@
   "bear_weak_long_risk_per_trade": 0.02,
   "bear_weak_short_risk_per_trade": 0.015,
   "bear_strong_long_risk_per_trade": 0.015,
-  "bear_strong_short_risk_per_trade": 0.00001,
-  "allow_bear_strong_short": true,
-  "bear_strong_short_pullback_window": 10,
-  "bear_strong_short_sl_buffer_pct": 0.5,
-  "bear_strong_short_retrace_min_ob_fill_pct": 0.8,
-  "bear_strong_short_entry_min_ob_fill_pct": 0.55,
-  "bear_strong_short_rr_ratio_override": 2.5,
-  "bear_strong_short_trail_style_override": "tight",
-  "bear_strong_short_max_hold_bars": 96,
-  "bear_strong_short_atr_activation_rr": 1.5,
-  "bear_strong_short_atr_loose_multiplier": 1.5,
+  "bear_strong_short_risk_per_trade": 1e-05,
   "bear_weak_short_rr_ratio_override": 2.0,
   "bear_weak_short_trail_style_override": "tight",
   "disable_fixed_target_exit": false,
@@ -71,6 +61,24 @@
   "atr_loose_multiplier": 2.7,
   "atr_normal_multiplier": 2.25,
   "atr_tight_multiplier": 1.8,
+  "long_atr_loose_multiplier": null,
+  "long_atr_normal_multiplier": null,
+  "long_atr_tight_multiplier": null,
+  "short_atr_loose_multiplier": null,
+  "short_atr_normal_multiplier": null,
+  "short_atr_tight_multiplier": null,
+  "enable_exchange_brackets": true,
+  "exchange_trigger_price_type": "mark",
+  "allow_bear_strong_short": true,
+  "bear_strong_short_pullback_window": 10,
+  "bear_strong_short_sl_buffer_pct": 0.5,
+  "bear_strong_short_retrace_min_ob_fill_pct": 0.8,
+  "bear_strong_short_entry_min_ob_fill_pct": 0.55,
+  "bear_strong_short_rr_ratio_override": 2.5,
+  "bear_strong_short_trail_style_override": "tight",
+  "bear_strong_short_max_hold_bars": 96,
+  "bear_strong_short_atr_activation_rr": 1.5,
+  "bear_strong_short_atr_loose_multiplier": 1.5,
   "enable_regime_switching": true,
   "regime_switcher_thresholds": {
     "high_growth_score_min": 3,
@@ -97,22 +105,17 @@
   },
   "regime_switcher_hg_overrides": {
     "atr_loose_multiplier": 2.0,
-    "pullback_window": 40
+    "pullback_window": 40,
+    "allow_short": true
   },
   "regime_switcher_normal_overrides": {
     "atr_loose_multiplier": 2.8,
-    "pullback_window": 30
+    "pullback_window": 30,
+    "allow_short": false
   },
   "regime_switcher_flat_overrides": {
     "atr_loose_multiplier": 2.7,
-    "pullback_window": 40
-  },
-  "long_atr_loose_multiplier": null,
-  "long_atr_normal_multiplier": null,
-  "long_atr_tight_multiplier": null,
-  "short_atr_loose_multiplier": null,
-  "short_atr_normal_multiplier": null,
-  "short_atr_tight_multiplier": null,
-  "enable_exchange_brackets": true,
-  "exchange_trigger_price_type": "mark"
+    "pullback_window": 40,
+    "allow_short": false
+  }
 }
