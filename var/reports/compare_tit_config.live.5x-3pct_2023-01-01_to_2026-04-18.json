@@ -1,0 +1,144 @@
+{
+  "config": "/Users/laoji/projects/crypto-trading-project/ATR_timetrailing_researchv2/config/config.live.5x-3pct.json",
+  "date_range": {
+    "start": "2023-01-01",
+    "end": "2026-04-18"
+  },
+  "cases": {
+    "without_tit": {
+      "config": "/Users/laoji/projects/crypto-trading-project/ATR_timetrailing_researchv2/config/config.live.5x-3pct.json#without_tit",
+      "date_range": {
+        "start": "2023-01-01",
+        "end": "2026-04-18"
+      },
+      "data_points": {
+        "candles_15m": 115505,
+        "candles_4h": 9410
+      },
+      "overall": {
+        "initial_capital": 1000.0,
+        "final_capital": 52960.15,
+        "net_pnl": 51960.15,
+        "total_return_pct": 5196.02,
+        "sharpe_ratio": 2.798,
+        "max_drawdown_pct": 45.56,
+        "risk_adjusted_return": 114.054,
+        "total_trades": 334,
+        "winning_trades": 137,
+        "losing_trades": 197,
+        "win_rate": 41.02,
+        "profit_factor": 1.242,
+        "win_loss_ratio": 1.786,
+        "target_hit_rate": 3.89,
+        "gross_pnl_before_fees": 74281.28,
+        "total_fees_paid": 22321.13,
+        "total_slippage_cost": 22321.16,
+        "exit_reasons": {
+          "stop_loss": 321,
+          "target_rr": 13
+        }
+      },
+      "by_direction": {
+        "BULL": {
+          "trades": 314,
+          "pnl": 48749.89,
+          "return_pct": 4874.99,
+          "win_rate": 39.81,
+          "profit_factor": 1.227,
+          "avg_pnl": 155.25,
+          "avg_hold_hours": 31.67
+        },
+        "BEAR": {
+          "trades": 20,
+          "pnl": 3210.26,
+          "return_pct": 321.03,
+          "win_rate": 60.0,
+          "profit_factor": 191.113,
+          "avg_pnl": 160.51,
+          "avg_hold_hours": 31.12
+        }
+      }
+    },
+    "with_tit": {
+      "config": "/Users/laoji/projects/crypto-trading-project/ATR_timetrailing_researchv2/config/config.live.5x-3pct.json#with_tit",
+      "date_range": {
+        "start": "2023-01-01",
+        "end": "2026-04-18"
+      },
+      "data_points": {
+        "candles_15m": 115505,
+        "candles_4h": 9410
+      },
+      "overall": {
+        "initial_capital": 1000.0,
+        "final_capital": 5191.75,
+        "net_pnl": 4191.75,
+        "total_return_pct": 419.18,
+        "sharpe_ratio": 1.32,
+        "max_drawdown_pct": 50.36,
+        "risk_adjusted_return": 8.324,
+        "total_trades": 464,
+        "winning_trades": 208,
+        "losing_trades": 256,
+        "win_rate": 44.83,
+        "profit_factor": 1.131,
+        "win_loss_ratio": 1.392,
+        "target_hit_rate": 1.08,
+        "gross_pnl_before_fees": 8421.01,
+        "total_fees_paid": 4229.26,
+        "total_slippage_cost": 4229.26,
+        "exit_reasons": {
+          "time_stop_exit": 157,
+          "stop_loss": 302,
+          "target_rr": 5
+        }
+      },
+      "by_direction": {
+        "BULL": {
+          "trades": 444,
+          "pnl": 3812.58,
+          "return_pct": 381.26,
+          "win_rate": 43.92,
+          "profit_factor": 1.119,
+          "avg_pnl": 8.59,
+          "avg_hold_hours": 18.27
+        },
+        "BEAR": {
+          "trades": 20,
+          "pnl": 379.18,
+          "return_pct": 37.92,
+          "win_rate": 65.0,
+          "profit_factor": 17.191,
+          "avg_pnl": 18.96,
+          "avg_hold_hours": 22.48
+        }
+      }
+    }
+  },
+  "summary": {
+    "without_tit": {
+      "total_return_pct": 5196.02,
+      "total_trades": 334,
+      "win_rate": 41.02,
+      "sharpe_ratio": 2.798,
+      "win_loss_ratio": 1.786,
+      "max_drawdown_pct": 45.56
+    },
+    "with_tit": {
+      "total_return_pct": 419.18,
+      "total_trades": 464,
+      "win_rate": 44.83,
+      "sharpe_ratio": 1.32,
+      "win_loss_ratio": 1.392,
+      "max_drawdown_pct": 50.36
+    },
+    "delta_with_minus_without": {
+      "total_return_pct": -4776.84,
+      "win_rate": 3.81,
+      "sharpe_ratio": -1.478,
+      "win_loss_ratio": -0.394,
+      "max_drawdown_pct": 4.8,
+      "total_trades": 130
+    }
+  }
+}

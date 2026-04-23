@@ -95,15 +95,19 @@ def summarize_trade_bucket(trades: pd.DataFrame, initial_capital: float) -> dict
     return base
 
 
-def build_report(
-    config_path: Path,
+def load_config_payload(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text())
+
+
+def build_report_from_payload(
+    config_payload: dict[str, Any],
+    config_label: str,
     data_15m_path: Path,
     data_4h_path: Path,
     start: pd.Timestamp,
     end: pd.Timestamp,
 ) -> dict[str, Any]:
-    payload = json.loads(config_path.read_text())
-    config = ExecutorConfig.from_dict(payload).to_scalp_strategy_config()
+    config = ExecutorConfig.from_dict(config_payload).to_scalp_strategy_config()
 
     df15 = load_dataframe(data_15m_path, start=start, end=end)
     df4 = load_dataframe(data_4h_path, end=end)
@@ -131,7 +135,7 @@ def build_report(
         )
 
     return {
-        "config": str(config_path.resolve()),
+        "config": config_label,
         "date_range": {
             "start": start.strftime("%Y-%m-%d"),
             "end": end.strftime("%Y-%m-%d"),
@@ -162,6 +166,24 @@ def build_report(
         },
         "by_direction": by_direction,
     }
+
+
+def build_report(
+    config_path: Path,
+    data_15m_path: Path,
+    data_4h_path: Path,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> dict[str, Any]:
+    payload = load_config_payload(config_path)
+    return build_report_from_payload(
+        config_payload=payload,
+        config_label=str(config_path.resolve()),
+        data_15m_path=data_15m_path,
+        data_4h_path=data_4h_path,
+        start=start,
+        end=end,
+    )
 
 
 def output_path_for(output_dir: Path, config_path: Path, start: pd.Timestamp, end: pd.Timestamp) -> Path:
