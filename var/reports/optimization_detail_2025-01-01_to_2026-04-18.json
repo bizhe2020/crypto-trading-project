@@ -1,0 +1,236 @@
+{
+  "baseline_current": {
+    "name": "baseline_current",
+    "overrides": {},
+    "metrics": {
+      "total_return_pct": 50.983,
+      "sharpe_ratio": 1.567313,
+      "max_drawdown_pct": 36.3634,
+      "profit_factor": 1.165098,
+      "win_rate": 38.6364,
+      "total_trades": 88,
+      "final_capital": 1509.8299,
+      "total_fees_paid": 333.4185,
+      "total_slippage_cost": 333.4188,
+      "daily_sharpe_365": 0.822445,
+      "daily_volatility_pct_365": 58.28921,
+      "cagr_pct": 37.550042
+    },
+    "monthly_pnl": {
+      "2025-02": -17.61,
+      "2025-03": -27.26,
+      "2025-04": 74.61,
+      "2025-05": 278.43,
+      "2025-06": -97.17,
+      "2025-07": 44.06,
+      "2025-08": 222.58,
+      "2025-09": -71.98,
+      "2025-10": 143.41,
+      "2025-12": -0.0,
+      "2026-01": 93.31,
+      "2026-03": -245.04,
+      "2026-04": 112.49
+    },
+    "direction_breakdown": [
+      {
+        "direction": "BEAR",
+        "count": 10,
+        "sum": 16.138,
+        "mean": 1.6138
+      },
+      {
+        "direction": "BULL",
+        "count": 78,
+        "sum": 493.6919,
+        "mean": 6.3294
+      }
+    ],
+    "exit_reason_breakdown": [
+      {
+        "exit_reason": "stop_loss",
+        "count": 87,
+        "sum": 153.4141
+      },
+      {
+        "exit_reason": "target_rr",
+        "count": 1,
+        "sum": 356.4158
+      }
+    ],
+    "worst_drawdown_trade": {
+      "exit_time": "2026-04-12 01:30:00+00:00",
+      "pnl": -90.19,
+      "exit_reason": "stop_loss"
+    },
+    "best_month": [
+      "2025-05",
+      278.43
+    ],
+    "worst_month": [
+      "2026-03",
+      -245.04
+    ]
+  },
+  "best_sharpe": {
+    "name": "best_sharpe",
+    "overrides": {
+      "atr_activation_rr": 2.0,
+      "atr_normal_multiplier": 2.0,
+      "atr_tight_multiplier": 1.5,
+      "disable_fixed_target_exit": false,
+      "bull_strong_long_risk_per_trade": 0.08,
+      "bull_weak_long_risk_per_trade": 0.025,
+      "bear_weak_short_risk_per_trade": 0.015,
+      "bear_strong_short_risk_per_trade": 1e-05
+    },
+    "metrics": {
+      "total_return_pct": 58.3544,
+      "sharpe_ratio": 1.621889,
+      "max_drawdown_pct": 39.7597,
+      "profit_factor": 1.17053,
+      "win_rate": 36.9048,
+      "total_trades": 84,
+      "final_capital": 1583.5438,
+      "total_fees_paid": 354.64,
+      "total_slippage_cost": 354.6403,
+      "daily_sharpe_365": 0.829598,
+      "daily_volatility_pct_365": 70.423583,
+      "cagr_pct": 42.71864
+    },
+    "monthly_pnl": {
+      "2025-02": -17.61,
+      "2025-03": -27.26,
+      "2025-04": 62.22,
+      "2025-05": 256.25,
+      "2025-06": -133.42,
+      "2025-07": 57.64,
+      "2025-08": 288.99,
+      "2025-09": -85.15,
+      "2025-10": 119.93,
+      "2025-12": -0.0,
+      "2026-01": 222.03,
+      "2026-03": -280.39,
+      "2026-04": 120.33
+    },
+    "direction_breakdown": [
+      {
+        "direction": "BEAR",
+        "count": 10,
+        "sum": 16.1023,
+        "mean": 1.6102
+      },
+      {
+        "direction": "BULL",
+        "count": 74,
+        "sum": 567.4415,
+        "mean": 7.6681
+      }
+    ],
+    "exit_reason_breakdown": [
+      {
+        "exit_reason": "stop_loss",
+        "count": 83,
+        "sum": 136.1185
+      },
+      {
+        "exit_reason": "target_rr",
+        "count": 1,
+        "sum": 447.4253
+      }
+    ],
+    "worst_drawdown_trade": {
+      "exit_time": "2025-06-12 20:30:00+00:00",
+      "pnl": -102.94,
+      "exit_reason": "stop_loss"
+    },
+    "best_month": [
+      "2025-08",
+      288.99
+    ],
+    "worst_month": [
+      "2026-03",
+      -280.39
+    ]
+  },
+  "best_return": {
+    "name": "best_return",
+    "overrides": {
+      "atr_activation_rr": 2.0,
+      "atr_normal_multiplier": 2.0,
+      "atr_tight_multiplier": 1.5,
+      "disable_fixed_target_exit": false,
+      "bull_strong_long_risk_per_trade": 0.08,
+      "bull_weak_long_risk_per_trade": 0.025,
+      "bear_weak_short_risk_per_trade": 0.015,
+      "bear_strong_short_risk_per_trade": 0.0
+    },
+    "metrics": {
+      "total_return_pct": 58.3545,
+      "sharpe_ratio": 1.56635,
+      "max_drawdown_pct": 39.7597,
+      "profit_factor": 1.170537,
+      "win_rate": 32.2222,
+      "total_trades": 90,
+      "final_capital": 1583.545,
+      "total_fees_paid": 354.6272,
+      "total_slippage_cost": 354.6275,
+      "daily_sharpe_365": 0.829599,
+      "daily_volatility_pct_365": 70.423582,
+      "cagr_pct": 42.718719
+    },
+    "monthly_pnl": {
+      "2025-02": -17.63,
+      "2025-03": -27.26,
+      "2025-04": 62.22,
+      "2025-05": 256.24,
+      "2025-06": -133.42,
+      "2025-07": 57.64,
+      "2025-08": 288.98,
+      "2025-09": -85.13,
+      "2025-10": 119.93,
+      "2025-12": 0.0,
+      "2026-01": 222.03,
+      "2026-03": -280.37,
+      "2026-04": 120.33
+    },
+    "direction_breakdown": [
+      {
+        "direction": "BEAR",
+        "count": 16,
+        "sum": 16.1182,
+        "mean": 1.0074
+      },
+      {
+        "direction": "BULL",
+        "count": 74,
+        "sum": 567.4268,
+        "mean": 7.6679
+      }
+    ],
+    "exit_reason_breakdown": [
+      {
+        "exit_reason": "stop_loss",
+        "count": 89,
+        "sum": 136.1305
+      },
+      {
+        "exit_reason": "target_rr",
+        "count": 1,
+        "sum": 447.4144
+      }
+    ],
+    "worst_drawdown_trade": {
+      "exit_time": "2025-06-12 20:30:00+00:00",
+      "pnl": -102.94,
+      "exit_reason": "stop_loss"
+    },
+    "best_month": [
+      "2025-08",
+      288.98
+    ],
+    "worst_month": [
+      "2026-03",
+      -280.37
+    ]
+  }
+}

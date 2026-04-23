@@ -97,18 +97,15 @@
   },
   "regime_switcher_hg_overrides": {
     "atr_loose_multiplier": 2.0,
-    "pullback_window": 40,
-    "allow_short": true
+    "pullback_window": 40
   },
   "regime_switcher_normal_overrides": {
     "atr_loose_multiplier": 2.8,
-    "pullback_window": 30,
-    "allow_short": false
+    "pullback_window": 30
   },
   "regime_switcher_flat_overrides": {
     "atr_loose_multiplier": 2.7,
-    "pullback_window": 40,
-    "allow_short": false
+    "pullback_window": 40
   },
   "long_atr_loose_multiplier": null,
   "long_atr_normal_multiplier": null,
