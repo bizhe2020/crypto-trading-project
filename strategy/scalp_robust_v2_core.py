@@ -116,6 +116,10 @@ class StrategyConfig:
     atr_loose_multiplier: float = 2.7
     atr_normal_multiplier: float = 2.25
     atr_tight_multiplier: float = 1.8
+    enable_time_based_trailing: bool = False
+    time_based_decay_bars: int = 20
+    time_based_decay_target_rr_pct: float = 0.5
+    time_based_loose_multiplier_floor: float = 1.5
     atr_regime_filter: str = "all"
     disable_fixed_target_exit: bool = False
     enable_regime_switching: bool = False
@@ -733,11 +737,15 @@ class ScalpRobustEngine:
                             )
                         )
 
+            time_update = self._apply_time_based_trailing_bull(pos, curr, idx)
+            if time_update:
+                actions.append(time_update)
             update = self._apply_trailing_bull(pos, curr, idx)
+            if update:
+                actions.append(update)
             atr_update = self._apply_atr_trailing_bull(pos, curr, idx)
-            final_update = atr_update or update
-            if final_update:
-                actions.append(final_update)
+            if atr_update:
+                actions.append(atr_update)
             if (
                 self.position
                 and not self._fixed_target_exit_disabled()
@@ -796,11 +804,15 @@ class ScalpRobustEngine:
                             )
                         )
 
+            time_update = self._apply_time_based_trailing_bear(pos, curr, idx)
+            if time_update:
+                actions.append(time_update)
             update = self._apply_trailing_bear(pos, curr, idx)
+            if update:
+                actions.append(update)
             atr_update = self._apply_atr_trailing_bear(pos, curr, idx)
-            final_update = atr_update or update
-            if final_update:
-                actions.append(final_update)
+            if atr_update:
+                actions.append(atr_update)
             if (
                 self.position
                 and not self._fixed_target_exit_disabled()
@@ -959,12 +971,39 @@ class ScalpRobustEngine:
         lowest_price = min(candle.l for candle in window)
         return highest_price, lowest_price
 
+    def _bars_held(self, pos: PositionState, idx: int) -> int:
+        return max(0, idx - pos.entry_idx)
+
+    def _time_decay_progress(self, pos: PositionState, idx: int) -> float:
+        if not self.config.enable_time_based_trailing:
+            return 0.0
+        decay_bars = max(int(self.config.time_based_decay_bars or 0), 1)
+        return min(self._bars_held(pos, idx) / decay_bars, 1.0)
+
+    def _max_favorable_rr(self, pos: PositionState, idx: int) -> float:
+        highest_price, lowest_price = self._price_extrema_since_entry(pos, idx)
+        favorable_price = highest_price if pos.direction == Direction.BULL else lowest_price
+        return self._unrealized_rr(pos, favorable_price)
+
+    def _breakeven_stop(self, pos: PositionState) -> float:
+        return pos.entry_price
+
     def _atr_multiplier_for_style(self, trail_style: str) -> float:
         if trail_style == "loose":
             return self.config.atr_loose_multiplier
         if trail_style == "tight":
             return self.config.atr_tight_multiplier
         return self.config.atr_normal_multiplier
+
+    def _effective_atr_multiplier(self, pos: PositionState, idx: int) -> float:
+        base_multiplier = self._atr_multiplier_for_style(pos.trail_style)
+        if not self.config.enable_time_based_trailing or pos.trail_style != "loose":
+            return base_multiplier
+        floor = float(self.config.time_based_loose_multiplier_floor)
+        if floor >= base_multiplier:
+            return base_multiplier
+        progress = self._time_decay_progress(pos, idx)
+        return base_multiplier - ((base_multiplier - floor) * progress)
 
     def _atr_trailing_enabled_for_position(self, pos: PositionState) -> bool:
         if not self.config.enable_atr_trailing:
@@ -981,6 +1020,63 @@ class ScalpRobustEngine:
             return entry_regime != "bear_weak"
         raise ValueError(f"Unsupported ATR regime filter: {regime_filter}")
 
+    def _should_force_breakeven(self, pos: PositionState, idx: int) -> tuple[bool, float, float]:
+        if not self.config.enable_time_based_trailing:
+            return False, 0.0, 0.0
+        bars_held = self._bars_held(pos, idx)
+        decay_bars = max(int(self.config.time_based_decay_bars or 0), 1)
+        if bars_held < decay_bars:
+            return False, 0.0, 0.0
+        required_rr = max(float(pos.target_rr) * float(self.config.time_based_decay_target_rr_pct), 0.0)
+        max_favorable_rr = self._max_favorable_rr(pos, idx)
+        return max_favorable_rr < required_rr, max_favorable_rr, required_rr
+
+    def _apply_time_based_trailing_bull(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
+        should_tighten, max_favorable_rr, required_rr = self._should_force_breakeven(pos, idx)
+        if not should_tighten:
+            return None
+        breakeven_stop = self._breakeven_stop(pos)
+        if breakeven_stop <= pos.sl_price:
+            return None
+        pos.sl_price = breakeven_stop
+        return StrategyAction(
+            type=ActionType.UPDATE_STOP,
+            timestamp=self._timestamp_for_idx(idx),
+            direction=pos.direction,
+            stop_price=breakeven_stop,
+            reason="time_breakeven",
+            metadata={
+                "index": idx,
+                "bars_held": self._bars_held(pos, idx),
+                "max_favorable_rr": max_favorable_rr,
+                "required_rr": required_rr,
+                "target_rr": pos.target_rr,
+            },
+        )
+
+    def _apply_time_based_trailing_bear(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
+        should_tighten, max_favorable_rr, required_rr = self._should_force_breakeven(pos, idx)
+        if not should_tighten:
+            return None
+        breakeven_stop = self._breakeven_stop(pos)
+        if breakeven_stop >= pos.sl_price:
+            return None
+        pos.sl_price = breakeven_stop
+        return StrategyAction(
+            type=ActionType.UPDATE_STOP,
+            timestamp=self._timestamp_for_idx(idx),
+            direction=pos.direction,
+            stop_price=breakeven_stop,
+            reason="time_breakeven",
+            metadata={
+                "index": idx,
+                "bars_held": self._bars_held(pos, idx),
+                "max_favorable_rr": max_favorable_rr,
+                "required_rr": required_rr,
+                "target_rr": pos.target_rr,
+            },
+        )
+
     def _apply_atr_trailing_bull(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
         if not self._atr_trailing_enabled_for_position(pos):
             return None
@@ -990,7 +1086,8 @@ class ScalpRobustEngine:
         if atr <= 0:
             return None
         highest_price, _ = self._price_extrema_since_entry(pos, idx)
-        new_stop = highest_price - self._atr_multiplier_for_style(pos.trail_style) * atr
+        atr_multiplier = self._effective_atr_multiplier(pos, idx)
+        new_stop = highest_price - atr_multiplier * atr
         if new_stop <= pos.sl_price:
             return None
         pos.sl_price = new_stop
@@ -1000,7 +1097,13 @@ class ScalpRobustEngine:
             direction=pos.direction,
             stop_price=new_stop,
             reason="atr_trail",
-            metadata={"index": idx, "atr": atr, "highest_price": highest_price},
+            metadata={
+                "index": idx,
+                "atr": atr,
+                "highest_price": highest_price,
+                "atr_multiplier": atr_multiplier,
+                "bars_held": self._bars_held(pos, idx),
+            },
         )
 
     def _apply_atr_trailing_bear(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
@@ -1012,7 +1115,8 @@ class ScalpRobustEngine:
         if atr <= 0:
             return None
         _, lowest_price = self._price_extrema_since_entry(pos, idx)
-        new_stop = lowest_price + self._atr_multiplier_for_style(pos.trail_style) * atr
+        atr_multiplier = self._effective_atr_multiplier(pos, idx)
+        new_stop = lowest_price + atr_multiplier * atr
         if new_stop >= pos.sl_price:
             return None
         pos.sl_price = new_stop
@@ -1022,7 +1126,13 @@ class ScalpRobustEngine:
             direction=pos.direction,
             stop_price=new_stop,
             reason="atr_trail",
-            metadata={"index": idx, "atr": atr, "lowest_price": lowest_price},
+            metadata={
+                "index": idx,
+                "atr": atr,
+                "lowest_price": lowest_price,
+                "atr_multiplier": atr_multiplier,
+                "bars_held": self._bars_held(pos, idx),
+            },
         )
 
     def run_backtest(self, start_date: str = "2023-01-01") -> dict[str, Any]:
@@ -1257,6 +1367,10 @@ class ScalpRobustEngine:
                 "atr_loose_multiplier": self.config.atr_loose_multiplier,
                 "atr_normal_multiplier": self.config.atr_normal_multiplier,
                 "atr_tight_multiplier": self.config.atr_tight_multiplier,
+                "enable_time_based_trailing": self.config.enable_time_based_trailing,
+                "time_based_decay_bars": self.config.time_based_decay_bars,
+                "time_based_decay_target_rr_pct": self.config.time_based_decay_target_rr_pct,
+                "time_based_loose_multiplier_floor": self.config.time_based_loose_multiplier_floor,
                 "atr_regime_filter": self.config.atr_regime_filter,
                 "disable_fixed_target_exit": self.config.disable_fixed_target_exit,
                 "taker_fee_rate": self.config.taker_fee_rate,

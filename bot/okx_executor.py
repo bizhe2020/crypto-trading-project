@@ -78,6 +78,10 @@ class ExecutorConfig:
     atr_loose_multiplier: float = 2.7
     atr_normal_multiplier: float = 2.25
     atr_tight_multiplier: float = 1.8
+    enable_time_based_trailing: bool = False
+    time_based_decay_bars: int = 20
+    time_based_decay_target_rr_pct: float = 0.5
+    time_based_loose_multiplier_floor: float = 1.5
     atr_regime_filter: str = "all"
     disable_fixed_target_exit: bool = False
     enable_regime_switching: bool = False
@@ -159,6 +163,10 @@ class ExecutorConfig:
             atr_loose_multiplier=self.atr_loose_multiplier,
             atr_normal_multiplier=self.atr_normal_multiplier,
             atr_tight_multiplier=self.atr_tight_multiplier,
+            enable_time_based_trailing=self.enable_time_based_trailing,
+            time_based_decay_bars=self.time_based_decay_bars,
+            time_based_decay_target_rr_pct=self.time_based_decay_target_rr_pct,
+            time_based_loose_multiplier_floor=self.time_based_loose_multiplier_floor,
             atr_regime_filter=self.atr_regime_filter,
             disable_fixed_target_exit=self.disable_fixed_target_exit,
             enable_regime_switching=self.enable_regime_switching,
