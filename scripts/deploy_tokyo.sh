@@ -37,6 +37,6 @@ sshpass -e ssh \
   -o PreferredAuthentications=password \
   -o PubkeyAuthentication=no \
   "$REMOTE_USER@$REMOTE_HOST" \
-  "cd '$REMOTE_DIR' && zsh scripts/bootstrap_server.sh && systemctl restart crypto-trading-bot-5x3pct.service"
+  "cd '$REMOTE_DIR' && bash scripts/bootstrap_server.sh && systemctl restart crypto-trading-bot-5x3pct.service"
 
 echo "deploy_complete host=$REMOTE_HOST dir=$REMOTE_DIR"
