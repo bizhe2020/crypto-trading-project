@@ -1,17 +1,17 @@
 [Unit]
-Description=Crypto Trading Bot 5x 3pct
+Description=Crypto Trading Bot High Leverage Structure
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/root/projects/crypto-trading-project
-ExecStart=/root/projects/crypto-trading-project/.venv/bin/python /root/projects/crypto-trading-project/bot/run_bot.py --config /root/projects/crypto-trading-project/config/config.live.5x-3pct.json --run-loop
+ExecStart=/root/projects/crypto-trading-project/.venv/bin/python /root/projects/crypto-trading-project/bot/run_bot.py --config /root/projects/crypto-trading-project/config/config.live.high-leverage-structure.json --run-loop
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
-StandardOutput=append:/root/projects/crypto-trading-project/live_bot_5x3pct.log
-StandardError=append:/root/projects/crypto-trading-project/live_bot_5x3pct.log
+StandardOutput=append:/root/projects/crypto-trading-project/live_bot_high_leverage_structure.log
+StandardError=append:/root/projects/crypto-trading-project/live_bot_high_leverage_structure.log
 
 [Install]
 WantedBy=multi-user.target
