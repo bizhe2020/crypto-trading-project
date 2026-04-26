@@ -57,6 +57,12 @@ class Trade:
     rr_ratio: float
     exit_reason: str
     capital_at_entry: float
+    entry_idx: int | None = None
+    trail_style: str | None = None
+    risk_regime: str | None = None
+    regime_label: str | None = None
+    time_based_trailing_enabled: bool = False
+    auto_tit_reason: str | None = None
 
 
 @dataclass
@@ -124,6 +130,25 @@ class StrategyConfig:
     S1_trigger_rr: float = 1.0
     S3_trigger_rr: float = 3.0
     S4_close_rr: float = 0.5
+    enable_auto_time_based_trailing: bool = False
+    auto_tit_mode: str = "health"
+    auto_tit_drawdown_pct: float = 12.0
+    auto_tit_recent_trades: int = 6
+    auto_tit_min_completed_trades: int = 3
+    auto_tit_recent_rr_threshold: float = -1.0
+    auto_tit_loss_streak: int = 3
+    auto_tit_entry_regimes: list[str] | None = None
+    auto_tit_regime_labels: list[str] | None = None
+    auto_tit_trail_styles: list[str] | None = None
+    auto_tit_directions: list[str] | None = None
+    auto_tit_adx_min: float | None = None
+    auto_tit_adx_max: float | None = None
+    auto_tit_momentum_min: float | None = None
+    auto_tit_momentum_max: float | None = None
+    auto_tit_atr_ratio_min: float | None = None
+    auto_tit_atr_ratio_max: float | None = None
+    auto_tit_ema_gap_min: float | None = None
+    auto_tit_ema_gap_max: float | None = None
     atr_regime_filter: str = "all"
     disable_fixed_target_exit: bool = False
     enable_regime_switching: bool = False
@@ -170,6 +195,10 @@ class PositionState:
     trail_style: str
     stage: int = -1
     tit_stage: int = 0
+    time_based_trailing_enabled: bool = False
+    auto_tit_reason: str | None = None
+    risk_regime: str | None = None
+    regime_label: str | None = None
     exchange_order_id: str | None = None
     exchange_attach_algo_id: str | None = None
     exchange_attach_algo_client_id: str | None = None
@@ -523,6 +552,7 @@ class ScalpRobustEngine:
         self.position: PositionState | None = None
         self.exit_reasons: dict[str, int] = {}
         self._regime_switch_cache: dict[int, tuple[str, StrategyConfig]] = {}
+        self._regime_feature_cache: dict[int, dict[str, Any]] = {}
         band_config = self.config.price_band_trailing_config or PriceBandTrailingConfig()
         self.price_band_overlay = PriceBandTrailingOverlay(band_config)
         funding_config = self.config.funding_oi_trailing_config or FundingOIOverlayConfig()
@@ -571,6 +601,13 @@ class ScalpRobustEngine:
         filled_entry_price = self._apply_entry_slippage(entry_price, direction)
         position_size_pct = self._position_size_pct_for_idx(idx)
         entry_regime_score, target_rr, max_hold_bars, trail_style = self._exit_template_for_idx(idx, direction)
+        regime_label = self._regime_switch_label_for_idx(idx)
+        tit_enabled, auto_tit_reason = self._time_based_trailing_for_entry(
+            idx=idx,
+            direction=direction,
+            trail_style=trail_style,
+            risk_regime=risk_regime,
+        )
         filled_target_price = self._target_price_from_rr(filled_entry_price, sl_price, direction, target_rr)
         max_notional = (
             float(self.config.fixed_notional_usdt)
@@ -606,6 +643,10 @@ class ScalpRobustEngine:
             target_rr=target_rr,
             max_hold_bars=max_hold_bars,
             trail_style=trail_style,
+            time_based_trailing_enabled=tit_enabled,
+            auto_tit_reason=auto_tit_reason,
+            risk_regime=risk_regime,
+            regime_label=regime_label,
         )
         return StrategyAction(
             type=ActionType.OPEN_LONG if direction == Direction.BULL else ActionType.OPEN_SHORT,
@@ -633,6 +674,9 @@ class ScalpRobustEngine:
                 "risk_regime": risk_regime,
                 "entry_fee": entry_fee,
                 "entry_slippage_cost": entry_slippage_cost,
+                "time_based_trailing_enabled": tit_enabled,
+                "auto_tit_reason": auto_tit_reason,
+                "regime_label": regime_label,
             },
         )
 
@@ -669,6 +713,12 @@ class ScalpRobustEngine:
                 rr_ratio=rr_ratio,
                 exit_reason=reason,
                 capital_at_entry=pos.capital_at_entry,
+                entry_idx=pos.entry_idx,
+                trail_style=pos.trail_style,
+                risk_regime=pos.risk_regime,
+                regime_label=pos.regime_label,
+                time_based_trailing_enabled=pos.time_based_trailing_enabled,
+                auto_tit_reason=pos.auto_tit_reason,
             )
         )
         self.capital += pnl
@@ -1010,10 +1060,150 @@ class ScalpRobustEngine:
             return self.config.atr_tight_multiplier
         return self.config.atr_normal_multiplier
 
+    def _configured_set(self, values: list[str] | str | None) -> set[str] | None:
+        if values is None:
+            return None
+        if isinstance(values, str):
+            return {item.strip() for item in values.split(",") if item.strip()}
+        return {str(item) for item in values}
+
+    def _current_drawdown_pct(self) -> float:
+        peak = self.config.initial_capital
+        running_capital = self.config.initial_capital
+        for trade in self.trades:
+            running_capital += trade.pnl
+            peak = max(peak, running_capital)
+        if peak <= 0:
+            return 0.0
+        return max(0.0, (peak - self.capital) / peak * 100.0)
+
+    def _recent_rr_sum(self, window: int) -> float:
+        if window <= 0:
+            return 0.0
+        return sum(trade.rr_ratio for trade in self.trades[-window:])
+
+    def _current_loss_streak(self) -> int:
+        streak = 0
+        for trade in reversed(self.trades):
+            if trade.pnl > 0:
+                break
+            streak += 1
+        return streak
+
+    def _regime_switch_label_for_idx(self, idx: int) -> str:
+        if not self._base_config.enable_regime_switching:
+            return "static"
+        c4h_idx = self.mapping[idx]
+        cached = self._regime_switch_cache.get(c4h_idx)
+        if cached is not None:
+            return cached[0]
+        return self._regime_label_for_idx(idx)
+
+    def _auto_tit_feature_filters_ok(self, idx: int) -> bool:
+        feature_bounds = {
+            "adx": (self.config.auto_tit_adx_min, self.config.auto_tit_adx_max),
+            "momentum": (self.config.auto_tit_momentum_min, self.config.auto_tit_momentum_max),
+            "atr_ratio": (self.config.auto_tit_atr_ratio_min, self.config.auto_tit_atr_ratio_max),
+            "ema_gap": (self.config.auto_tit_ema_gap_min, self.config.auto_tit_ema_gap_max),
+        }
+        if all(min_value is None and max_value is None for min_value, max_value in feature_bounds.values()):
+            return True
+
+        c4h_idx = self.mapping[idx]
+        features = self._regime_feature_cache.get(c4h_idx)
+        if features is None:
+            history = self._effective_regime_history(idx)
+            if not history:
+                return False
+            try:
+                from scripts.regime_detector import compute_regime_features
+
+                features = compute_regime_features(history, self._base_config.regime_switcher_thresholds)
+            except Exception:
+                features = {}
+            self._regime_feature_cache[c4h_idx] = features
+        if not features:
+            return False
+
+        for key, (min_value, max_value) in feature_bounds.items():
+            value = float(features.get(key, 0.0))
+            if min_value is not None and value < float(min_value):
+                return False
+            if max_value is not None and value > float(max_value):
+                return False
+        return True
+
+    def _time_based_trailing_for_entry(
+        self,
+        idx: int,
+        direction: str,
+        trail_style: str,
+        risk_regime: str,
+    ) -> tuple[bool, str | None]:
+        if self.config.enable_time_based_trailing:
+            return True, "fixed"
+        if not self.config.enable_auto_time_based_trailing:
+            return False, None
+
+        allowed_directions = self._configured_set(self.config.auto_tit_directions)
+        if allowed_directions is not None and direction not in allowed_directions:
+            return False, None
+        allowed_styles = self._configured_set(self.config.auto_tit_trail_styles)
+        if allowed_styles is not None and trail_style not in allowed_styles:
+            return False, None
+        allowed_entry_regimes = self._configured_set(self.config.auto_tit_entry_regimes)
+        if allowed_entry_regimes is not None and risk_regime not in allowed_entry_regimes:
+            return False, None
+        regime_label = self._regime_switch_label_for_idx(idx)
+        allowed_regime_labels = self._configured_set(self.config.auto_tit_regime_labels)
+        if allowed_regime_labels is not None and regime_label not in allowed_regime_labels:
+            return False, None
+        if not self._auto_tit_feature_filters_ok(idx):
+            return False, None
+
+        mode = (self.config.auto_tit_mode or "health").strip().lower()
+        if mode == "always":
+            return True, f"auto_always:{regime_label}"
+        if len(self.trades) < max(0, int(self.config.auto_tit_min_completed_trades)):
+            return False, None
+
+        drawdown_pct = self._current_drawdown_pct()
+        recent_window = max(1, int(self.config.auto_tit_recent_trades or 1))
+        recent_rr = self._recent_rr_sum(recent_window)
+        loss_streak = self._current_loss_streak()
+        drawdown_hit = drawdown_pct >= float(self.config.auto_tit_drawdown_pct)
+        recent_hit = recent_rr <= float(self.config.auto_tit_recent_rr_threshold)
+        streak_hit = loss_streak >= max(1, int(self.config.auto_tit_loss_streak or 1))
+
+        if mode == "drawdown":
+            if drawdown_hit:
+                return True, f"auto_drawdown:{drawdown_pct:.2f}"
+            return False, None
+        if mode == "recent_loss":
+            if recent_hit:
+                return True, f"auto_recent_rr:{recent_rr:.2f}"
+            return False, None
+        if mode == "loss_streak":
+            if streak_hit:
+                return True, f"auto_loss_streak:{loss_streak}"
+            return False, None
+        if mode == "health":
+            if drawdown_hit:
+                return True, f"auto_drawdown:{drawdown_pct:.2f}"
+            if recent_hit:
+                return True, f"auto_recent_rr:{recent_rr:.2f}"
+            if streak_hit:
+                return True, f"auto_loss_streak:{loss_streak}"
+            return False, None
+        raise ValueError(f"Unsupported auto TIT mode: {self.config.auto_tit_mode}")
+
+    def _time_based_trailing_enabled_for_position(self, pos: PositionState) -> bool:
+        return bool(self.config.enable_time_based_trailing or pos.time_based_trailing_enabled)
+
     def _time_based_trailing_state(self, pos: PositionState, curr: Candle, idx: int) -> TimeBasedTrailingState:
         bars_held = self._bars_held(pos, idx)
         unrealized_rr = self._unrealized_rr(pos, curr.c)
-        if not self.config.enable_time_based_trailing:
+        if not self._time_based_trailing_enabled_for_position(pos):
             return TimeBasedTrailingState(
                 stage=-1,
                 label="disabled",
@@ -1093,7 +1283,7 @@ class ScalpRobustEngine:
             return None
         highest_price, _ = self._price_extrema_since_entry(pos, idx)
         atr_multiplier = self._atr_multiplier_for_style(pos.trail_style)
-        if self.config.enable_time_based_trailing:
+        if self._time_based_trailing_enabled_for_position(pos):
             time_state = self._time_based_trailing_state(pos, curr, idx)
             if time_state.atr_multiplier is None:
                 return None
@@ -1127,7 +1317,7 @@ class ScalpRobustEngine:
             return None
         _, lowest_price = self._price_extrema_since_entry(pos, idx)
         atr_multiplier = self._atr_multiplier_for_style(pos.trail_style)
-        if self.config.enable_time_based_trailing:
+        if self._time_based_trailing_enabled_for_position(pos):
             time_state = self._time_based_trailing_state(pos, curr, idx)
             if time_state.atr_multiplier is None:
                 return None
@@ -1391,6 +1581,25 @@ class ScalpRobustEngine:
                 "S1_trigger_rr": self.config.S1_trigger_rr,
                 "S3_trigger_rr": self.config.S3_trigger_rr,
                 "S4_close_rr": self.config.S4_close_rr,
+                "enable_auto_time_based_trailing": self.config.enable_auto_time_based_trailing,
+                "auto_tit_mode": self.config.auto_tit_mode,
+                "auto_tit_drawdown_pct": self.config.auto_tit_drawdown_pct,
+                "auto_tit_recent_trades": self.config.auto_tit_recent_trades,
+                "auto_tit_min_completed_trades": self.config.auto_tit_min_completed_trades,
+                "auto_tit_recent_rr_threshold": self.config.auto_tit_recent_rr_threshold,
+                "auto_tit_loss_streak": self.config.auto_tit_loss_streak,
+                "auto_tit_entry_regimes": self.config.auto_tit_entry_regimes,
+                "auto_tit_regime_labels": self.config.auto_tit_regime_labels,
+                "auto_tit_trail_styles": self.config.auto_tit_trail_styles,
+                "auto_tit_directions": self.config.auto_tit_directions,
+                "auto_tit_adx_min": self.config.auto_tit_adx_min,
+                "auto_tit_adx_max": self.config.auto_tit_adx_max,
+                "auto_tit_momentum_min": self.config.auto_tit_momentum_min,
+                "auto_tit_momentum_max": self.config.auto_tit_momentum_max,
+                "auto_tit_atr_ratio_min": self.config.auto_tit_atr_ratio_min,
+                "auto_tit_atr_ratio_max": self.config.auto_tit_atr_ratio_max,
+                "auto_tit_ema_gap_min": self.config.auto_tit_ema_gap_min,
+                "auto_tit_ema_gap_max": self.config.auto_tit_ema_gap_max,
                 "atr_regime_filter": self.config.atr_regime_filter,
                 "disable_fixed_target_exit": self.config.disable_fixed_target_exit,
                 "taker_fee_rate": self.config.taker_fee_rate,

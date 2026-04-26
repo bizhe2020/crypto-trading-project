@@ -1,51 +1,56 @@
-# Crypto Trading Project
+# AutoTIT Research Baseline
 
-当前仓库是东京服务器 OKX bot 的主部署仓库，只保留实盘 bot、策略和部署脚本。
+This branch keeps the reproducible `0bd614e` TIT baseline and adds `autoTIT`, a gated time-indexed trailing mode for the scalp strategy.
 
-## Main Layout
+## Current Live Rule
 
-- `bot`: 实盘执行层，包含 `run_bot.py`、OKX client、执行引擎、状态存储。
-- `strategy`: 当前 bot 使用的策略与回测核心。
-- `config`: 当前 live 配置和模板。
-- `systemd`: 服务器上的 systemd service 文件。
-- `data`: 本地/服务器共享的数据缓存目录，使用 `feather` 存储 OHLCV。
-- `scripts`: 服务器 bootstrap 和东京服务器部署脚本。
-- `state`: SQLite 运行态目录，占位保留，实际数据库不提交。
-- `var`: Funding/OI 录制日志与产物目录，占位保留。
+`config/config.live.5x-3pct.json` keeps fixed TIT disabled and enables autoTIT only for a narrow set of entries:
 
-## Notes
+- `enable_time_based_trailing = false`
+- `enable_auto_time_based_trailing = true`
+- `T1 = 10`
+- `T2 = 20`
+- `T_max = 144`
+- `S0_trigger_rr = 0.5`
+- `S1_trigger_rr = 0.8`
+- `S3_trigger_rr = 3.0`
+- `S4_close_rr = 0.8`
+- `auto_tit_mode = "loss_streak"`
+- `auto_tit_loss_streak = 1`
+- `auto_tit_regime_labels = ["high_growth"]`
+- `auto_tit_trail_styles = ["loose"]`
+- `auto_tit_atr_ratio_max = 1.1`
 
-- `feather` 只是当前 bot 和回测共用的行情缓存格式，不代表 freqtrade 策略体系。
-- 东京服务器当前仍有旧的 `deployment/` 路径习惯；`scripts/bootstrap_server.sh` 会自动补兼容软链并安装新的 flat service。
-- 运行态文件不会进入 git：
-  - `state/*.db`
-  - `data/*`
-  - `var/funding_oi/recorded/*`
-  - `var/log/*`
-  - `live_bot*.log`
+The position decides whether TIT is active at entry time and stores that decision on the position state. This avoids changing exit rules mid-trade.
 
-## Common Commands
+## Backtest Results
 
-启动一次 bootstrap：
+Data window: `2022-01-01` to `2026-04-18`.
+
+| Case | Return | Sharpe | MaxDD | Trades |
+|---|---:|---:|---:|---:|
+| Baseline without TIT | `4616.04%` | `2.445` | `45.56%` | `397` |
+| Fixed best TIT | `733.80%` | `1.470` | `54.17%` | `505` |
+| Optimized autoTIT | `6924.62%` | `2.598` | `45.56%` | `407` |
+
+Data window: `2026-01-01` to `2026-04-18`.
+
+| Case | Return | Sharpe | MaxDD | Trades |
+|---|---:|---:|---:|---:|
+| Baseline without TIT | `-2.73%` | `0.193` | `36.36%` | `27` |
+| Optimized autoTIT | `6.24%` | `1.053` | `30.49%` | `27` |
+
+## Reproduction
+
+Run the current live config:
 
 ```bash
-python3 bot/run_bot.py --config config/config.example.json
+python3 scripts/backtest_config_report.py --config config/config.live.5x-3pct.json --start-date 2022-01-01 --end-date 2026-04-18
+python3 scripts/backtest_config_report.py --config config/config.live.5x-3pct.json --start-date 2026-01-01 --end-date 2026-04-18
 ```
 
-运行循环：
+Run syntax checks:
 
 ```bash
-python3 bot/run_bot.py --config config/config.live.5x-3pct.json --run-loop
-```
-
-服务器一键初始化：
-
-```bash
-zsh scripts/bootstrap_server.sh
-```
-
-从本机一键部署到东京服务器：
-
-```bash
-TOKYO_PASS='your-password' zsh scripts/deploy_tokyo.sh
+python3 -m py_compile strategy/scalp_robust_v2_core.py bot/okx_executor.py scripts/backtest_config_report.py
 ```
