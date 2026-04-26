@@ -10,12 +10,10 @@ data/*
 !data/.gitkeep
 state/*
 !state/.gitkeep
-var/funding_oi/recorded/*
-!var/funding_oi/recorded/.gitkeep
 var/log/*
 !var/log/.gitkeep
 var/run/
-var/orderbook/
+var/live_readiness/
 
 # Local live trading configs with real exchange credentials
 freqtrade_data/config-live-*-final.json

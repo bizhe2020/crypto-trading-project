@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import math
-from bisect import bisect_right
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -11,9 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-
-from strategy.funding_oi_trailing import FundingOIOverlay, FundingOIOverlayConfig, FundingOISnapshot
-from strategy.price_band_trailing import PriceBandTrailingConfig, PriceBandTrailingOverlay
 
 
 class Direction:
@@ -110,12 +106,7 @@ class StrategyConfig:
     bull_weak_long_trail_style_override: str | None = None
     bear_weak_short_rr_ratio_override: float | None = None
     bear_weak_short_trail_style_override: str | None = None
-    enable_price_band_trailing: bool = False
-    price_band_trailing_config: PriceBandTrailingConfig | None = None
     disable_fixed_target: bool = False
-    enable_funding_oi_trailing: bool = False
-    funding_oi_trailing_config: FundingOIOverlayConfig | None = None
-    funding_oi_snapshots: list[FundingOISnapshot] | None = None
     enable_atr_trailing: bool = False
     atr_period: int = 14
     atr_activation_rr: float = 2.0
@@ -553,14 +544,6 @@ class ScalpRobustEngine:
         self.exit_reasons: dict[str, int] = {}
         self._regime_switch_cache: dict[int, tuple[str, StrategyConfig]] = {}
         self._regime_feature_cache: dict[int, dict[str, Any]] = {}
-        band_config = self.config.price_band_trailing_config or PriceBandTrailingConfig()
-        self.price_band_overlay = PriceBandTrailingOverlay(band_config)
-        funding_config = self.config.funding_oi_trailing_config or FundingOIOverlayConfig()
-        self.funding_oi_overlay = FundingOIOverlay(funding_config)
-        funding_snapshots = self.config.funding_oi_snapshots or []
-        funding_snapshots = sorted(funding_snapshots, key=lambda item: item.timestamp_ms)
-        self._funding_oi_snapshots = funding_snapshots
-        self._funding_oi_timestamps = [item.timestamp_ms for item in funding_snapshots]
         self._atr_15m = self._compute_atr_series(self.config.atr_period)
 
     @classmethod
@@ -758,52 +741,6 @@ class ScalpRobustEngine:
                 actions.append(self.close_position(idx, "stop_loss", pos.sl_price))
                 return actions
 
-            if self.config.enable_funding_oi_trailing:
-                funding_snapshot = self._funding_oi_snapshot_for_idx(idx)
-                if funding_snapshot is not None:
-                    funding_decision = self.funding_oi_overlay.evaluate(funding_snapshot, pos)
-                    if funding_decision.action == "exit":
-                        actions.append(
-                            self.close_position(
-                                idx,
-                                funding_decision.reason or "funding_oi_exit",
-                                funding_decision.exit_price,
-                            )
-                        )
-                        return actions
-                    if funding_decision.action == "tighten" and funding_decision.stop_price is not None:
-                        if funding_decision.stop_price > pos.sl_price:
-                            pos.sl_price = funding_decision.stop_price
-                            actions.append(
-                                StrategyAction(
-                                    type=ActionType.UPDATE_STOP,
-                                    timestamp=self._timestamp_for_idx(idx),
-                                    direction=pos.direction,
-                                    stop_price=funding_decision.stop_price,
-                                    reason=funding_decision.reason or "funding_oi_tighten",
-                                    metadata=funding_decision.metrics or {},
-                                )
-                            )
-
-            if self.config.enable_price_band_trailing:
-                band_decision = self.price_band_overlay.evaluate(curr, pos)
-                if band_decision.action == "exit":
-                    actions.append(self.close_position(idx, band_decision.reason or "band_exit", band_decision.exit_price))
-                    return actions
-                if band_decision.action == "tighten" and band_decision.stop_price is not None:
-                    if band_decision.stop_price > pos.sl_price:
-                        pos.sl_price = band_decision.stop_price
-                        actions.append(
-                            StrategyAction(
-                                type=ActionType.UPDATE_STOP,
-                                timestamp=self._timestamp_for_idx(idx),
-                                direction=pos.direction,
-                                stop_price=band_decision.stop_price,
-                                reason=band_decision.reason or "band_tighten",
-                                metadata=band_decision.metrics or {},
-                                )
-                            )
-
             if time_state.should_force_exit:
                 actions.append(
                     self.close_position(
@@ -830,52 +767,6 @@ class ScalpRobustEngine:
             if curr.h >= pos.sl_price:
                 actions.append(self.close_position(idx, "stop_loss", pos.sl_price))
                 return actions
-
-            if self.config.enable_funding_oi_trailing:
-                funding_snapshot = self._funding_oi_snapshot_for_idx(idx)
-                if funding_snapshot is not None:
-                    funding_decision = self.funding_oi_overlay.evaluate(funding_snapshot, pos)
-                    if funding_decision.action == "exit":
-                        actions.append(
-                            self.close_position(
-                                idx,
-                                funding_decision.reason or "funding_oi_exit",
-                                funding_decision.exit_price,
-                            )
-                        )
-                        return actions
-                    if funding_decision.action == "tighten" and funding_decision.stop_price is not None:
-                        if funding_decision.stop_price < pos.sl_price:
-                            pos.sl_price = funding_decision.stop_price
-                            actions.append(
-                                StrategyAction(
-                                    type=ActionType.UPDATE_STOP,
-                                    timestamp=self._timestamp_for_idx(idx),
-                                    direction=pos.direction,
-                                    stop_price=funding_decision.stop_price,
-                                    reason=funding_decision.reason or "funding_oi_tighten",
-                                    metadata=funding_decision.metrics or {},
-                                )
-                            )
-
-            if self.config.enable_price_band_trailing:
-                band_decision = self.price_band_overlay.evaluate(curr, pos)
-                if band_decision.action == "exit":
-                    actions.append(self.close_position(idx, band_decision.reason or "band_exit", band_decision.exit_price))
-                    return actions
-                if band_decision.action == "tighten" and band_decision.stop_price is not None:
-                    if band_decision.stop_price < pos.sl_price:
-                        pos.sl_price = band_decision.stop_price
-                        actions.append(
-                            StrategyAction(
-                                type=ActionType.UPDATE_STOP,
-                                timestamp=self._timestamp_for_idx(idx),
-                                direction=pos.direction,
-                                stop_price=band_decision.stop_price,
-                                reason=band_decision.reason or "band_tighten",
-                                metadata=band_decision.metrics or {},
-                                )
-                            )
 
             if time_state.should_force_exit:
                 actions.append(
@@ -997,15 +888,6 @@ class ScalpRobustEngine:
 
     def _fixed_target_exit_disabled(self) -> bool:
         return bool(self.config.disable_fixed_target or self.config.disable_fixed_target_exit)
-
-    def _funding_oi_snapshot_for_idx(self, idx: int) -> FundingOISnapshot | None:
-        if not self._funding_oi_timestamps:
-            return None
-        timestamp_ms = int(self.c15m[idx].ts * 1000)
-        pos = bisect_right(self._funding_oi_timestamps, timestamp_ms) - 1
-        if pos < 0:
-            return None
-        return self._funding_oi_snapshots[pos]
 
     def _compute_atr_series(self, period: int) -> list[float]:
         if not self.c15m:
@@ -1564,9 +1446,7 @@ class ScalpRobustEngine:
                 "loose_target_rr_cap": self.config.loose_target_rr_cap,
                 "normal_target_rr_cap": self.config.normal_target_rr_cap,
                 "tight_target_rr_cap": self.config.tight_target_rr_cap,
-                "enable_price_band_trailing": self.config.enable_price_band_trailing,
                 "disable_fixed_target": self.config.disable_fixed_target,
-                "enable_funding_oi_trailing": self.config.enable_funding_oi_trailing,
                 "enable_atr_trailing": self.config.enable_atr_trailing,
                 "atr_period": self.config.atr_period,
                 "atr_activation_rr": self.config.atr_activation_rr,

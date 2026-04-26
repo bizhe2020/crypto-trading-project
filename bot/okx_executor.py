@@ -12,7 +12,6 @@ from typing import Any
 from bot.market_data import OhlcvRepository
 from bot.okx_client import OkxClient, OkxCredentials
 from bot.state_store import StateStore
-from strategy.ema_cross_volume_core import EmaCrossVolumeConfig, EmaCrossVolumeEngine
 from strategy.scalp_robust_v2_core import (
     ActionType,
     ScalpRobustEngine,
@@ -107,15 +106,16 @@ class ExecutorConfig:
     auto_tit_ema_gap_max: float | None = None
     atr_regime_filter: str = "all"
     disable_fixed_target_exit: bool = False
+    enable_shadow_risk_gate: bool = False
+    shadow_daily_loss_stop_pct: float = 0.0
+    shadow_equity_drawdown_stop_pct: float = 0.0
+    shadow_equity_drawdown_cooldown_days: int = 0
+    shadow_consecutive_loss_stop: int = 0
     enable_regime_switching: bool = False
     regime_switcher_thresholds: dict[str, Any] | None = None
     regime_switcher_hg_overrides: dict[str, Any] | None = None
     regime_switcher_normal_overrides: dict[str, Any] | None = None
     regime_switcher_flat_overrides: dict[str, Any] | None = None
-    ema_fast_period: int = 9
-    ema_slow_period: int = 21
-    volume_ma_period: int = 20
-    volume_multiplier: float = 1.2
     taker_fee_rate: float = 0.0005
     slippage_bps: float = 2.0
     enable_exchange_brackets: bool = False
@@ -223,23 +223,6 @@ class ExecutorConfig:
             taker_fee_rate=self.taker_fee_rate,
             slippage_bps=self.slippage_bps,
         )
-
-    def to_ema_strategy_config(self) -> EmaCrossVolumeConfig:
-        return EmaCrossVolumeConfig(
-            leverage=float(self.leverage),
-            risk_per_trade=self.risk_per_trade,
-            position_size_pct=self.position_size_pct,
-            fixed_notional_usdt=self.fixed_notional_usdt,
-            allow_long=self.allow_long,
-            allow_short=self.allow_short,
-            ema_fast_period=getattr(self, "ema_fast_period", 9),
-            ema_slow_period=getattr(self, "ema_slow_period", 21),
-            volume_ma_period=getattr(self, "volume_ma_period", 20),
-            volume_multiplier=getattr(self, "volume_multiplier", 1.2),
-            taker_fee_rate=self.taker_fee_rate,
-            slippage_bps=self.slippage_bps,
-        )
-
 
 class OkxExecutionEngine:
     def __init__(self, config: ExecutorConfig):
@@ -358,16 +341,8 @@ class OkxExecutionEngine:
         if not primary_candles:
             raise ValueError("No market data loaded for executor")
 
-        if self.config.strategy_type == "ema_cross_volume":
-            engine = EmaCrossVolumeEngine.from_candles(
-                primary_candles,
-                informative_candles,
-                self.config.to_ema_strategy_config(),
-            )
-            engine.restore_snapshot(self.store.load_snapshot())
-            start_idx = max(self.config.ema_slow_period, self.config.volume_ma_period) + 1
-            start_idx = max(start_idx, self._find_resume_index(primary_candles))
-            return engine, start_idx
+        if self.config.strategy_type != "scalp_robust_v2":
+            raise ValueError(f"Unsupported strategy_type: {self.config.strategy_type}")
 
         if not informative_candles:
             raise ValueError("No informative market data loaded for scalp executor")
@@ -483,6 +458,9 @@ class OkxExecutionEngine:
         self.record_action(action)
         if action.type == ActionType.HOLD:
             return {"status": "ignored", "reason": "hold"}
+        shadow_decision = self._shadow_gate_pre_execute(action, engine)
+        if shadow_decision is not None:
+            return shadow_decision
         if action.type == ActionType.UPDATE_STOP:
             if self.config.mode != "live" or not self.config.enable_exchange_brackets:
                 return {"status": "recorded_only", "action": action.type.value, "stop_price": action.stop_price}
@@ -493,6 +471,10 @@ class OkxExecutionEngine:
             return sizing
 
         if self.config.mode == "paper":
+            if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+                self._shadow_gate_mark_real_position(True, action, "paper_open_accepted")
+            if action.type == ActionType.CLOSE_POSITION:
+                self._shadow_gate_after_close(action, engine)
             return {
                 "status": "paper_recorded",
                 "action": action.type.value,
@@ -523,6 +505,7 @@ class OkxExecutionEngine:
             direction = "做多" if action.type == ActionType.OPEN_LONG else "做空"
             self._apply_open_execution_metadata(engine, order, observed, attach_algo_client_id)
             if observed["contracts"] <= 0:
+                self._shadow_gate_mark_real_position(False, action, "open_unconfirmed")
                 self._send_telegram(
                     "\n".join(
                         [
@@ -537,6 +520,7 @@ class OkxExecutionEngine:
                     )
                 )
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
+            self._shadow_gate_mark_real_position(True, action, "open_confirmed")
             self._send_telegram(
                 "\n".join(
                     [
@@ -583,6 +567,7 @@ class OkxExecutionEngine:
                     )
                 )
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
+            self._shadow_gate_after_close(action, engine)
             self._send_telegram(
                 "\n".join(
                     [
@@ -600,6 +585,234 @@ class OkxExecutionEngine:
             return {"status": "submitted", "order": order, "observed_position": observed, **sizing}
 
         return {"status": "recorded_only", "action": action.type.value}
+
+    def _shadow_gate_enabled(self) -> bool:
+        return (
+            bool(self.config.enable_shadow_risk_gate)
+            and (
+                self.config.shadow_daily_loss_stop_pct > 0
+                or self.config.shadow_equity_drawdown_stop_pct > 0
+                or self.config.shadow_consecutive_loss_stop > 0
+            )
+        )
+
+    def _shadow_gate_default_state(self, engine: Any | None = None) -> dict[str, Any]:
+        capital = float(getattr(engine, "capital", 0.0) or 0.0) if engine is not None else 0.0
+        return {
+            "mode": "shadow_risk_gate",
+            "capital": capital,
+            "drawdown_peak": capital,
+            "pause_until_ts": 0.0,
+            "real_position_open": False,
+            "real_position_direction": None,
+            "paper_entry_time": None,
+            "day_start_capital": {},
+            "day_pnl": {},
+            "loss_streak": 0,
+            "events": [],
+        }
+
+    def _load_shadow_gate_state(self, engine: Any | None = None) -> dict[str, Any]:
+        raw = self.store.get_value("shadow_risk_gate_state")
+        if not raw:
+            return self._shadow_gate_default_state(engine)
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._shadow_gate_default_state(engine)
+        default = self._shadow_gate_default_state(engine)
+        default.update(state if isinstance(state, dict) else {})
+        if default["capital"] <= 0 and engine is not None:
+            default["capital"] = float(getattr(engine, "capital", 0.0) or 0.0)
+        if default["drawdown_peak"] <= 0:
+            default["drawdown_peak"] = default["capital"]
+        return default
+
+    def _save_shadow_gate_state(self, state: dict[str, Any]) -> None:
+        self.store.set_value("shadow_risk_gate_state", json.dumps(state, ensure_ascii=False))
+
+    def _action_timestamp(self, action: StrategyAction) -> datetime:
+        value = action.timestamp
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _shadow_next_utc_day_ts(self, dt: datetime) -> float:
+        day_start = datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
+        return (day_start + timedelta(days=1)).timestamp()
+
+    def _shadow_cooldown_until_ts(self, dt: datetime, days: int) -> float:
+        day_start = datetime(dt.year, dt.month, dt.day, tzinfo=timezone.utc)
+        return (day_start + timedelta(days=max(1, int(days)))).timestamp()
+
+    def _shadow_format_ts(self, ts: float) -> str:
+        if ts <= 0:
+            return ""
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+    def _shadow_append_event(self, state: dict[str, Any], event: dict[str, Any]) -> None:
+        events = state.get("events")
+        if not isinstance(events, list):
+            events = []
+        events.append(event)
+        state["events"] = events[-500:]
+
+    def _shadow_gate_mark_real_position(self, mirrored: bool, action: StrategyAction, reason: str) -> None:
+        if not self._shadow_gate_enabled():
+            return
+        state = self._load_shadow_gate_state()
+        state["real_position_open"] = bool(mirrored)
+        state["real_position_direction"] = action.direction if mirrored else None
+        state["paper_entry_time"] = action.timestamp
+        self._shadow_append_event(
+            state,
+            {
+                "time": action.timestamp,
+                "event": "mirror_open" if mirrored else "mirror_open_failed",
+                "reason": reason,
+                "direction": action.direction,
+            },
+        )
+        self._save_shadow_gate_state(state)
+
+    def _shadow_gate_pre_execute(self, action: StrategyAction, engine: Any) -> dict[str, Any] | None:
+        if not self._shadow_gate_enabled():
+            return None
+
+        state = self._load_shadow_gate_state(engine)
+        if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+            action_ts = self._action_timestamp(action).timestamp()
+            pause_until_ts = float(state.get("pause_until_ts", 0.0) or 0.0)
+            if action_ts < pause_until_ts:
+                state["real_position_open"] = False
+                state["real_position_direction"] = None
+                state["paper_entry_time"] = action.timestamp
+                self._shadow_append_event(
+                    state,
+                    {
+                        "time": action.timestamp,
+                        "event": "skip_open",
+                        "direction": action.direction,
+                        "pause_until": self._shadow_format_ts(pause_until_ts),
+                    },
+                )
+                self._save_shadow_gate_state(state)
+                return {
+                    "status": "shadow_gate_skipped_open",
+                    "action": action.type.value,
+                    "direction": action.direction,
+                    "pause_until": self._shadow_format_ts(pause_until_ts),
+                }
+            return None
+
+        if action.type == ActionType.UPDATE_STOP and not bool(state.get("real_position_open")):
+            return {"status": "shadow_gate_skipped_update_stop", "action": action.type.value}
+
+        if action.type == ActionType.CLOSE_POSITION and not bool(state.get("real_position_open")):
+            self._shadow_append_event(
+                state,
+                {
+                    "time": action.timestamp,
+                    "event": "skip_close",
+                    "direction": action.direction,
+                    "reason": action.reason,
+                },
+            )
+            state["real_position_direction"] = None
+            state["paper_entry_time"] = None
+            self._save_shadow_gate_state(state)
+            return {
+                "status": "shadow_gate_skipped_close",
+                "action": action.type.value,
+                "direction": action.direction,
+                "reason": "paper_position_not_mirrored",
+            }
+
+        return None
+
+    def _shadow_gate_after_close(self, action: StrategyAction, engine: Any) -> None:
+        if not self._shadow_gate_enabled():
+            return
+        state = self._load_shadow_gate_state(engine)
+        metadata = action.metadata or {}
+        pnl = float(metadata.get("net_pnl", 0.0) or 0.0)
+        capital_before = float(state.get("capital", 0.0) or 0.0)
+        if capital_before <= 0:
+            capital_before = float(getattr(engine, "capital", 0.0) or 0.0) - pnl
+        capital = capital_before + pnl
+        state["capital"] = capital
+        state["drawdown_peak"] = max(float(state.get("drawdown_peak", capital) or capital), capital)
+        action_dt = self._action_timestamp(action)
+        day_key = action_dt.strftime("%Y-%m-%d")
+        day_start_capital = state.get("day_start_capital")
+        day_pnl = state.get("day_pnl")
+        if not isinstance(day_start_capital, dict):
+            day_start_capital = {}
+        if not isinstance(day_pnl, dict):
+            day_pnl = {}
+        if day_key not in day_start_capital:
+            day_start_capital[day_key] = capital_before
+            day_pnl[day_key] = 0.0
+        day_pnl[day_key] = float(day_pnl.get(day_key, 0.0) or 0.0) + pnl
+        state["day_start_capital"] = day_start_capital
+        state["day_pnl"] = day_pnl
+
+        if pnl > 0:
+            state["loss_streak"] = 0
+        else:
+            state["loss_streak"] = int(state.get("loss_streak", 0) or 0) + 1
+
+        triggered: list[str] = []
+        daily_stop = float(self.config.shadow_daily_loss_stop_pct or 0.0)
+        start_capital = float(day_start_capital[day_key])
+        if daily_stop > 0 and start_capital > 0:
+            daily_loss_pct = -float(day_pnl[day_key]) / start_capital * 100.0
+            if daily_loss_pct >= daily_stop:
+                triggered.append(f"daily_loss:{daily_loss_pct:.2f}")
+                state["pause_until_ts"] = max(
+                    float(state.get("pause_until_ts", 0.0) or 0.0),
+                    self._shadow_next_utc_day_ts(action_dt),
+                )
+
+        streak_stop = int(self.config.shadow_consecutive_loss_stop or 0)
+        if streak_stop > 0 and int(state.get("loss_streak", 0) or 0) >= streak_stop:
+            triggered.append(f"consecutive_loss:{state['loss_streak']}")
+            state["pause_until_ts"] = max(
+                float(state.get("pause_until_ts", 0.0) or 0.0),
+                self._shadow_next_utc_day_ts(action_dt),
+            )
+            state["loss_streak"] = 0
+
+        dd_stop = float(self.config.shadow_equity_drawdown_stop_pct or 0.0)
+        peak = float(state.get("drawdown_peak", capital) or capital)
+        if dd_stop > 0 and peak > 0:
+            drawdown_pct = (peak - capital) / peak * 100.0
+            if drawdown_pct >= dd_stop:
+                triggered.append(f"equity_drawdown:{drawdown_pct:.2f}")
+                state["pause_until_ts"] = max(
+                    float(state.get("pause_until_ts", 0.0) or 0.0),
+                    self._shadow_cooldown_until_ts(action_dt, int(self.config.shadow_equity_drawdown_cooldown_days or 0)),
+                )
+                state["drawdown_peak"] = capital
+                state["loss_streak"] = 0
+
+        state["real_position_open"] = False
+        state["real_position_direction"] = None
+        state["paper_entry_time"] = None
+        self._shadow_append_event(
+            state,
+            {
+                "time": action.timestamp,
+                "event": "mirror_close",
+                "direction": action.direction,
+                "pnl": pnl,
+                "capital": capital,
+                "triggers": triggered,
+                "pause_until": self._shadow_format_ts(float(state.get("pause_until_ts", 0.0) or 0.0)),
+            },
+        )
+        self._save_shadow_gate_state(state)
 
     def _resolve_order_sizing(self, action: StrategyAction, engine: Any) -> dict[str, Any]:
         candles = self._engine_candles(engine)
@@ -1464,6 +1677,16 @@ class OkxExecutionEngine:
         long_state = self._fetch_position_state("long")
         short_state = self._fetch_position_state("short")
         exchange_has_position = long_state["contracts"] > 0 or short_state["contracts"] > 0
+        if self._shadow_gate_enabled():
+            gate_state = self._load_shadow_gate_state(engine)
+            mirrored = bool(gate_state.get("real_position_open"))
+            if local_has_position and not mirrored and not exchange_has_position:
+                return
+            if local_has_position and not mirrored and exchange_has_position:
+                raise ValueError(
+                    f"Live state mismatch ({context}): shadow position is not mirrored, "
+                    "but exchange still has an open position"
+                )
         if local_has_position != exchange_has_position:
             if self.config.enable_manual_position_sync and local_has_position and not exchange_has_position:
                 self._sync_manual_flat_position(engine, context=context)
@@ -1553,8 +1776,6 @@ class OkxExecutionEngine:
         raise ValueError(f"Unsupported engine type for candle access: {type(engine).__name__}")
 
     def _minimum_start_index(self) -> int:
-        if self.config.strategy_type == "ema_cross_volume":
-            return max(self.config.ema_slow_period, self.config.volume_ma_period) + 1
         return 100
 
     def _timeframe_seconds(self) -> int:

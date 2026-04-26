@@ -18,8 +18,7 @@ link_if_possible() {
 mkdir -p \
   "$ROOT_DIR/state" \
   "$ROOT_DIR/data/okx/futures" \
-  "$ROOT_DIR/var/log" \
-  "$ROOT_DIR/var/funding_oi/recorded"
+  "$ROOT_DIR/var/log"
 
 if [[ ! -d "$VENV_DIR" ]]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
