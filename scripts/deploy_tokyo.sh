@@ -16,7 +16,8 @@ if ! command -v sshpass >/dev/null 2>&1; then
   exit 1
 fi
 
-RSYNC_RSH="sshpass -p $TOKYO_PASS ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no"
+export SSHPASS="$TOKYO_PASS"
+RSYNC_RSH="sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no"
 
 rsync -az \
   --exclude '.git/' \
@@ -30,7 +31,7 @@ rsync -az \
   -e "$RSYNC_RSH" \
   "$ROOT_DIR/" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/"
 
-sshpass -p "$TOKYO_PASS" ssh \
+sshpass -e ssh \
   -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null \
   -o PreferredAuthentications=password \
