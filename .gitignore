@@ -4,6 +4,7 @@
 __pycache__/
 *.py[cod]
 .ipynb_checkpoints/
+.mindfs/
 
 user_data/
 data/*
@@ -14,6 +15,8 @@ var/log/*
 !var/log/.gitkeep
 var/run/
 var/live_readiness/
+var/high_leverage_expansion/
+var/high_leverage_scan/
 
 # Local live trading configs with real exchange credentials
 freqtrade_data/config-live-*-final.json
@@ -21,6 +24,7 @@ freqtrade_data/config-live-*.local.json
 config/config.live*.json
 !config/config.live.5x-3pct.json
 !config/config.live.5x-3pct.template.json
+!config/config.live.high-leverage-structure.template.json
 config/*.bak*
 live_bot*.log
 backup/

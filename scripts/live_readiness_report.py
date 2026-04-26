@@ -294,6 +294,8 @@ def trade_dataframe(engine: ScalpRobustEngine) -> pd.DataFrame:
     df = pd.DataFrame([trade.__dict__ for trade in engine.trades])
     if df.empty:
         return df
+    if "initial_stop_price" not in df.columns:
+        df["initial_stop_price"] = None
     df["entry_time"] = pd.to_datetime(df["entry_time"], utc=True)
     df["exit_time"] = pd.to_datetime(df["exit_time"], utc=True)
     df["hold_hours"] = (df["exit_time"] - df["entry_time"]).dt.total_seconds() / 3600.0
@@ -349,6 +351,169 @@ def max_drawdown_from_capitals(capitals: list[float], initial_capital: float) ->
         if peak > 0:
             max_drawdown = max(max_drawdown, (peak - capital) / peak * 100.0)
     return max_drawdown
+
+
+def _high_leverage_trade_diagnostics(
+    trade: pd.Series,
+    capital: float,
+    leverage: float,
+    maintenance_margin_pct: float,
+) -> dict[str, Any]:
+    entry_price = float(trade.get("entry_price", 0.0) or 0.0)
+    stop_price = float(trade.get("initial_stop_price", 0.0) or 0.0)
+    direction = str(trade.get("direction", ""))
+    recorded_notional = trade.get("notional", 0.0)
+    notional = abs(float(recorded_notional or 0.0))
+    if notional <= 0:
+        notional = abs(float(trade.get("quantity", 0.0) or 0.0) * entry_price)
+    stop_distance_pct = (
+        abs(entry_price - stop_price) / entry_price * 100.0
+        if entry_price > 0 and stop_price > 0
+        else 0.0
+    )
+    maintenance = max(maintenance_margin_pct, 0.0) / 100.0
+    liquidation_price = 0.0
+    liquidation_buffer_pct = 0.0
+    if entry_price > 0 and leverage > 0:
+        if direction == "BULL":
+            liquidation_price = entry_price * (1.0 - (1.0 / leverage) + maintenance)
+            liquidation_buffer_pct = (stop_price - liquidation_price) / entry_price * 100.0
+        elif direction == "BEAR":
+            liquidation_price = entry_price * (1.0 + (1.0 / leverage) - maintenance)
+            liquidation_buffer_pct = (liquidation_price - stop_price) / entry_price * 100.0
+    account_effective_leverage = notional / capital if capital > 0 else 0.0
+    return {
+        "entry_time": str(trade.get("entry_time")),
+        "direction": direction,
+        "entry_price": round(entry_price, 6),
+        "initial_stop_price": round(stop_price, 6),
+        "estimated_liquidation_price": round(liquidation_price, 6),
+        "stop_distance_pct": round(stop_distance_pct, 6),
+        "liquidation_buffer_pct": round(liquidation_buffer_pct, 6),
+        "account_effective_leverage": round(account_effective_leverage, 6),
+        "notional": round(notional, 6),
+        "capital": round(capital, 6),
+    }
+
+
+def _high_leverage_failures(
+    diagnostics: dict[str, Any],
+    min_liquidation_buffer_pct: float,
+    max_stop_distance_pct: float,
+    max_account_effective_leverage: float,
+) -> list[str]:
+    failures: list[str] = []
+    if diagnostics["entry_price"] <= 0 or diagnostics["initial_stop_price"] <= 0:
+        failures.append("missing_entry_or_stop")
+    if min_liquidation_buffer_pct > 0 and diagnostics["liquidation_buffer_pct"] < min_liquidation_buffer_pct:
+        failures.append("liquidation_buffer_too_small")
+    if max_stop_distance_pct > 0 and diagnostics["stop_distance_pct"] > max_stop_distance_pct:
+        failures.append("stop_distance_too_wide")
+    if max_account_effective_leverage > 0 and diagnostics["account_effective_leverage"] > max_account_effective_leverage:
+        failures.append("account_effective_leverage_too_high")
+    return failures
+
+
+def high_leverage_guard_overlay(
+    trades: pd.DataFrame,
+    initial_capital: float,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    leverage = float(payload.get("leverage", 0.0) or 0.0)
+    enabled = bool(payload.get("enable_high_leverage_guard", False))
+    guard_min_leverage = float(payload.get("high_leverage_guard_min_leverage", 10.0) or 10.0)
+    min_liquidation_buffer_pct = float(payload.get("high_leverage_min_liquidation_buffer_pct", 0.0) or 0.0)
+    max_stop_distance_pct = float(payload.get("high_leverage_max_stop_distance_pct", 0.0) or 0.0)
+    max_account_effective_leverage = float(payload.get("high_leverage_max_account_effective_leverage", 0.0) or 0.0)
+    maintenance_margin_pct = float(payload.get("high_leverage_maintenance_margin_pct", 0.0) or 0.0)
+    overlay = {
+        "mode": "high_leverage_guard_overlay",
+        "enabled": enabled and leverage >= guard_min_leverage,
+        "configured_leverage": leverage,
+        "guard_min_leverage": guard_min_leverage,
+        "min_liquidation_buffer_pct": min_liquidation_buffer_pct,
+        "max_stop_distance_pct": max_stop_distance_pct,
+        "max_account_effective_leverage": max_account_effective_leverage,
+        "maintenance_margin_pct": maintenance_margin_pct,
+        "total_return_pct": 0.0,
+        "final_capital": round(initial_capital, 2),
+        "sharpe_ratio": 0.0,
+        "max_drawdown_pct": 0.0,
+        "accepted_trades": 0,
+        "skipped_trades": 0,
+        "failure_counts": {},
+        "worst_liquidation_buffer_pct": None,
+        "widest_stop_distance_pct": None,
+        "max_account_effective_leverage_seen": None,
+        "first_skipped_trade": None,
+    }
+    if trades.empty:
+        return overlay
+    if not overlay["enabled"]:
+        overlay["note"] = "High leverage guard is disabled for this config/leverage."
+        return overlay
+
+    ordered = trades.sort_values("entry_time").reset_index(drop=True)
+    capital = initial_capital
+    capitals: list[float] = []
+    returns: list[float] = []
+    failure_counts: dict[str, int] = {}
+    first_skipped_trade: dict[str, Any] | None = None
+    accepted = 0
+    skipped = 0
+    buffers: list[float] = []
+    stop_distances: list[float] = []
+    effective_leverages: list[float] = []
+
+    for _, trade in ordered.iterrows():
+        diagnostics = _high_leverage_trade_diagnostics(
+            trade,
+            capital=capital,
+            leverage=leverage,
+            maintenance_margin_pct=maintenance_margin_pct,
+        )
+        buffers.append(float(diagnostics["liquidation_buffer_pct"]))
+        stop_distances.append(float(diagnostics["stop_distance_pct"]))
+        effective_leverages.append(float(diagnostics["account_effective_leverage"]))
+        failures = _high_leverage_failures(
+            diagnostics,
+            min_liquidation_buffer_pct=min_liquidation_buffer_pct,
+            max_stop_distance_pct=max_stop_distance_pct,
+            max_account_effective_leverage=max_account_effective_leverage,
+        )
+        if failures:
+            skipped += 1
+            for failure in failures:
+                failure_counts[failure] = failure_counts.get(failure, 0) + 1
+            if first_skipped_trade is None:
+                first_skipped_trade = {
+                    "failures": failures,
+                    "diagnostics": diagnostics,
+                }
+            continue
+
+        trade_return = float(trade["pnl_pct"])
+        capital += capital * trade_return
+        accepted += 1
+        returns.append(trade_return)
+        capitals.append(capital)
+
+    overlay.update(
+        {
+            "total_return_pct": round((capital - initial_capital) / initial_capital * 100.0, 2),
+            "final_capital": round(capital, 2),
+            "sharpe_ratio": round(trade_return_sharpe(returns), 3),
+            "max_drawdown_pct": round(max_drawdown_from_capitals(capitals, initial_capital), 2),
+            "accepted_trades": accepted,
+            "skipped_trades": skipped,
+            "failure_counts": failure_counts,
+            "worst_liquidation_buffer_pct": round(min(buffers), 6) if buffers else None,
+            "widest_stop_distance_pct": round(max(stop_distances), 6) if stop_distances else None,
+            "max_account_effective_leverage_seen": round(max(effective_leverages), 6) if effective_leverages else None,
+            "first_skipped_trade": first_skipped_trade,
+        }
+    )
+    return overlay
 
 
 def shadow_risk_gate_overlay(
@@ -479,6 +644,15 @@ def run_case(
     compact["shadow_risk_gate_overlay"] = shadow_risk_gate_overlay(
         trades=trades,
         initial_capital=float(metrics.get("initial_capital", 1000.0)),
+        daily_loss_stop_pct=float(payload.get("shadow_daily_loss_stop_pct", 6.0) or 0.0),
+        equity_drawdown_stop_pct=float(payload.get("shadow_equity_drawdown_stop_pct", 20.0) or 0.0),
+        consecutive_loss_stop=int(payload.get("shadow_consecutive_loss_stop", 4) or 0),
+        equity_drawdown_cooldown_days=int(payload.get("shadow_equity_drawdown_cooldown_days", 7) or 0),
+    )
+    compact["high_leverage_guard_overlay"] = high_leverage_guard_overlay(
+        trades=trades,
+        initial_capital=float(metrics.get("initial_capital", 1000.0)),
+        payload=payload,
     )
     compact["monthly"] = monthly_summary(trades, float(metrics.get("initial_capital", 1000.0)))
     compact["name"] = name
@@ -558,6 +732,20 @@ def build_report(
             "Re-run this report after every data refresh or strategy/config change.",
         ],
     }
+    high_leverage_guard = {
+        "enabled": bool(base_payload.get("enable_high_leverage_guard", False)),
+        "configured_leverage": float(base_payload.get("leverage", 0.0) or 0.0),
+        "guard_min_leverage": float(base_payload.get("high_leverage_guard_min_leverage", 10.0) or 10.0),
+        "min_liquidation_buffer_pct": float(base_payload.get("high_leverage_min_liquidation_buffer_pct", 0.0) or 0.0),
+        "max_stop_distance_pct": float(base_payload.get("high_leverage_max_stop_distance_pct", 0.0) or 0.0),
+        "max_account_effective_leverage": float(base_payload.get("high_leverage_max_account_effective_leverage", 0.0) or 0.0),
+        "maintenance_margin_pct": float(base_payload.get("high_leverage_maintenance_margin_pct", 0.0) or 0.0),
+        "notes": [
+            "This guard is enforced in the execution layer before real/paper mirroring of open orders.",
+            "Liquidation price is an approximation; exchange-calculated liquidation remains authoritative.",
+            "Keep shadow_risk_gate enabled when the high leverage guard can skip opens, so local paper state can diverge safely from real execution.",
+        ],
+    }
 
     return {
         "config": str(config_path.resolve()),
@@ -582,6 +770,7 @@ def build_report(
         },
         "cases": case_results,
         "yearly": years,
+        "high_leverage_guard": high_leverage_guard,
         "recommendations": recommendations,
     }
 
