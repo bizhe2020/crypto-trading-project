@@ -102,7 +102,7 @@
   "auto_tit_atr_ratio_max": 1.1,
   "auto_tit_ema_gap_min": null,
   "auto_tit_ema_gap_max": null,
-  "enable_shadow_risk_gate": false,
+  "enable_shadow_risk_gate": true,
   "shadow_daily_loss_stop_pct": 6.0,
   "shadow_equity_drawdown_stop_pct": 21.0,
   "shadow_equity_drawdown_cooldown_days": 6,
