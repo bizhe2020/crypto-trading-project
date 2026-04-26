@@ -53,7 +53,10 @@ class Trade:
     rr_ratio: float
     exit_reason: str
     capital_at_entry: float
+    notional: float | None = None
+    quantity: float | None = None
     entry_idx: int | None = None
+    initial_stop_price: float | None = None
     trail_style: str | None = None
     risk_regime: str | None = None
     regime_label: str | None = None
@@ -696,7 +699,10 @@ class ScalpRobustEngine:
                 rr_ratio=rr_ratio,
                 exit_reason=reason,
                 capital_at_entry=pos.capital_at_entry,
+                notional=pos.notional,
+                quantity=pos.quantity,
                 entry_idx=pos.entry_idx,
+                initial_stop_price=pos.initial_sl_price,
                 trail_style=pos.trail_style,
                 risk_regime=pos.risk_regime,
                 regime_label=pos.regime_label,

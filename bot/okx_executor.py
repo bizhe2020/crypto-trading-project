@@ -111,6 +111,42 @@ class ExecutorConfig:
     shadow_equity_drawdown_stop_pct: float = 0.0
     shadow_equity_drawdown_cooldown_days: int = 0
     shadow_consecutive_loss_stop: int = 0
+    enable_high_leverage_guard: bool = False
+    high_leverage_guard_min_leverage: float = 10.0
+    high_leverage_min_liquidation_buffer_pct: float = 1.2
+    high_leverage_max_stop_distance_pct: float = 2.0
+    high_leverage_max_account_effective_leverage: float = 5.0
+    high_leverage_maintenance_margin_pct: float = 0.5
+    enable_dynamic_high_leverage_structure: bool = False
+    dynamic_base_leverage: float = 4.0
+    dynamic_high_growth_leverage: float = 7.5
+    dynamic_tight_stop_leverage: float = 8.0
+    dynamic_recovery_leverage: float = 2.0
+    dynamic_drawdown_leverage: float = 2.0
+    dynamic_unhealthy_leverage: float = 2.0
+    dynamic_defense_leverage: float = 2.0
+    dynamic_tight_stop_pct: float = 1.25
+    dynamic_max_stop_distance_pct: float = 1.5
+    dynamic_high_growth_max_stop_distance_pct: float = 2.0
+    dynamic_defense_max_stop_distance_pct: float = 1.5
+    dynamic_defense_structure_max_stop_distance_pct: float = 1.9
+    dynamic_max_effective_leverage: float = 8.0
+    dynamic_loss_streak_threshold: int = 3
+    dynamic_win_streak_threshold: int = 2
+    dynamic_drawdown_threshold_pct: float = 20.0
+    dynamic_health_lookback_trades: int = 6
+    dynamic_health_min_unit_return_pct: float = 0.0
+    dynamic_health_min_win_rate_pct: float = 25.0
+    dynamic_state_lookback_trades: int = 8
+    dynamic_defense_enter_unit_return_pct: float = -2.0
+    dynamic_defense_enter_win_rate_pct: float = 20.0
+    dynamic_offense_enter_unit_return_pct: float = -0.5
+    dynamic_offense_enter_win_rate_pct: float = 40.0
+    dynamic_reattack_lookback_trades: int = 2
+    dynamic_reattack_unit_return_pct: float = 0.5
+    dynamic_reattack_win_rate_pct: float = 33.0
+    dynamic_reattack_signal_mode: str = "high_growth_or_tight_or_structure"
+    dynamic_min_liquidation_buffer_pct: float = 1.2
     enable_regime_switching: bool = False
     regime_switcher_thresholds: dict[str, Any] | None = None
     regime_switcher_hg_overrides: dict[str, Any] | None = None
@@ -469,12 +505,19 @@ class OkxExecutionEngine:
         sizing = self._resolve_order_sizing(action, engine)
         if sizing.get("status") != "ok":
             return sizing
+        sizing, dynamic_decision = self._dynamic_high_leverage_pre_open(action, sizing, engine)
+        if dynamic_decision is not None:
+            return dynamic_decision
+        high_leverage_decision = self._high_leverage_guard_pre_open(action, sizing)
+        if high_leverage_decision is not None:
+            return high_leverage_decision
 
         if self.config.mode == "paper":
             if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
                 self._shadow_gate_mark_real_position(True, action, "paper_open_accepted")
             if action.type == ActionType.CLOSE_POSITION:
                 self._shadow_gate_after_close(action, engine)
+                self._dynamic_high_leverage_after_close(action, engine)
             return {
                 "status": "paper_recorded",
                 "action": action.type.value,
@@ -484,6 +527,7 @@ class OkxExecutionEngine:
                 "expected_notional_usdt": sizing.get("expected_notional_usdt"),
                 "balance_source": sizing.get("balance_source"),
                 "position_size_pct": self.config.position_size_pct,
+                "dynamic_high_leverage": sizing.get("dynamic_high_leverage"),
             }
 
         if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
@@ -568,6 +612,7 @@ class OkxExecutionEngine:
                 )
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
             self._shadow_gate_after_close(action, engine)
+            self._dynamic_high_leverage_after_close(action, engine)
             self._send_telegram(
                 "\n".join(
                     [
@@ -731,6 +776,119 @@ class OkxExecutionEngine:
 
         return None
 
+    def _high_leverage_guard_enabled(self) -> bool:
+        return (
+            bool(self.config.enable_high_leverage_guard)
+            and float(self.config.leverage) >= float(self.config.high_leverage_guard_min_leverage)
+        )
+
+    def _high_leverage_guard_pre_open(self, action: StrategyAction, sizing: dict[str, Any]) -> dict[str, Any] | None:
+        if not self._high_leverage_guard_enabled():
+            return None
+        if action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+            return None
+        diagnostics = self._high_leverage_open_diagnostics(action, sizing)
+        failures = self._high_leverage_guard_failures(diagnostics)
+        if not failures:
+            return None
+
+        reason = "high_leverage_guard_" + failures[0]
+        if self._shadow_gate_enabled():
+            state = self._load_shadow_gate_state()
+            state["real_position_open"] = False
+            state["real_position_direction"] = None
+            state["paper_entry_time"] = action.timestamp
+            self._shadow_append_event(
+                state,
+                {
+                    "time": action.timestamp,
+                    "event": "skip_open",
+                    "reason": reason,
+                    "direction": action.direction,
+                    "diagnostics": diagnostics,
+                    "failures": failures,
+                },
+            )
+            self._save_shadow_gate_state(state)
+            return {
+                "status": "high_leverage_guard_skipped_open",
+                "action": action.type.value,
+                "direction": action.direction,
+                "reason": reason,
+                "failures": failures,
+                "diagnostics": diagnostics,
+            }
+
+        return {
+            "status": "error",
+            "reason": "high_leverage_guard_requires_shadow_risk_gate",
+            "failures": failures,
+            "diagnostics": diagnostics,
+        }
+
+    def _high_leverage_open_diagnostics(self, action: StrategyAction, sizing: dict[str, Any]) -> dict[str, Any]:
+        entry_price = float(action.entry_price or 0.0)
+        stop_price = float(action.stop_price or 0.0)
+        leverage = float(self.config.leverage)
+        maintenance_margin_pct = max(float(self.config.high_leverage_maintenance_margin_pct), 0.0) / 100.0
+        stop_distance_pct = (
+            abs(entry_price - stop_price) / entry_price * 100.0
+            if entry_price > 0 and stop_price > 0
+            else 0.0
+        )
+        liquidation_price = 0.0
+        liquidation_buffer_pct = 0.0
+        if entry_price > 0 and leverage > 0:
+            if action.type == ActionType.OPEN_LONG:
+                liquidation_price = entry_price * (1.0 - (1.0 / leverage) + maintenance_margin_pct)
+                liquidation_buffer_pct = (stop_price - liquidation_price) / entry_price * 100.0
+            else:
+                liquidation_price = entry_price * (1.0 + (1.0 / leverage) - maintenance_margin_pct)
+                liquidation_buffer_pct = (liquidation_price - stop_price) / entry_price * 100.0
+        metadata = action.metadata or {}
+        available_usdt = float(
+            sizing.get("available_usdt", 0.0)
+            or metadata.get("available_usdt", 0.0)
+            or metadata.get("capital_at_entry", 0.0)
+            or 0.0
+        )
+        expected_notional_usdt = float(sizing.get("expected_notional_usdt", 0.0) or 0.0)
+        account_effective_leverage = (
+            expected_notional_usdt / available_usdt
+            if available_usdt > 0
+            else 0.0
+        )
+        return {
+            "configured_leverage": round(leverage, 6),
+            "entry_price": round(entry_price, 6),
+            "stop_price": round(stop_price, 6),
+            "estimated_liquidation_price": round(liquidation_price, 6),
+            "stop_distance_pct": round(stop_distance_pct, 6),
+            "liquidation_buffer_pct": round(liquidation_buffer_pct, 6),
+            "account_effective_leverage": round(account_effective_leverage, 6),
+            "expected_notional_usdt": round(expected_notional_usdt, 6),
+            "available_usdt": round(available_usdt, 6),
+            "min_liquidation_buffer_pct": round(float(self.config.high_leverage_min_liquidation_buffer_pct), 6),
+            "max_stop_distance_pct": round(float(self.config.high_leverage_max_stop_distance_pct), 6),
+            "max_account_effective_leverage": round(float(self.config.high_leverage_max_account_effective_leverage), 6),
+            "maintenance_margin_pct": round(float(self.config.high_leverage_maintenance_margin_pct), 6),
+        }
+
+    def _high_leverage_guard_failures(self, diagnostics: dict[str, Any]) -> list[str]:
+        failures: list[str] = []
+        if diagnostics["entry_price"] <= 0 or diagnostics["stop_price"] <= 0:
+            failures.append("missing_entry_or_stop")
+        min_buffer = float(self.config.high_leverage_min_liquidation_buffer_pct)
+        if min_buffer > 0 and diagnostics["liquidation_buffer_pct"] < min_buffer:
+            failures.append("liquidation_buffer_too_small")
+        max_stop_distance = float(self.config.high_leverage_max_stop_distance_pct)
+        if max_stop_distance > 0 and diagnostics["stop_distance_pct"] > max_stop_distance:
+            failures.append("stop_distance_too_wide")
+        max_account_leverage = float(self.config.high_leverage_max_account_effective_leverage)
+        if max_account_leverage > 0 and diagnostics["account_effective_leverage"] > max_account_leverage:
+            failures.append("account_effective_leverage_too_high")
+        return failures
+
     def _shadow_gate_after_close(self, action: StrategyAction, engine: Any) -> None:
         if not self._shadow_gate_enabled():
             return
@@ -862,7 +1020,12 @@ class OkxExecutionEngine:
                 notional = float(requested_notional)
                 max_notional = float(metadata.get("max_notional", notional))
                 risk_based_notional = float(metadata.get("risk_based_notional", notional))
-                available_usdt = float(metadata.get("available_usdt", 0.0))
+                available_usdt = float(
+                    metadata.get("available_usdt", 0.0)
+                    or metadata.get("capital_at_entry", 0.0)
+                    or getattr(engine, "capital", 0.0)
+                    or 0.0
+                )
                 balance_source = str(metadata.get("balance_source", "action_metadata"))
                 margin_usdt = float(
                     metadata.get(
@@ -926,6 +1089,308 @@ class OkxExecutionEngine:
             }
 
         return {"status": "ok", "amount": 0.0}
+
+    def _dynamic_high_leverage_enabled(self) -> bool:
+        return bool(self.config.enable_dynamic_high_leverage_structure)
+
+    def _dynamic_high_leverage_default_state(self, engine: Any | None = None) -> dict[str, Any]:
+        capital = float(getattr(engine, "capital", 0.0) or 0.0) if engine is not None else 0.0
+        return {
+            "mode": "offense",
+            "capital": capital,
+            "drawdown_peak": capital,
+            "unit_returns": [],
+            "loss_streak": 0,
+            "win_streak": 0,
+            "last_update_time": None,
+            "last_decision": None,
+        }
+
+    def _load_dynamic_high_leverage_state(self, engine: Any | None = None) -> dict[str, Any]:
+        raw = self.store.get_value("dynamic_high_leverage_structure_state")
+        if not raw:
+            return self._dynamic_high_leverage_default_state(engine)
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._dynamic_high_leverage_default_state(engine)
+        default = self._dynamic_high_leverage_default_state(engine)
+        default.update(state if isinstance(state, dict) else {})
+        if not isinstance(default.get("unit_returns"), list):
+            default["unit_returns"] = []
+        return default
+
+    def _save_dynamic_high_leverage_state(self, state: dict[str, Any]) -> None:
+        self.store.set_value("dynamic_high_leverage_structure_state", json.dumps(state, ensure_ascii=False))
+
+    def _dynamic_recent_stats(self, unit_returns: list[Any], lookback: int) -> dict[str, float]:
+        values = [float(item) for item in unit_returns[-max(lookback, 0):] if item is not None]
+        if not values:
+            return {"unit_return_pct": 0.0, "win_rate_pct": 0.0, "count": 0.0}
+        wins = sum(1 for item in values if item > 0)
+        return {
+            "unit_return_pct": sum(values) * 100.0,
+            "win_rate_pct": wins / len(values) * 100.0,
+            "count": float(len(values)),
+        }
+
+    def _dynamic_action_diagnostics(self, action: StrategyAction, sizing: dict[str, Any], engine: Any) -> dict[str, Any]:
+        entry_price = float(action.entry_price or 0.0)
+        stop_price = float(action.stop_price or 0.0)
+        stop_distance_pct = (
+            abs(entry_price - stop_price) / entry_price * 100.0
+            if entry_price > 0 and stop_price > 0
+            else 0.0
+        )
+        metadata = action.metadata or {}
+        regime_label = str(metadata.get("regime_label") or "")
+        trail_style = str(metadata.get("trail_style") or "")
+        is_high_growth = regime_label == "high_growth"
+        is_tight_stop = 0.0 < stop_distance_pct <= float(self.config.dynamic_tight_stop_pct)
+        return {
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "stop_distance_pct": stop_distance_pct,
+            "regime_label": regime_label,
+            "trail_style": trail_style,
+            "is_high_growth": is_high_growth,
+            "is_tight_stop": is_tight_stop,
+            "available_usdt": float(
+                sizing.get("available_usdt", 0.0)
+                or metadata.get("capital_at_entry", 0.0)
+                or getattr(engine, "capital", 0.0)
+                or 0.0
+            ),
+        }
+
+    def _dynamic_signal_allows_reattack(self, diagnostics: dict[str, Any]) -> bool:
+        mode = str(self.config.dynamic_reattack_signal_mode or "high_growth_or_tight")
+        if mode == "any":
+            return True
+        if mode == "high_growth":
+            return bool(diagnostics["is_high_growth"])
+        if mode == "tight":
+            return bool(diagnostics["is_tight_stop"])
+        if mode in {"high_growth_or_tight", "high_growth_or_tight_or_structure"}:
+            return bool(diagnostics["is_high_growth"] or diagnostics["is_tight_stop"])
+        return bool(diagnostics["is_high_growth"] or diagnostics["is_tight_stop"])
+
+    def _dynamic_next_mode(
+        self,
+        state: dict[str, Any],
+        diagnostics: dict[str, Any],
+    ) -> tuple[str, list[str], dict[str, Any]]:
+        unit_returns = state.get("unit_returns") if isinstance(state.get("unit_returns"), list) else []
+        recent = self._dynamic_recent_stats(unit_returns, int(self.config.dynamic_state_lookback_trades))
+        short = self._dynamic_recent_stats(unit_returns, int(self.config.dynamic_reattack_lookback_trades))
+        mode = str(state.get("mode") or "offense")
+        capital = float(state.get("capital", 0.0) or 0.0)
+        peak = float(state.get("drawdown_peak", capital) or capital)
+        drawdown_pct = (peak - capital) / peak * 100.0 if peak > 0 else 0.0
+        reasons: list[str] = []
+
+        if mode != "defense":
+            if recent["count"] > 0 and recent["unit_return_pct"] <= float(self.config.dynamic_defense_enter_unit_return_pct):
+                reasons.append("low_recent_unit_return")
+            if recent["count"] > 0 and recent["win_rate_pct"] <= float(self.config.dynamic_defense_enter_win_rate_pct):
+                reasons.append("low_recent_win_rate")
+            if int(state.get("loss_streak", 0) or 0) >= int(self.config.dynamic_loss_streak_threshold):
+                reasons.append("loss_streak")
+            if drawdown_pct >= float(self.config.dynamic_drawdown_threshold_pct):
+                reasons.append("drawdown")
+            return ("defense" if reasons else "offense"), reasons, {"recent": recent, "short": short, "drawdown_pct": drawdown_pct}
+
+        recovered = (
+            recent["count"] > 0
+            and recent["unit_return_pct"] >= float(self.config.dynamic_offense_enter_unit_return_pct)
+            and recent["win_rate_pct"] >= float(self.config.dynamic_offense_enter_win_rate_pct)
+        )
+        if recovered:
+            return "offense", ["recovered_recent_signal"], {"recent": recent, "short": short, "drawdown_pct": drawdown_pct}
+
+        reattack = (
+            short["count"] > 0
+            and short["unit_return_pct"] >= float(self.config.dynamic_reattack_unit_return_pct)
+            and short["win_rate_pct"] >= float(self.config.dynamic_reattack_win_rate_pct)
+            and self._dynamic_signal_allows_reattack(diagnostics)
+        )
+        if reattack:
+            return "offense", ["short_window_reattack"], {"recent": recent, "short": short, "drawdown_pct": drawdown_pct}
+        return "defense", reasons, {"recent": recent, "short": short, "drawdown_pct": drawdown_pct}
+
+    def _dynamic_select_effective_leverage(
+        self,
+        state: dict[str, Any],
+        risk_mode: str,
+        diagnostics: dict[str, Any],
+        mode_stats: dict[str, Any],
+    ) -> tuple[float, list[str]]:
+        max_leverage = float(self.config.dynamic_max_effective_leverage)
+        if risk_mode == "defense":
+            return min(float(self.config.dynamic_defense_leverage), max_leverage), ["state_defense_reduce"]
+
+        leverage = float(self.config.dynamic_base_leverage)
+        reasons = ["base"]
+        if diagnostics["is_high_growth"]:
+            leverage = max(leverage, float(self.config.dynamic_high_growth_leverage))
+            reasons.append("high_growth")
+        if diagnostics["is_tight_stop"]:
+            leverage = max(leverage, float(self.config.dynamic_tight_stop_leverage))
+            reasons.append("tight_stop")
+        if int(state.get("win_streak", 0) or 0) >= int(self.config.dynamic_win_streak_threshold):
+            leverage = min(max_leverage, leverage * 1.15)
+            reasons.append("win_streak_expand")
+
+        health = self._dynamic_recent_stats(
+            state.get("unit_returns") if isinstance(state.get("unit_returns"), list) else [],
+            int(self.config.dynamic_health_lookback_trades),
+        )
+        if (
+            health["count"] > 0
+            and (
+                health["unit_return_pct"] < float(self.config.dynamic_health_min_unit_return_pct)
+                or health["win_rate_pct"] < float(self.config.dynamic_health_min_win_rate_pct)
+            )
+        ):
+            leverage = min(leverage, float(self.config.dynamic_unhealthy_leverage))
+            reasons.append("market_unhealthy_reduce")
+
+        if float(mode_stats.get("drawdown_pct", 0.0) or 0.0) >= float(self.config.dynamic_drawdown_threshold_pct):
+            leverage = min(leverage, float(self.config.dynamic_drawdown_leverage))
+            reasons.append("drawdown_reduce")
+
+        return max(0.0, min(leverage, max_leverage)), reasons
+
+    def _dynamic_high_leverage_pre_open(
+        self,
+        action: StrategyAction,
+        sizing: dict[str, Any],
+        engine: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        if not self._dynamic_high_leverage_enabled() or action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+            return sizing, None
+
+        state = self._load_dynamic_high_leverage_state(engine)
+        diagnostics = self._dynamic_action_diagnostics(action, sizing, engine)
+        risk_mode, mode_reasons, mode_stats = self._dynamic_next_mode(state, diagnostics)
+        effective_leverage, leverage_reasons = self._dynamic_select_effective_leverage(
+            state,
+            risk_mode,
+            diagnostics,
+            mode_stats,
+        )
+        max_stop_distance = (
+            float(self.config.dynamic_defense_max_stop_distance_pct)
+            if risk_mode == "defense"
+            else (
+                float(self.config.dynamic_high_growth_max_stop_distance_pct)
+                if diagnostics["is_high_growth"]
+                else float(self.config.dynamic_max_stop_distance_pct)
+            )
+        )
+        decision = {
+            "risk_mode": risk_mode,
+            "mode_reasons": mode_reasons,
+            "mode_stats": mode_stats,
+            "effective_leverage": round(effective_leverage, 6),
+            "leverage_reasons": leverage_reasons,
+            "diagnostics": diagnostics,
+            "max_stop_distance_pct": max_stop_distance,
+        }
+        state["mode"] = risk_mode
+        state["last_decision"] = decision
+        state["last_update_time"] = action.timestamp
+        self._save_dynamic_high_leverage_state(state)
+
+        if diagnostics["stop_distance_pct"] > max_stop_distance:
+            if self._shadow_gate_enabled():
+                shadow_state = self._load_shadow_gate_state(engine)
+                shadow_state["real_position_open"] = False
+                shadow_state["real_position_direction"] = None
+                shadow_state["paper_entry_time"] = action.timestamp
+                self._shadow_append_event(
+                    shadow_state,
+                    {
+                        "time": action.timestamp,
+                        "event": "skip_open",
+                        "reason": "dynamic_high_leverage_stop_distance_too_wide",
+                        "direction": action.direction,
+                        "decision": decision,
+                    },
+                )
+                self._save_shadow_gate_state(shadow_state)
+            return sizing, {
+                "status": "dynamic_high_leverage_skipped_open",
+                "action": action.type.value,
+                "direction": action.direction,
+                "reason": "stop_distance_too_wide",
+                "decision": decision,
+            }
+
+        available_usdt = float(diagnostics["available_usdt"])
+        if available_usdt <= 0 or effective_leverage <= 0:
+            return sizing, {
+                "status": "dynamic_high_leverage_skipped_open",
+                "action": action.type.value,
+                "direction": action.direction,
+                "reason": "invalid_available_usdt_or_leverage",
+                "decision": decision,
+            }
+
+        target_notional = available_usdt * effective_leverage
+        reference_price = float(action.entry_price or 0.0)
+        if reference_price <= 0:
+            return sizing, {
+                "status": "dynamic_high_leverage_skipped_open",
+                "action": action.type.value,
+                "direction": action.direction,
+                "reason": "invalid_reference_price",
+                "decision": decision,
+            }
+        adjusted = self._build_order_sizing(target_notional / reference_price, target_notional, reference_price)
+        adjusted.update(
+            {
+                "status": "ok",
+                "notional_usdt": round(target_notional, 6),
+                "max_notional_usdt": round(target_notional, 6),
+                "risk_based_notional_usdt": round(float(sizing.get("risk_based_notional_usdt", target_notional) or target_notional), 6),
+                "margin_usdt": round(target_notional / self.config.leverage if self.config.leverage > 0 else target_notional, 6),
+                "available_usdt": round(available_usdt, 6),
+                "balance_source": sizing.get("balance_source", "dynamic_high_leverage"),
+                "dynamic_high_leverage": decision,
+            }
+        )
+        return adjusted, None
+
+    def _dynamic_high_leverage_after_close(self, action: StrategyAction, engine: Any) -> None:
+        if not self._dynamic_high_leverage_enabled() or action.type != ActionType.CLOSE_POSITION:
+            return
+        state = self._load_dynamic_high_leverage_state(engine)
+        latest_trade = engine.trades[-1] if getattr(engine, "trades", None) else None
+        pnl = float((action.metadata or {}).get("net_pnl", 0.0) or 0.0)
+        notional = float(getattr(latest_trade, "notional", 0.0) or 0.0) if latest_trade is not None else 0.0
+        unit_return = pnl / notional if notional > 0 else 0.0
+        unit_returns = state.get("unit_returns") if isinstance(state.get("unit_returns"), list) else []
+        unit_returns.append(unit_return)
+        state["unit_returns"] = unit_returns[-100:]
+        if pnl > 0:
+            state["win_streak"] = int(state.get("win_streak", 0) or 0) + 1
+            state["loss_streak"] = 0
+        else:
+            state["loss_streak"] = int(state.get("loss_streak", 0) or 0) + 1
+            state["win_streak"] = 0
+        capital = float(getattr(engine, "capital", 0.0) or state.get("capital", 0.0) or 0.0)
+        state["capital"] = capital
+        state["drawdown_peak"] = max(float(state.get("drawdown_peak", capital) or capital), capital)
+        state["last_update_time"] = action.timestamp
+        state["last_close"] = {
+            "time": action.timestamp,
+            "pnl": pnl,
+            "notional": notional,
+            "unit_return": unit_return,
+            "capital": capital,
+        }
+        self._save_dynamic_high_leverage_state(state)
 
     def _load_markets(self) -> dict[str, Any]:
         if self._markets_cache is None:
@@ -1528,6 +1993,14 @@ class OkxExecutionEngine:
             setattr(position, "exchange_attach_algo_id", identity["attach_algo_id"])
         if identity["attach_algo_client_id"]:
             setattr(position, "exchange_attach_algo_client_id", identity["attach_algo_client_id"])
+        pos_side = "long" if getattr(position, "direction", None) == "BULL" else "short"
+        self._reconcile_manual_position(
+            engine,
+            exchange_state=observed_position,
+            pos_side=pos_side,
+            context="open_execution_metadata",
+            pending_algo=None,
+        )
 
     def _build_attached_algo_amend_order_request(
         self,
