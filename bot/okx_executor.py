@@ -814,6 +814,41 @@ class OkxExecutionEngine:
         )
         self._save_shadow_gate_state(state)
 
+    def _shadow_gate_allows_unmirrored_local_position(self, local_position: Any) -> bool:
+        raw = self.store.get_value("shadow_risk_gate_state")
+        if not raw:
+            return False
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(state, dict):
+            return False
+        if bool(state.get("real_position_open")):
+            return False
+        if state.get("real_position_direction"):
+            return False
+
+        local_entry_time = getattr(local_position, "entry_time", None)
+        paper_entry_time = state.get("paper_entry_time")
+        if not local_entry_time or not paper_entry_time or paper_entry_time != local_entry_time:
+            return False
+
+        local_direction = getattr(local_position, "direction", None)
+        events = state.get("events")
+        if not isinstance(events, list):
+            return False
+        for event in reversed(events[-50:]):
+            if not isinstance(event, dict):
+                continue
+            if event.get("time") != paper_entry_time:
+                continue
+            if event.get("direction") != local_direction:
+                continue
+            if event.get("event") in {"skip_open", "mirror_open_failed"}:
+                return True
+        return False
+
     def _resolve_order_sizing(self, action: StrategyAction, engine: Any) -> dict[str, Any]:
         candles = self._engine_candles(engine)
         reference_price = action.entry_price or action.exit_price or (candles[-1].c if candles else 0.0)
@@ -1681,7 +1716,12 @@ class OkxExecutionEngine:
             gate_state = self._load_shadow_gate_state(engine)
             mirrored = bool(gate_state.get("real_position_open"))
             if local_has_position and not mirrored and not exchange_has_position:
-                return
+                if self._shadow_gate_allows_unmirrored_local_position(local_position):
+                    return
+                raise ValueError(
+                    f"Live state mismatch ({context}): local shadow position is not mirrored, "
+                    "but shadow gate state has no matching skip/open-failed record"
+                )
             if local_has_position and not mirrored and exchange_has_position:
                 raise ValueError(
                     f"Live state mismatch ({context}): shadow position is not mirrored, "
