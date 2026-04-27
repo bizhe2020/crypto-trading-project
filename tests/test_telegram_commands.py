@@ -3,7 +3,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from bot.okx_executor import ExecutorConfig, OkxExecutionEngine
 
@@ -74,26 +73,6 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertIn("📦 仓位\n🏛️ 交易所：🟢 long", table)
         self.assertIn("🛡️ 止损：90000.0", table)
         self.assertNotIn("|", table)
-
-    def test_sticker_ids_are_selected_by_mood(self) -> None:
-        engine = self._engine()
-        engine.config.telegram_profit_sticker_ids = ["profit-a", "profit-b"]
-        engine.config.telegram_loss_sticker_ids = ["loss-a"]
-        engine.config.telegram_neutral_sticker_ids = ["neutral-a"]
-
-        self.assertEqual(engine._telegram_sticker_ids_for_mood("profit"), ["profit-a", "profit-b"])
-        self.assertEqual(engine._telegram_sticker_ids_for_mood("loss"), ["loss-a"])
-        self.assertEqual(engine._telegram_sticker_ids_for_mood("neutral"), ["neutral-a"])
-
-    def test_send_sticker_uses_configured_pool(self) -> None:
-        engine = self._engine()
-        engine.config.telegram_profit_sticker_ids = ["profit-a"]
-
-        with patch("bot.okx_executor.requests.post") as post:
-            engine._send_telegram_sticker("profit", "123")
-
-        self.assertEqual(post.call_count, 1)
-        self.assertEqual(post.call_args.kwargs["json"]["sticker"], "profit-a")
 
 
 if __name__ == "__main__":

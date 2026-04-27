@@ -209,9 +209,6 @@ class ExecutorConfig:
     telegram_enabled: bool = False
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
-    telegram_profit_sticker_ids: list[str] | None = None
-    telegram_loss_sticker_ids: list[str] | None = None
-    telegram_neutral_sticker_ids: list[str] | None = None
     proxy: str | None = None
     api_key: str | None = None
     api_secret: str | None = None
@@ -508,7 +505,6 @@ class OkxExecutionEngine:
                 {"text": text, "chat_id": chat_id, "reply": reply},
             )
             self._send_telegram_reply(reply, chat_id)
-            self._send_telegram_command_sticker(text, chat_id)
 
     def _telegram_command_reply(self, text: str) -> str:
         command = text.split("@", 1)[0].strip().lower()
@@ -574,49 +570,6 @@ class OkxExecutionEngine:
             "neutral": ["👀", "🤖", "🧭", "⚪", "🕯️", "📡", "🧊", "🔎"],
         }
         return random.choice(pools.get(mood, pools["neutral"]))
-
-    def _telegram_sticker_ids_for_mood(self, mood: str) -> list[str]:
-        raw: Any
-        if mood == "profit":
-            raw = self.config.telegram_profit_sticker_ids
-        elif mood == "loss":
-            raw = self.config.telegram_loss_sticker_ids
-        else:
-            raw = self.config.telegram_neutral_sticker_ids
-        if raw is None:
-            return []
-        if isinstance(raw, str):
-            return [item.strip() for item in raw.split(",") if item.strip()]
-        try:
-            return [str(item).strip() for item in raw if str(item).strip()]
-        except TypeError:
-            return []
-
-    def _send_telegram_sticker(self, mood: str, chat_id: str | int | None = None) -> None:
-        if not self.config.telegram_enabled or not self.config.telegram_token:
-            return
-        target_chat_id = str(chat_id or self.config.telegram_chat_id or "")
-        if not target_chat_id:
-            return
-        sticker_ids = self._telegram_sticker_ids_for_mood(mood)
-        if not sticker_ids:
-            return
-        url = f"https://api.telegram.org/bot{self.config.telegram_token}/sendSticker"
-        try:
-            requests.post(
-                url,
-                json={"chat_id": target_chat_id, "sticker": random.choice(sticker_ids)},
-                timeout=10,
-            )
-        except Exception:
-            pass
-
-    def _send_telegram_command_sticker(self, text: str, chat_id: str | int | None = None) -> None:
-        command = text.split("@", 1)[0].strip().lower()
-        if command not in {"/daily", "/profit", "/performance"}:
-            return
-        mood = self._telegram_command_mood(command)
-        self._send_telegram_sticker(mood, chat_id)
 
     def _telegram_command_mood(self, command: str) -> str:
         if command == "/daily":

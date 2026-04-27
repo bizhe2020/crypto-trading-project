@@ -206,27 +206,6 @@
   "exchange_trigger_price_type": "mark",
   "enable_manual_position_sync": true,
   "telegram_enabled": false,
-  "telegram_profit_sticker_ids": [
-    "CAACAgUAAxUAAWnvm9geQvG9DHl0Nx-lHu6QVyEIAAITBAACAxTIVNDre7LOBWV8OwQ",
-    "CAACAgUAAxUAAWnvm9iQzBnkAAEnoVlp2kaeOErzugACwAQAArWkyVS5FBD5Qjs_9jsE",
-    "CAACAgUAAxUAAWnvm9jV327Bf1WDH8SNNR3dYRopAAJ1BAACSsnJVMdscSOU3O3UOwQ",
-    "CAACAgEAAxUAAWnvm80Td0UPFW3AR1hsv5UEWS27AAJiAAMaqTkKg7BaF_g1MK47BA",
-    "CAACAgQAAxUAAWnvm9YuPQAB4xwL-XGXROTXUvpGAQACCAADOWZoB_8WGz47GdBiOwQ"
-  ],
-  "telegram_loss_sticker_ids": [
-    "CAACAgUAAxUAAWnvm9hqYF9SgLPoWYElSCSLUyrvAAJBBQACVuDIVLdiZM1MOumdOwQ",
-    "CAACAgUAAxUAAWnvm9gqX82A-rGBH4aiMDxDks2oAALPAwACnbbJVEzjcxi2BSU-OwQ",
-    "CAACAgIAAxUAAWnvm88yE1Y3OVUMWmdAnKEsaI-AAAKJAAPNUkgCoUQCmCIb8eY7BA",
-    "CAACAgIAAxUAAWnvm8_FXRxEwWCqJc-AmuacmQ2DAAKNAAPNUkgCokRonJ9POQE7BA",
-    "CAACAgQAAxUAAWnvm9KbohDkgxUHYmW-MK90gD1HAAK2EAAC1_AJUCVcBxHd2rnnOwQ"
-  ],
-  "telegram_neutral_sticker_ids": [
-    "CAACAgIAAxUAAWnvm9wihnQZKNZWLdCeqZBrouaOAAJwMQAC6V-QSvxAjKOQj7u6OwQ",
-    "CAACAgIAAxUAAWnvm9yR6S9UJUo9vgg-tgmeSPjNAAI_MAAC8kmZSsdjhGcGBlqhOwQ",
-    "CAACAgEAAxUAAWnvm82GktsUCpVkaoMqYw_eoZb_AAJnAAMaqTkKZuFeiekloWc7BA",
-    "CAACAgQAAxUAAWnvm9bG-k1F2lBttzwEuZuzcdsVAAIEAAM5ZmgHlHIiuuFQRu87BA",
-    "CAACAgQAAxUAAWnvm9TbwITtk1A5D1yAvmlEO_AWAALAAANlHJEHjVEVST5aK6I7BA"
-  ],
   "proxy": null,
   "api_key": null,
   "api_secret": null,
