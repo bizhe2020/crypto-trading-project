@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 import uuid
 import requests
@@ -208,6 +209,9 @@ class ExecutorConfig:
     telegram_enabled: bool = False
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_profit_sticker_ids: list[str] | None = None
+    telegram_loss_sticker_ids: list[str] | None = None
+    telegram_neutral_sticker_ids: list[str] | None = None
     proxy: str | None = None
     api_key: str | None = None
     api_secret: str | None = None
@@ -504,6 +508,7 @@ class OkxExecutionEngine:
                 {"text": text, "chat_id": chat_id, "reply": reply},
             )
             self._send_telegram_reply(reply, chat_id)
+            self._send_telegram_command_sticker(text, chat_id)
 
     def _telegram_command_reply(self, text: str) -> str:
         command = text.split("@", 1)[0].strip().lower()
@@ -554,6 +559,80 @@ class OkxExecutionEngine:
 
     def _local_time_text(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _telegram_mood(self, value: float) -> str:
+        if value > 0:
+            return "profit"
+        if value < 0:
+            return "loss"
+        return "neutral"
+
+    def _telegram_random_icon(self, mood: str) -> str:
+        pools = {
+            "profit": ["🚀", "💰", "🔥", "🤑", "📈", "⚡", "🏆", "💎"],
+            "loss": ["🛡️", "⚠️", "🥶", "📉", "🧯", "🔻", "🚧", "🛑"],
+            "neutral": ["👀", "🤖", "🧭", "⚪", "🕯️", "📡", "🧊", "🔎"],
+        }
+        return random.choice(pools.get(mood, pools["neutral"]))
+
+    def _telegram_sticker_ids_for_mood(self, mood: str) -> list[str]:
+        raw: Any
+        if mood == "profit":
+            raw = self.config.telegram_profit_sticker_ids
+        elif mood == "loss":
+            raw = self.config.telegram_loss_sticker_ids
+        else:
+            raw = self.config.telegram_neutral_sticker_ids
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        try:
+            return [str(item).strip() for item in raw if str(item).strip()]
+        except TypeError:
+            return []
+
+    def _send_telegram_sticker(self, mood: str, chat_id: str | int | None = None) -> None:
+        if not self.config.telegram_enabled or not self.config.telegram_token:
+            return
+        target_chat_id = str(chat_id or self.config.telegram_chat_id or "")
+        if not target_chat_id:
+            return
+        sticker_ids = self._telegram_sticker_ids_for_mood(mood)
+        if not sticker_ids:
+            return
+        url = f"https://api.telegram.org/bot{self.config.telegram_token}/sendSticker"
+        try:
+            requests.post(
+                url,
+                json={"chat_id": target_chat_id, "sticker": random.choice(sticker_ids)},
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+    def _send_telegram_command_sticker(self, text: str, chat_id: str | int | None = None) -> None:
+        command = text.split("@", 1)[0].strip().lower()
+        if command not in {"/daily", "/profit", "/performance"}:
+            return
+        mood = self._telegram_command_mood(command)
+        self._send_telegram_sticker(mood, chat_id)
+
+    def _telegram_command_mood(self, command: str) -> str:
+        if command == "/daily":
+            total = sum(float(event["pnl"]) for event in self._realized_pnl_events(daily=True))
+            return self._telegram_mood(total)
+        if command == "/profit":
+            total = sum(float(event["pnl"]) for event in self._realized_pnl_events(daily=False))
+            return self._telegram_mood(total)
+        if command == "/performance":
+            dyn = self._load_dynamic_high_leverage_state() if self._dynamic_high_leverage_enabled() else {}
+            unit_returns = dyn.get("unit_returns") if isinstance(dyn.get("unit_returns"), list) else []
+            if not unit_returns:
+                return "neutral"
+            recent = self._dynamic_recent_stats(unit_returns, min(len(unit_returns), int(self.config.dynamic_state_lookback_trades)))
+            return self._telegram_mood(float(recent.get("unit_return_pct", 0.0) or 0.0))
+        return "neutral"
 
     def _telegram_title(self, icon: str, title: str) -> str:
         return f"{icon} {title}\n━━━━━━━━━━━━"
@@ -728,11 +807,13 @@ class OkxExecutionEngine:
         events = self._realized_pnl_events(daily=daily)
         total = sum(float(event["pnl"]) for event in events)
         wins = sum(1 for event in events if float(event["pnl"]) > 0)
-        title = self._telegram_title("💰", "今日收益") if daily else self._telegram_title("📈", "累计收益")
+        mood = self._telegram_mood(total)
+        title = self._telegram_title(self._telegram_random_icon(mood), "今日收益") if daily else self._telegram_title(self._telegram_random_icon(mood), "累计收益")
+        pnl_icon = self._telegram_random_icon(mood)
         return "\n".join(
             [
                 title,
-                f"💵 已实现 PnL：{total:.2f} USDT",
+                f"{pnl_icon} 已实现 PnL：{total:.2f} USDT",
                 f"🔒 平仓笔数：{len(events)}",
                 f"🏆 胜率：{(wins / len(events) * 100.0):.1f}%" if events else "🏆 胜率：-",
                 self._telegram_time_line(),
@@ -748,12 +829,14 @@ class OkxExecutionEngine:
         capital = float(snapshot.get("capital", 0.0) or 0.0)
         trade_count = int(snapshot.get("trade_count", 0) or 0)
         exits = snapshot.get("exit_reasons") if isinstance(snapshot.get("exit_reasons"), dict) else {}
+        recent_return = float(recent.get("unit_return_pct", 0.0) or 0.0)
+        mood = self._telegram_mood(recent_return)
         lines = [
-            self._telegram_title("🚀", "策略表现"),
+            self._telegram_title(self._telegram_random_icon(mood), "策略表现"),
             f"💎 策略资金：{capital:.2f}U",
             f"🔢 交易次数：{trade_count}",
             f"⚡ 动态档位：{dyn.get('mode') or '-'}",
-            f"📊 近期单位收益：{float(recent.get('unit_return_pct', 0.0) or 0.0):.2f}%",
+            f"{self._telegram_random_icon(mood)} 近期单位收益：{recent_return:.2f}%",
             f"🏆 近期胜率：{float(recent.get('win_rate_pct', 0.0) or 0.0):.1f}%",
             f"👤 Shadow资金：{float(shadow.get('capital', 0.0) or 0.0):.2f}U",
         ]
