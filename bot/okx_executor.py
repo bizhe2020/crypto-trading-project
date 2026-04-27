@@ -449,7 +449,7 @@ class OkxExecutionEngine:
         if not self.store.get_value("last_processed_candle_time"):
             return self._initialize_without_replay(engine, latest_closed_idx)
         self._assert_live_state_synced(engine, context="before_evaluate")
-        if latest_closed_idx <= start_idx:
+        if latest_closed_idx < start_idx:
             snapshot = engine.snapshot()
             self.store.save_snapshot(snapshot)
             return {
@@ -462,7 +462,9 @@ class OkxExecutionEngine:
                 "live_capital": engine.capital,
             }
 
-        actions = engine.evaluate_range(start_idx, latest_closed_idx)
+        # evaluate_range uses a right-open end index. Include latest_closed_idx;
+        # otherwise live can mark a candle processed without evaluating it.
+        actions = engine.evaluate_range(start_idx, latest_closed_idx + 1)
         execution_results = []
         for action in actions:
             result = self.execute_action(action, engine)
