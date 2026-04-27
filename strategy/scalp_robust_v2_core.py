@@ -145,6 +145,27 @@ class StrategyConfig:
     auto_tit_ema_gap_max: float | None = None
     atr_regime_filter: str = "all"
     disable_fixed_target_exit: bool = False
+    enable_pressure_level_trailing: bool = False
+    pressure_min_rr: float = 1.0
+    pressure_rejection_min_rr: float = 1.25
+    pressure_lock_rr: float = 0.8
+    pressure_atr_multiplier: float = 1.2
+    pressure_proximity_pct: float = 0.35
+    pressure_round_steps_usdt: list[float] | None = None
+    pressure_cluster_lookback_bars: int = 192
+    pressure_cluster_bin_usdt: float = 250.0
+    pressure_cluster_min_touches: int = 4
+    pressure_cluster_min_volume_ratio: float = 1.25
+    pressure_swing_lookback_bars: int = 96
+    pressure_rejection_wick_ratio: float = 0.45
+    pressure_rejection_close_pct: float = 0.12
+    pressure_min_bars_held: int = 1
+    pressure_take_profit_on_rejection: bool = True
+    pressure_enable_target_cap: bool = False
+    pressure_target_min_rr: float = 1.5
+    pressure_target_buffer_pct: float = 0.05
+    pressure_regime_labels: list[str] | None = None
+    pressure_trail_styles: list[str] | None = None
     enable_regime_switching: bool = False
     regime_switcher_thresholds: dict[str, Any] | None = None
     regime_switcher_hg_overrides: dict[str, Any] | None = None
@@ -759,6 +780,11 @@ class ScalpRobustEngine:
             update = self._apply_trailing_bull(pos, curr, idx)
             if update:
                 actions.append(update)
+            pressure_action = self._apply_pressure_level_exit_or_trail(pos, curr, idx)
+            if pressure_action:
+                actions.append(pressure_action)
+                if pressure_action.type == ActionType.CLOSE_POSITION:
+                    return actions
             atr_update = self._apply_atr_trailing_bull(pos, curr, idx)
             if atr_update:
                 actions.append(atr_update)
@@ -786,6 +812,11 @@ class ScalpRobustEngine:
             update = self._apply_trailing_bear(pos, curr, idx)
             if update:
                 actions.append(update)
+            pressure_action = self._apply_pressure_level_exit_or_trail(pos, curr, idx)
+            if pressure_action:
+                actions.append(pressure_action)
+                if pressure_action.type == ActionType.CLOSE_POSITION:
+                    return actions
             atr_update = self._apply_atr_trailing_bear(pos, curr, idx)
             if atr_update:
                 actions.append(atr_update)
@@ -798,6 +829,245 @@ class ScalpRobustEngine:
                 return actions
 
         return actions
+
+    def _round_steps_for_pressure_levels(self) -> list[float]:
+        raw_steps = self.config.pressure_round_steps_usdt
+        if raw_steps is None:
+            return [1000.0]
+        if isinstance(raw_steps, (int, float)):
+            return [float(raw_steps)] if float(raw_steps) > 0 else []
+        steps: list[float] = []
+        for step in raw_steps:
+            try:
+                value = float(step)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                steps.append(value)
+        return steps
+
+    def _round_pressure_levels(self, price: float) -> list[dict[str, Any]]:
+        levels: list[dict[str, Any]] = []
+        if price <= 0:
+            return levels
+        for step in self._round_steps_for_pressure_levels():
+            lower = math.floor(price / step) * step
+            upper = math.ceil(price / step) * step
+            for level in (lower, upper):
+                if level > 0:
+                    levels.append({"level": level, "source": f"round_{step:g}"})
+        return levels
+
+    def _swing_pressure_levels(self, pos: PositionState, idx: int) -> list[dict[str, Any]]:
+        lookback = max(int(self.config.pressure_swing_lookback_bars or 0), 0)
+        if lookback <= 0:
+            return []
+        start = max(0, idx - lookback)
+        if pos.direction == Direction.BULL:
+            return [
+                {"level": self.c15m[swing_idx].h, "source": "swing_high"}
+                for swing_idx in self.precomputed.highs_15m
+                if start <= swing_idx < idx and self.c15m[swing_idx].h >= pos.entry_price
+            ]
+        return [
+            {"level": self.c15m[swing_idx].l, "source": "swing_low"}
+            for swing_idx in self.precomputed.lows_15m
+            if start <= swing_idx < idx and self.c15m[swing_idx].l <= pos.entry_price
+        ]
+
+    def _volume_cluster_pressure_levels(self, pos: PositionState, idx: int) -> list[dict[str, Any]]:
+        lookback = max(int(self.config.pressure_cluster_lookback_bars or 0), 0)
+        bin_size = float(self.config.pressure_cluster_bin_usdt or 0.0)
+        if lookback <= 0 or bin_size <= 0:
+            return []
+        start = max(0, idx - lookback)
+        bins: dict[float, dict[str, float]] = {}
+        for candle in self.c15m[start:idx]:
+            typical_price = (candle.h + candle.l + candle.c) / 3.0
+            if typical_price <= 0:
+                continue
+            center = round(typical_price / bin_size) * bin_size
+            bucket = bins.setdefault(center, {"volume": 0.0, "touches": 0.0})
+            bucket["volume"] += max(float(candle.v), 0.0)
+            bucket["touches"] += 1.0
+        if not bins:
+            return []
+        avg_volume = sum(bucket["volume"] for bucket in bins.values()) / len(bins)
+        min_touches = float(self.config.pressure_cluster_min_touches or 0)
+        min_volume = avg_volume * float(self.config.pressure_cluster_min_volume_ratio or 0.0)
+        levels: list[dict[str, Any]] = []
+        for level, bucket in bins.items():
+            if bucket["touches"] < min_touches or bucket["volume"] < min_volume:
+                continue
+            if pos.direction == Direction.BULL and level >= pos.entry_price:
+                levels.append({"level": level, "source": "volume_cluster", "volume": bucket["volume"], "touches": bucket["touches"]})
+            if pos.direction == Direction.BEAR and level <= pos.entry_price:
+                levels.append({"level": level, "source": "volume_cluster", "volume": bucket["volume"], "touches": bucket["touches"]})
+        return levels
+
+    def _nearest_pressure_level(self, pos: PositionState, curr: Candle, idx: int) -> dict[str, Any] | None:
+        proximity_pct = float(self.config.pressure_proximity_pct or 0.0)
+        if proximity_pct <= 0:
+            return None
+        reference_price = curr.h if pos.direction == Direction.BULL else curr.l
+        candidates = (
+            self._round_pressure_levels(reference_price)
+            + self._swing_pressure_levels(pos, idx)
+            + self._volume_cluster_pressure_levels(pos, idx)
+        )
+        qualified: list[dict[str, Any]] = []
+        for candidate in candidates:
+            level = float(candidate.get("level", 0.0) or 0.0)
+            if level <= 0:
+                continue
+            if pos.direction == Direction.BULL and level < pos.entry_price:
+                continue
+            if pos.direction == Direction.BEAR and level > pos.entry_price:
+                continue
+            touched = curr.l <= level <= curr.h
+            distance_pct = abs(reference_price - level) / level * 100.0
+            approaching = distance_pct <= proximity_pct
+            if not touched and not approaching:
+                continue
+            enriched = dict(candidate)
+            enriched["distance_pct"] = distance_pct
+            enriched["touched"] = touched
+            qualified.append(enriched)
+        if not qualified:
+            return None
+        return min(qualified, key=lambda item: float(item["distance_pct"]))
+
+    def _pressure_level_rejected(self, pos: PositionState, curr: Candle, level: float) -> bool:
+        candle_range = curr.h - curr.l
+        if candle_range <= 0 or level <= 0:
+            return False
+        wick_ratio = float(self.config.pressure_rejection_wick_ratio or 0.0)
+        close_pct = float(self.config.pressure_rejection_close_pct or 0.0) / 100.0
+        if pos.direction == Direction.BULL:
+            upper_wick_ratio = (curr.h - max(curr.o, curr.c)) / candle_range
+            close_rejected = curr.c <= level * (1.0 - close_pct)
+            return curr.h >= level and close_rejected and upper_wick_ratio >= wick_ratio
+        lower_wick_ratio = (min(curr.o, curr.c) - curr.l) / candle_range
+        close_rejected = curr.c >= level * (1.0 + close_pct)
+        return curr.l <= level and close_rejected and lower_wick_ratio >= wick_ratio
+
+    def _pressure_target_cap_price(self, pos: PositionState, level: float) -> tuple[float | None, float | None]:
+        if not self.config.pressure_enable_target_cap:
+            return None, None
+        risk_price = abs(pos.entry_price - pos.initial_sl_price)
+        if risk_price <= 0 or level <= 0:
+            return None, None
+        buffer_pct = max(float(self.config.pressure_target_buffer_pct or 0.0), 0.0) / 100.0
+        min_rr = float(self.config.pressure_target_min_rr or 0.0)
+        if pos.direction == Direction.BULL:
+            capped_target = level * (1.0 - buffer_pct)
+            capped_rr = (capped_target - pos.entry_price) / risk_price
+            if capped_target <= pos.entry_price or capped_target >= pos.target_price or capped_rr < min_rr:
+                return None, None
+            return capped_target, capped_rr
+        capped_target = level * (1.0 + buffer_pct)
+        capped_rr = (pos.entry_price - capped_target) / risk_price
+        if capped_target >= pos.entry_price or capped_target <= pos.target_price or capped_rr < min_rr:
+            return None, None
+        return capped_target, capped_rr
+
+    def _apply_pressure_level_exit_or_trail(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
+        if not self.config.enable_pressure_level_trailing:
+            return None
+        allowed_regime_labels = self._configured_set(self.config.pressure_regime_labels)
+        if allowed_regime_labels is not None and (pos.regime_label or "") not in allowed_regime_labels:
+            return None
+        allowed_trail_styles = self._configured_set(self.config.pressure_trail_styles)
+        if allowed_trail_styles is not None and (pos.trail_style or "") not in allowed_trail_styles:
+            return None
+        if self._bars_held(pos, idx) < int(self.config.pressure_min_bars_held or 0):
+            return None
+        unrealized_rr = self._unrealized_rr(pos, curr.c)
+        if unrealized_rr < float(self.config.pressure_min_rr or 0.0):
+            return None
+        pressure = self._nearest_pressure_level(pos, curr, idx)
+        if pressure is None:
+            return None
+
+        level = float(pressure["level"])
+        rejected = self._pressure_level_rejected(pos, curr, level)
+        metadata = {
+            "index": idx,
+            "pressure_level": level,
+            "pressure_source": pressure.get("source"),
+            "pressure_distance_pct": pressure.get("distance_pct"),
+            "pressure_touched": pressure.get("touched"),
+            "unrealized_rr": unrealized_rr,
+            "rejected": rejected,
+            "bars_held": self._bars_held(pos, idx),
+        }
+        target_update, target_rr_update = self._pressure_target_cap_price(pos, level)
+        if target_update is not None and target_rr_update is not None:
+            pos.target_price = target_update
+            pos.target_rr = target_rr_update
+            metadata["target_price"] = target_update
+            metadata["target_rr"] = target_rr_update
+
+        if (
+            bool(self.config.pressure_take_profit_on_rejection)
+            and rejected
+            and unrealized_rr >= float(self.config.pressure_rejection_min_rr or 0.0)
+        ):
+            action = self.close_position(idx, "pressure_rejection_exit", curr.c)
+            action.metadata = {**(action.metadata or {}), **metadata}
+            return action
+
+        risk_price = abs(pos.entry_price - pos.initial_sl_price)
+        if risk_price <= 0:
+            return None
+        atr = self._atr_for_idx(idx)
+        atr_multiplier = float(self.config.pressure_atr_multiplier or 0.0)
+        lock_rr = float(self.config.pressure_lock_rr or 0.0)
+        if pos.direction == Direction.BULL:
+            new_stop = pos.entry_price + risk_price * lock_rr
+            if atr > 0 and atr_multiplier > 0:
+                new_stop = max(new_stop, curr.c - atr_multiplier * atr)
+            new_stop = min(new_stop, curr.c * 0.9995)
+            if new_stop <= pos.sl_price:
+                if target_update is None:
+                    return None
+                return StrategyAction(
+                    type=ActionType.UPDATE_STOP,
+                    timestamp=self._timestamp_for_idx(idx),
+                    direction=pos.direction,
+                    stop_price=pos.sl_price,
+                    target_price=target_update,
+                    reason="pressure_level_target",
+                    metadata=metadata,
+                )
+        else:
+            new_stop = pos.entry_price - risk_price * lock_rr
+            if atr > 0 and atr_multiplier > 0:
+                new_stop = min(new_stop, curr.c + atr_multiplier * atr)
+            new_stop = max(new_stop, curr.c * 1.0005)
+            if new_stop >= pos.sl_price:
+                if target_update is None:
+                    return None
+                return StrategyAction(
+                    type=ActionType.UPDATE_STOP,
+                    timestamp=self._timestamp_for_idx(idx),
+                    direction=pos.direction,
+                    stop_price=pos.sl_price,
+                    target_price=target_update,
+                    reason="pressure_level_target",
+                    metadata=metadata,
+                )
+
+        pos.sl_price = new_stop
+        return StrategyAction(
+            type=ActionType.UPDATE_STOP,
+            timestamp=self._timestamp_for_idx(idx),
+            direction=pos.direction,
+            stop_price=new_stop,
+            reason="pressure_level_trail",
+            target_price=target_update,
+            metadata=metadata,
+        )
 
     def _apply_trailing_bull(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
         pnl = pos.quantity * (curr.c - pos.entry_price)
@@ -1488,6 +1758,27 @@ class ScalpRobustEngine:
                 "auto_tit_ema_gap_max": self.config.auto_tit_ema_gap_max,
                 "atr_regime_filter": self.config.atr_regime_filter,
                 "disable_fixed_target_exit": self.config.disable_fixed_target_exit,
+                "enable_pressure_level_trailing": self.config.enable_pressure_level_trailing,
+                "pressure_min_rr": self.config.pressure_min_rr,
+                "pressure_rejection_min_rr": self.config.pressure_rejection_min_rr,
+                "pressure_lock_rr": self.config.pressure_lock_rr,
+                "pressure_atr_multiplier": self.config.pressure_atr_multiplier,
+                "pressure_proximity_pct": self.config.pressure_proximity_pct,
+                "pressure_round_steps_usdt": self.config.pressure_round_steps_usdt,
+                "pressure_cluster_lookback_bars": self.config.pressure_cluster_lookback_bars,
+                "pressure_cluster_bin_usdt": self.config.pressure_cluster_bin_usdt,
+                "pressure_cluster_min_touches": self.config.pressure_cluster_min_touches,
+                "pressure_cluster_min_volume_ratio": self.config.pressure_cluster_min_volume_ratio,
+                "pressure_swing_lookback_bars": self.config.pressure_swing_lookback_bars,
+                "pressure_rejection_wick_ratio": self.config.pressure_rejection_wick_ratio,
+                "pressure_rejection_close_pct": self.config.pressure_rejection_close_pct,
+                "pressure_min_bars_held": self.config.pressure_min_bars_held,
+                "pressure_take_profit_on_rejection": self.config.pressure_take_profit_on_rejection,
+                "pressure_enable_target_cap": self.config.pressure_enable_target_cap,
+                "pressure_target_min_rr": self.config.pressure_target_min_rr,
+                "pressure_target_buffer_pct": self.config.pressure_target_buffer_pct,
+                "pressure_regime_labels": self.config.pressure_regime_labels,
+                "pressure_trail_styles": self.config.pressure_trail_styles,
                 "taker_fee_rate": self.config.taker_fee_rate,
                 "slippage_bps": self.config.slippage_bps,
             },

@@ -4,37 +4,71 @@ This document records how to reproduce the current best dynamic high-leverage ex
 
 ## Current Best Strategy
 
-The current best reproducible strategy is:
+The current best reproducible strategy is the pressure-aware target-cap iteration:
 
 1. Base autoTIT config from `config/config.live.5x-3pct.json`.
 2. 2026-aware structure high-leverage overlay.
-3. Shadow gate retuned on the fixed high-leverage event stream.
+3. Pressure-level target cap only in `flat` regime.
+4. Shadow gate retuned on the fixed high-leverage event stream.
 
 Current best result:
 
 | Window | Return | MaxDD | Notes |
 |---|---:|---:|---|
-| Full, from `2022-01-01` | `26868.27%` | `35.56%` | best current full-window compounding |
-| 2026 YTD | `12.73%` | `12.88%` | improved versus previous `0.83%` 2026 candidate |
-| Last 60d | `3.42%` | `11.03%` | positive |
-| Last 30d | `8.05%` | `3.37%` | positive |
+| Full, from `2022-01-01` | `38420.70%` | `35.04%` | best current full-window compounding |
+| 2026 YTD | `19.48%` | `17.86%` | pressure-aware flat-regime target cap |
+| Last 60d | `4.63%` | `10.77%` | positive |
+| Last 30d | `8.99%` | `3.37%` | positive |
 
 Use this command to reproduce the current best strategy:
 
 ```bash
-scripts/reproduce_current_best_high_leverage.sh
+scripts/reproduce_pressure_target_cap_best.sh
 ```
 
 The script expands to the fixed one-parameter command:
 
 ```bash
-python3 scripts/scan_shadow_on_fixed_high_leverage.py --config config/config.live.5x-3pct.json --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather --start-date 2022-01-01 --daily-loss-values 6 --equity-dd-values 15 --equity-cooldown-values 2 --loss-streak-values 0 --top 1 --output var/high_leverage_expansion/shadow_on_fixed_structure_best.json
+python3 scripts/scan_pressure_level_trailing.py --config config/config.live.5x-3pct.json --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather --start-date 2022-01-01 --include-disabled-baseline --pressure-min-rr-values 2.0 --pressure-lock-rr-values 0.4 --pressure-atr-multiplier-values 3.0 --pressure-proximity-pct-values 0.15 --pressure-rejection-min-rr-values 3.0 --pressure-take-profit-on-rejection-values false --pressure-enable-target-cap-values true --pressure-target-min-rr-values 1.5 --pressure-target-buffer-pct-values 0.05 --pressure-regime-label-sets flat --top 5 --output var/high_leverage_expansion/pressure_target_cap_flat_scan_full.json
 ```
 
 Expected terminal line:
 
 ```text
-01 score=27469.37 full=26868.27%/35.56% ytd=12.73%/12.88% 60d=3.42% skip=13 params={'daily_loss_stop_pct': 6.0, 'equity_drawdown_stop_pct': 15.0, 'equity_drawdown_cooldown_days': 2, 'consecutive_loss_stop': 0}
+01 score=40217.20 full=38420.70%/35.04% year=19.48% 60d=4.63% params={'enable_pressure_level_trailing': True, ... 'pressure_regime_labels': ['flat'], ...}
+```
+
+Previous best without pressure-level target cap:
+
+```text
+full=26868.27%/35.56% year=12.73% 60d=3.42%
+```
+
+Current best pressure-level parameters:
+
+```json
+{
+  "enable_pressure_level_trailing": true,
+  "pressure_min_rr": 2.0,
+  "pressure_lock_rr": 0.4,
+  "pressure_atr_multiplier": 3.0,
+  "pressure_proximity_pct": 0.15,
+  "pressure_rejection_min_rr": 3.0,
+  "pressure_take_profit_on_rejection": false,
+  "pressure_enable_target_cap": true,
+  "pressure_target_min_rr": 1.5,
+  "pressure_target_buffer_pct": 0.05,
+  "pressure_regime_labels": ["flat"],
+  "pressure_round_steps_usdt": [1000.0, 500.0],
+  "pressure_cluster_lookback_bars": 192,
+  "pressure_cluster_bin_usdt": 250.0,
+  "pressure_cluster_min_touches": 4,
+  "pressure_cluster_min_volume_ratio": 1.25,
+  "pressure_swing_lookback_bars": 96,
+  "pressure_rejection_wick_ratio": 0.55,
+  "pressure_rejection_close_pct": 0.2,
+  "pressure_min_bars_held": 1
+}
 ```
 
 Current best shadow gate parameters:
