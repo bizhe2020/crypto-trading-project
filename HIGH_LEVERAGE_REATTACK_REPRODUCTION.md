@@ -26,6 +26,14 @@ Use this command to reproduce the current best strategy:
 scripts/reproduce_pressure_target_cap_best.sh
 ```
 
+Machine-readable parameter snapshot:
+
+```text
+config/high_leverage_pressure_target_cap_best.params.json
+```
+
+It records the expected result, data paths, pressure-level target-cap params, shadow gate params, fixed high-leverage overlay params, runtime dynamic params, and the exact command arguments used by the wrapper script.
+
 The script expands to the fixed one-parameter command:
 
 ```bash
