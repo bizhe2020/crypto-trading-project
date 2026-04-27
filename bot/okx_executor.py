@@ -617,8 +617,31 @@ class OkxExecutionEngine:
             ("时间", self._local_time_text()),
         ]
         if table:
-            width = max(len(name) for name, _ in rows)
-            lines.extend(f"{name.ljust(width)} | {value}" for name, value in rows)
+            row_map = dict(rows)
+            lines = [
+                "[状态表]",
+                "运行",
+                f"标的 {row_map['标的']}",
+                f"模式 {row_map['模式']}",
+                f"开仓 {row_map['开仓']}",
+                "",
+                "仓位",
+                f"交易所 {row_map['交易所仓位']}",
+                f"本地 {row_map['本地仓位']}",
+                f"止损 {row_map['交易所止损']}",
+                f"止盈 {row_map['交易所止盈']}",
+                f"保护单 {row_map['保护单ID']}",
+                "",
+                "策略",
+                f"资金 {row_map['策略资金']}",
+                f"交易 {row_map['交易次数']}",
+                f"档位 {row_map['动态档位']}",
+                f"Shadow {row_map['Shadow暂停到']}",
+                "",
+                "时间",
+                f"K线 {row_map['最近K线']}",
+                row_map["时间"],
+            ]
         else:
             lines.extend(f"{name}: {value}" for name, value in rows)
         return "\n".join(lines)

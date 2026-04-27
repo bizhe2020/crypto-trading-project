@@ -68,6 +68,12 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertIn("交易所止盈: 110000.0", status)
         self.assertIn("保护单ID: algo-123", status)
 
+        table = engine._telegram_command_reply("/status table")
+        self.assertIn("[状态表]", table)
+        self.assertIn("仓位\n交易所 long", table)
+        self.assertIn("止损 90000.0", table)
+        self.assertNotIn("|", table)
+
 
 if __name__ == "__main__":
     unittest.main()
