@@ -397,6 +397,315 @@ class OkxExecutionEngine:
         except Exception:
             pass
 
+    def _send_telegram_reply(self, message: str, chat_id: str | int | None = None) -> None:
+        if not self.config.telegram_enabled:
+            return
+        if not self.config.telegram_token:
+            return
+        target_chat_id = str(chat_id or self.config.telegram_chat_id or "")
+        if not target_chat_id:
+            return
+        url = f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage"
+        try:
+            requests.post(
+                url,
+                json={
+                    "chat_id": target_chat_id,
+                    "text": message,
+                    "reply_markup": self._telegram_reply_markup(),
+                },
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+    def _telegram_reply_markup(self) -> dict[str, Any]:
+        return {
+            "keyboard": [
+                ["/daily", "/profit", "/balance"],
+                ["/status", "/status table", "/performance"],
+                ["/count", "/start", "/stop", "/help"],
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": False,
+        }
+
+    def _configure_telegram_commands(self) -> None:
+        if not self.config.telegram_enabled or not self.config.telegram_token:
+            return
+        url = f"https://api.telegram.org/bot{self.config.telegram_token}/setMyCommands"
+        commands = [
+            {"command": "daily", "description": "今日收益"},
+            {"command": "profit", "description": "累计收益"},
+            {"command": "balance", "description": "账户余额"},
+            {"command": "status", "description": "机器人状态"},
+            {"command": "performance", "description": "策略表现"},
+            {"command": "count", "description": "交易次数"},
+            {"command": "start", "description": "恢复开仓"},
+            {"command": "stop", "description": "暂停开仓"},
+            {"command": "help", "description": "命令帮助"},
+        ]
+        try:
+            requests.post(url, json={"commands": commands}, timeout=10)
+        except Exception:
+            pass
+
+    def _telegram_get_updates(self) -> list[dict[str, Any]]:
+        if not self.config.telegram_enabled or not self.config.telegram_token:
+            return []
+        offset_raw = self.store.get_value("telegram_update_offset")
+        try:
+            offset = int(offset_raw) if offset_raw else None
+        except ValueError:
+            offset = None
+        url = f"https://api.telegram.org/bot{self.config.telegram_token}/getUpdates"
+        params: dict[str, Any] = {"timeout": 0, "limit": 20, "allowed_updates": json.dumps(["message"])}
+        if offset is not None:
+            params["offset"] = offset
+        response = requests.get(url, params=params, timeout=10)
+        payload = response.json()
+        if not payload.get("ok"):
+            return []
+        updates = payload.get("result")
+        if not isinstance(updates, list):
+            return []
+        if updates:
+            max_update_id = max(int(update.get("update_id", 0)) for update in updates if isinstance(update, dict))
+            self.store.set_value("telegram_update_offset", str(max_update_id + 1))
+        return [update for update in updates if isinstance(update, dict)]
+
+    def _handle_telegram_commands(self) -> None:
+        if not self.config.telegram_enabled or not self.config.telegram_token:
+            return
+        try:
+            updates = self._telegram_get_updates()
+        except Exception as exc:
+            self.store.append_action(
+                datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                "TELEGRAM_ERROR",
+                {"error": str(exc)},
+            )
+            return
+        for update in updates:
+            message = update.get("message")
+            if not isinstance(message, dict):
+                continue
+            chat = message.get("chat")
+            chat_id = chat.get("id") if isinstance(chat, dict) else None
+            if str(chat_id or "") != str(self.config.telegram_chat_id or ""):
+                continue
+            text = str(message.get("text") or "").strip()
+            if not text:
+                continue
+            reply = self._telegram_command_reply(text)
+            self.store.append_action(
+                datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                "TELEGRAM_COMMAND",
+                {"text": text, "chat_id": chat_id, "reply": reply},
+            )
+            self._send_telegram_reply(reply, chat_id)
+
+    def _telegram_command_reply(self, text: str) -> str:
+        command = text.split("@", 1)[0].strip().lower()
+        if command == "/help":
+            return self._telegram_help_text()
+        if command == "/start":
+            self.store.set_value("telegram_open_paused", "false")
+            return "\n".join(["[Bot控制]", "状态: 已恢复开仓", f"时间: {self._local_time_text()}"])
+        if command == "/stop":
+            self.store.set_value("telegram_open_paused", "true")
+            return "\n".join(["[Bot控制]", "状态: 已暂停新开仓", "说明: 不会强平已有仓位", f"时间: {self._local_time_text()}"])
+        if command == "/status" or command == "/status table":
+            return self._telegram_status_text(table=command == "/status table")
+        if command == "/balance":
+            return self._telegram_balance_text()
+        if command == "/daily":
+            return self._telegram_profit_text(daily=True)
+        if command == "/profit":
+            return self._telegram_profit_text(daily=False)
+        if command == "/performance":
+            return self._telegram_performance_text()
+        if command == "/count":
+            return self._telegram_count_text()
+        return self._telegram_help_text()
+
+    def _telegram_help_text(self) -> str:
+        return "\n".join(
+            [
+                "[命令列表]",
+                "/daily 今日已实现收益",
+                "/profit 累计已实现收益",
+                "/balance 账户余额",
+                "/status 运行和持仓状态",
+                "/status table 表格版状态",
+                "/performance 策略表现",
+                "/count 交易次数",
+                "/start 恢复开仓",
+                "/stop 暂停新开仓",
+            ]
+        )
+
+    def _local_time_text(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _load_snapshot_payload(self) -> dict[str, Any]:
+        snapshot = self.store.load_snapshot()
+        return snapshot if isinstance(snapshot, dict) else {}
+
+    def _position_summary(self) -> dict[str, Any]:
+        snapshot = self._load_snapshot_payload()
+        local_position = snapshot.get("position") if isinstance(snapshot.get("position"), dict) else None
+        long_state = {"contracts": 0.0, "notional_usdt": 0.0}
+        short_state = {"contracts": 0.0, "notional_usdt": 0.0}
+        if self.config.mode == "live":
+            try:
+                long_state = self._fetch_position_state("long")
+                short_state = self._fetch_position_state("short")
+            except Exception:
+                pass
+        return {
+            "local_position": local_position,
+            "long": long_state,
+            "short": short_state,
+        }
+
+    def _telegram_status_text(self, *, table: bool = False) -> str:
+        snapshot = self._load_snapshot_payload()
+        position = self._position_summary()
+        local_position = position["local_position"]
+        dyn = self._load_dynamic_high_leverage_state() if self._dynamic_high_leverage_enabled() else {}
+        shadow = self._load_shadow_gate_state() if self._shadow_gate_enabled() else {}
+        paused = self._telegram_open_paused()
+        long_contracts = float(position["long"].get("contracts", 0.0) or 0.0)
+        short_contracts = float(position["short"].get("contracts", 0.0) or 0.0)
+        exchange_side = "long" if long_contracts > 0 else "short" if short_contracts > 0 else "flat"
+        local_side = "-"
+        if local_position:
+            local_side = "long" if local_position.get("direction") == "BULL" else "short"
+        lines = ["[状态]" if not table else "[状态表]"]
+        rows = [
+            ("标的", self.config.symbol),
+            ("模式", self.config.mode),
+            ("开仓", "暂停" if paused else "允许"),
+            ("交易所仓位", exchange_side),
+            ("本地仓位", local_side),
+            ("策略资金", f"{float(snapshot.get('capital', 0.0) or 0.0):.2f}U"),
+            ("交易次数", str(int(snapshot.get("trade_count", 0) or 0))),
+            ("最近K线", self.store.get_value("last_processed_candle_time") or "-"),
+            ("动态档位", str(dyn.get("mode") or "-")),
+            ("Shadow暂停到", self._shadow_format_ts(float(shadow.get("pause_until_ts", 0.0) or 0.0)) or "-"),
+            ("时间", self._local_time_text()),
+        ]
+        if table:
+            width = max(len(name) for name, _ in rows)
+            lines.extend(f"{name.ljust(width)} | {value}" for name, value in rows)
+        else:
+            lines.extend(f"{name}: {value}" for name, value in rows)
+        return "\n".join(lines)
+
+    def _telegram_balance_text(self) -> str:
+        lines = ["[账户余额]"]
+        try:
+            balance = self.client.fetch_balance()
+            available, available_source = self._extract_available_usdt(balance)
+            total = self._extract_total_usdt(balance)
+            lines.append(f"可用: {available:.2f} USDT")
+            lines.append(f"权益: {total:.2f} USDT")
+            lines.append(f"来源: {available_source}")
+        except Exception as exc:
+            lines.append(f"状态: 查询失败")
+            lines.append(f"错误: {exc}")
+        lines.append(f"时间: {self._local_time_text()}")
+        return "\n".join(lines)
+
+    def _realized_pnl_events(self, *, daily: bool) -> list[dict[str, Any]]:
+        actions = self.store.recent_actions(1000)
+        today = datetime.now().strftime("%Y-%m-%d")
+        events = []
+        for item in actions:
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if item.get("action_type") != ActionType.CLOSE_POSITION.value:
+                continue
+            metadata = payload.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            pnl = self._safe_float(metadata.get("net_pnl"))
+            if pnl is None:
+                continue
+            timestamp = str(item.get("timestamp") or "")
+            if daily and not timestamp.startswith(today):
+                continue
+            events.append({"timestamp": timestamp, "pnl": pnl, "reason": payload.get("reason")})
+        return events
+
+    def _telegram_profit_text(self, *, daily: bool) -> str:
+        events = self._realized_pnl_events(daily=daily)
+        total = sum(float(event["pnl"]) for event in events)
+        wins = sum(1 for event in events if float(event["pnl"]) > 0)
+        title = "[今日收益]" if daily else "[累计收益]"
+        return "\n".join(
+            [
+                title,
+                f"已实现PnL: {total:.2f} USDT",
+                f"平仓笔数: {len(events)}",
+                f"胜率: {(wins / len(events) * 100.0):.1f}%" if events else "胜率: -",
+                f"时间: {self._local_time_text()}",
+            ]
+        )
+
+    def _telegram_performance_text(self) -> str:
+        snapshot = self._load_snapshot_payload()
+        dyn = self._load_dynamic_high_leverage_state() if self._dynamic_high_leverage_enabled() else {}
+        shadow = self._load_shadow_gate_state() if self._shadow_gate_enabled() else {}
+        unit_returns = dyn.get("unit_returns") if isinstance(dyn.get("unit_returns"), list) else []
+        recent = self._dynamic_recent_stats(unit_returns, min(len(unit_returns), int(self.config.dynamic_state_lookback_trades))) if unit_returns else {}
+        capital = float(snapshot.get("capital", 0.0) or 0.0)
+        trade_count = int(snapshot.get("trade_count", 0) or 0)
+        exits = snapshot.get("exit_reasons") if isinstance(snapshot.get("exit_reasons"), dict) else {}
+        lines = [
+            "[策略表现]",
+            f"策略资金: {capital:.2f}U",
+            f"交易次数: {trade_count}",
+            f"动态档位: {dyn.get('mode') or '-'}",
+            f"近期单位收益: {float(recent.get('unit_return_pct', 0.0) or 0.0):.2f}%",
+            f"近期胜率: {float(recent.get('win_rate_pct', 0.0) or 0.0):.1f}%",
+            f"Shadow资金: {float(shadow.get('capital', 0.0) or 0.0):.2f}U",
+        ]
+        if exits:
+            lines.append("退出原因: " + ", ".join(f"{k}:{v}" for k, v in sorted(exits.items())))
+        lines.append(f"时间: {self._local_time_text()}")
+        return "\n".join(lines)
+
+    def _telegram_count_text(self) -> str:
+        snapshot = self._load_snapshot_payload()
+        actions = self.store.recent_actions(1000)
+        open_count = sum(1 for item in actions if item.get("action_type") in {ActionType.OPEN_LONG.value, ActionType.OPEN_SHORT.value})
+        close_count = sum(1 for item in actions if item.get("action_type") == ActionType.CLOSE_POSITION.value)
+        return "\n".join(
+            [
+                "[交易计数]",
+                f"策略交易数: {int(snapshot.get('trade_count', 0) or 0)}",
+                f"最近记录开仓: {open_count}",
+                f"最近记录平仓: {close_count}",
+                f"时间: {self._local_time_text()}",
+            ]
+        )
+
+    def _telegram_open_paused(self) -> bool:
+        return str(self.store.get_value("telegram_open_paused") or "false").lower() in {"1", "true", "yes", "on"}
+
+    def _sleep_with_telegram(self, seconds: float, poll_interval_seconds: int) -> None:
+        deadline = time.time() + max(float(seconds), 0.0)
+        interval = max(min(int(poll_interval_seconds), 30), 1)
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, interval))
+            self._handle_telegram_commands()
+
     def _send_startup_telegram(self, bootstrap_status: dict[str, Any]) -> None:
         status_text = "成功" if not bootstrap_status.get("bootstrap_error") else "异常"
         snapshot_loaded = "是" if bootstrap_status.get("snapshot_loaded") else "否"
@@ -533,9 +842,12 @@ class OkxExecutionEngine:
     def run_loop(self, poll_interval_seconds: int = 5, close_buffer_seconds: int = 5) -> None:
         bootstrap_status = self.bootstrap()
         print(json.dumps({"event": "bootstrap", **bootstrap_status}, ensure_ascii=False))
+        self._configure_telegram_commands()
         self._send_startup_telegram(bootstrap_status)
+        self._handle_telegram_commands()
         while True:
             try:
+                self._handle_telegram_commands()
                 wait_seconds = self.seconds_until_next_close(close_buffer_seconds)
                 latest_closed_time = self.latest_closed_candle_time(close_buffer_seconds)
                 last_processed = self.store.get_value("last_processed_candle_time")
@@ -549,12 +861,12 @@ class OkxExecutionEngine:
                     }
                     self.store.append_action(latest_closed_time, "WAIT", payload)
                     print(json.dumps(payload, ensure_ascii=False))
-                    time.sleep(max(wait_seconds, poll_interval_seconds))
+                    self._sleep_with_telegram(max(wait_seconds, poll_interval_seconds), poll_interval_seconds)
                     continue
 
                 status = self.evaluate_latest()
                 print(json.dumps({"event": "evaluate", **status}, ensure_ascii=False))
-                time.sleep(poll_interval_seconds)
+                self._sleep_with_telegram(poll_interval_seconds, poll_interval_seconds)
             except KeyboardInterrupt:
                 stop_payload = {"event": "stopped", "symbol": self.config.symbol}
                 self.store.append_action("runtime", "STOP", stop_payload)
@@ -569,7 +881,7 @@ class OkxExecutionEngine:
                 }
                 self.store.append_action("runtime", "ERROR", error_payload)
                 print(json.dumps(error_payload, ensure_ascii=False))
-                time.sleep(poll_interval_seconds)
+                self._sleep_with_telegram(poll_interval_seconds, poll_interval_seconds)
 
     def record_action(self, action: StrategyAction) -> None:
         self.store.append_action(action.timestamp, action.type.value, asdict(action))
@@ -578,6 +890,28 @@ class OkxExecutionEngine:
         self.record_action(action)
         if action.type == ActionType.HOLD:
             return {"status": "ignored", "reason": "hold"}
+        if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT} and self._telegram_open_paused():
+            if self._shadow_gate_enabled():
+                state = self._load_shadow_gate_state(engine)
+                state["real_position_open"] = False
+                state["real_position_direction"] = None
+                state["paper_entry_time"] = action.timestamp
+                self._shadow_append_event(
+                    state,
+                    {
+                        "time": action.timestamp,
+                        "event": "skip_open",
+                        "reason": "telegram_open_paused",
+                        "direction": action.direction,
+                    },
+                )
+                self._save_shadow_gate_state(state)
+            return {
+                "status": "telegram_paused_skipped_open",
+                "action": action.type.value,
+                "direction": action.direction,
+                "reason": "telegram_open_paused",
+            }
         shadow_decision = self._shadow_gate_pre_execute(action, engine)
         if shadow_decision is not None:
             return shadow_decision

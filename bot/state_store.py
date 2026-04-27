@@ -73,3 +73,30 @@ class StateStore:
                 "INSERT INTO action_log(timestamp, action_type, payload) VALUES(?, ?, ?)",
                 (timestamp, action_type, json.dumps(payload, ensure_ascii=False)),
             )
+
+    def recent_actions(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT timestamp, action_type, payload, created_at
+                FROM action_log
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+        actions: list[dict[str, Any]] = []
+        for timestamp, action_type, payload, created_at in rows:
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                decoded = {"raw": payload}
+            actions.append(
+                {
+                    "timestamp": timestamp,
+                    "action_type": action_type,
+                    "payload": decoded,
+                    "created_at": created_at,
+                }
+            )
+        return actions
