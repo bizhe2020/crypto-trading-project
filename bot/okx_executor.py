@@ -173,20 +173,6 @@ class ExecutorConfig:
     regime_switcher_hg_overrides: dict[str, Any] | None = None
     regime_switcher_normal_overrides: dict[str, Any] | None = None
     regime_switcher_flat_overrides: dict[str, Any] | None = None
-    enable_controlled_scale_in: bool = False
-    scale_in_max_slots: int = 2
-    scale_in_trigger_rr: float = 1.0
-    scale_in_min_bars_held: int = 2
-    scale_in_min_interval_bars: int = 8
-    scale_in_risk_fraction: float = 0.5
-    scale_in_total_risk_multiplier: float = 1.0
-    scale_in_max_total_notional_multiplier: float = 1.0
-    scale_in_min_target_rr: float = 1.5
-    scale_in_min_price_move_pct: float = 0.0
-    scale_in_max_stop_distance_pct: float = 2.0
-    scale_in_require_stop_at_breakeven: bool = True
-    scale_in_regime_labels: list[str] | None = None
-    scale_in_trail_styles: list[str] | None = None
     taker_fee_rate: float = 0.0005
     slippage_bps: float = 2.0
     enable_exchange_brackets: bool = False
@@ -312,20 +298,6 @@ class ExecutorConfig:
             regime_switcher_hg_overrides=self.regime_switcher_hg_overrides,
             regime_switcher_normal_overrides=self.regime_switcher_normal_overrides,
             regime_switcher_flat_overrides=self.regime_switcher_flat_overrides,
-            enable_controlled_scale_in=self.enable_controlled_scale_in,
-            scale_in_max_slots=self.scale_in_max_slots,
-            scale_in_trigger_rr=self.scale_in_trigger_rr,
-            scale_in_min_bars_held=self.scale_in_min_bars_held,
-            scale_in_min_interval_bars=self.scale_in_min_interval_bars,
-            scale_in_risk_fraction=self.scale_in_risk_fraction,
-            scale_in_total_risk_multiplier=self.scale_in_total_risk_multiplier,
-            scale_in_max_total_notional_multiplier=self.scale_in_max_total_notional_multiplier,
-            scale_in_min_target_rr=self.scale_in_min_target_rr,
-            scale_in_min_price_move_pct=self.scale_in_min_price_move_pct,
-            scale_in_max_stop_distance_pct=self.scale_in_max_stop_distance_pct,
-            scale_in_require_stop_at_breakeven=self.scale_in_require_stop_at_breakeven,
-            scale_in_regime_labels=self.scale_in_regime_labels,
-            scale_in_trail_styles=self.scale_in_trail_styles,
             taker_fee_rate=self.taker_fee_rate,
             slippage_bps=self.slippage_bps,
         )
@@ -566,8 +538,6 @@ class OkxExecutionEngine:
         self.record_action(action)
         if action.type == ActionType.HOLD:
             return {"status": "ignored", "reason": "hold"}
-        if action.type == ActionType.SCALE_IN:
-            return {"status": "recorded_only", "action": action.type.value, "reason": "scale_in_research_only"}
         shadow_decision = self._shadow_gate_pre_execute(action, engine)
         if shadow_decision is not None:
             return shadow_decision
