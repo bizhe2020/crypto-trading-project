@@ -44,6 +44,34 @@ def parse_str_list(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def parse_bool_list(value: str) -> list[bool]:
+    values: list[bool] = []
+    for item in parse_str_list(value):
+        normalized = item.lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            values.append(True)
+        elif normalized in {"0", "false", "no", "off"}:
+            values.append(False)
+        else:
+            raise ValueError(f"Invalid boolean value: {item}")
+    return values
+
+
+def configured_set(value: Any) -> set[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized or normalized == "all":
+            return None
+        return {item.strip() for item in normalized.split("+") if item.strip()}
+    try:
+        items = {str(item).strip() for item in value if str(item).strip()}
+    except TypeError:
+        return {str(value).strip()}
+    return None if "all" in items else items
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scan dynamic 10x high leverage expansion overlays.")
     parser.add_argument("--config", default=str(ROOT / "config" / "config.research.10x.json"))
@@ -91,6 +119,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--defense-leverage", default=None)
     parser.add_argument("--defense-max-stop-distance-pct", default=None)
     parser.add_argument("--defense-structure-max-stop-distance-pct", default=None)
+    parser.add_argument("--failed-breakout-guard-enabled-values", default="false")
+    parser.add_argument("--failed-breakout-guard-leverage-values", default="2.0")
+    parser.add_argument("--failed-breakout-guard-min-leverage-values", default="7.5")
+    parser.add_argument("--failed-breakout-guard-min-quality-score-values", default="2")
+    parser.add_argument("--failed-breakout-guard-min-momentum-pct-values", default="1.5")
+    parser.add_argument("--failed-breakout-guard-min-ema-gap-pct-values", default="0.35")
+    parser.add_argument("--failed-breakout-guard-min-adx-values", default="22.0")
+    parser.add_argument("--failed-breakout-guard-regime-label-sets", default="high_growth")
+    parser.add_argument("--failed-breakout-guard-risk-mode-sets", default="offense")
+    parser.add_argument("--failed-breakout-guard-direction-sets", default="BULL")
     parser.add_argument("--min-liq-buffer-pct", type=float, default=1.2)
     parser.add_argument("--maintenance-margin-pct", type=float, default=0.5)
     parser.add_argument("--max-drawdown-pct", type=float, default=45.0)
@@ -153,6 +191,13 @@ def select_effective_leverage(
     if risk_mode == "defense":
         leverage = min(leverage, float(params["defense_leverage"]))
         reasons.append("state_defense_reduce")
+    leverage, guard_reasons, _guard_diagnostics = failed_breakout_guard(
+        trade=trade,
+        leverage=leverage,
+        params=params,
+        risk_mode=risk_mode,
+    )
+    reasons.extend(guard_reasons)
 
     leverage = max(0.0, min(leverage, float(params["max_effective_leverage"])))
     return leverage, reasons
@@ -217,6 +262,61 @@ def price_structure_qualified(trade: pd.Series, params: dict[str, Any]) -> bool:
     if direction == "BEAR":
         return bearish and momentum <= -min_momentum and ema_gap <= -min_ema_gap
     return False
+
+
+def failed_breakout_guard(
+    trade: pd.Series,
+    leverage: float,
+    params: dict[str, Any],
+    risk_mode: str,
+) -> tuple[float, list[str], dict[str, Any]]:
+    if not bool(params.get("failed_breakout_guard_enabled", False)):
+        return leverage, [], {}
+    if leverage < float(params.get("failed_breakout_guard_min_leverage", 7.5) or 7.5):
+        return leverage, [], {}
+
+    direction = str(trade.get("direction") or "")
+    regime_label = str(trade.get("regime_label") or "")
+    allowed_directions = configured_set(params.get("failed_breakout_guard_directions", ["BULL"]))
+    allowed_regimes = configured_set(params.get("failed_breakout_guard_regime_labels", ["high_growth"]))
+    allowed_modes = configured_set(params.get("failed_breakout_guard_risk_modes", ["offense"]))
+    if allowed_directions is not None and direction not in allowed_directions:
+        return leverage, [], {}
+    if allowed_regimes is not None and regime_label not in allowed_regimes:
+        return leverage, [], {}
+    if allowed_modes is not None and risk_mode not in allowed_modes:
+        return leverage, [], {}
+
+    sign = 1.0 if direction == "BULL" else -1.0
+    momentum_pct = float(trade.get("feature_momentum", 0.0) or 0.0) * 100.0 * sign
+    ema_gap_pct = float(trade.get("feature_ema_gap", 0.0) or 0.0) * 100.0 * sign
+    adx = float(trade.get("feature_adx", 0.0) or 0.0)
+    structure_ok = (
+        bool(trade.get("feature_bullish_structure", False))
+        if direction == "BULL"
+        else bool(trade.get("feature_bearish_structure", False))
+    )
+    checks = {
+        "momentum": momentum_pct >= float(params.get("failed_breakout_guard_min_momentum_pct", 1.5) or 0.0),
+        "ema_gap": ema_gap_pct >= float(params.get("failed_breakout_guard_min_ema_gap_pct", 0.35) or 0.0),
+        "adx": adx >= float(params.get("failed_breakout_guard_min_adx", 22.0) or 0.0),
+        "structure": structure_ok,
+    }
+    quality_score = sum(1 for passed in checks.values() if passed)
+    min_score = int(params.get("failed_breakout_guard_min_quality_score", 2) or 0)
+    diagnostics = {
+        "quality_score": quality_score,
+        "min_quality_score": min_score,
+        "momentum_pct": round(momentum_pct, 6),
+        "ema_gap_pct": round(ema_gap_pct, 6),
+        "adx": round(adx, 6),
+        "checks": checks,
+    }
+    if quality_score >= min_score:
+        return leverage, [], diagnostics
+
+    guarded_leverage = min(leverage, float(params.get("failed_breakout_guard_leverage", 2.0) or 2.0))
+    return guarded_leverage, [f"failed_breakout_guard:{quality_score}/{min_score}"], diagnostics
 
 
 def signal_allows_price_structure_reattack(
@@ -331,6 +431,7 @@ def expansion_overlay(
         "mode_switch_events": [],
         "avg_effective_leverage": 0.0,
         "max_effective_leverage_seen": 0.0,
+        "failed_breakout_guard_applied": 0,
         "worst_liquidation_buffer_pct": None,
         "widest_stop_distance_pct": None,
         "beats_historical_main_return": False,
@@ -351,6 +452,7 @@ def expansion_overlay(
     signal_health_returns: list[float] = []
     capitals: list[float] = []
     leverages: list[float] = []
+    failed_breakout_guard_count = 0
     events: list[dict[str, Any]] = []
     buffers: list[float] = []
     stop_distances: list[float] = []
@@ -439,6 +541,15 @@ def expansion_overlay(
             market_healthy=market_healthy,
             risk_mode=risk_mode,
         )
+        guard_applied = any(str(reason).startswith("failed_breakout_guard") for reason in reasons)
+        if guard_applied:
+            failed_breakout_guard_count += 1
+        _unused_guard_leverage, _unused_guard_reasons, guard_diagnostics = failed_breakout_guard(
+            trade=trade,
+            leverage=float(params.get("failed_breakout_guard_min_leverage", 7.5) or 7.5),
+            params=params,
+            risk_mode=risk_mode,
+        )
         trade_return = signal_unit_return * effective_leverage
         signal_health_returns.append(signal_unit_return)
         capital_before = capital
@@ -453,12 +564,32 @@ def expansion_overlay(
             {
                 "entry_time": str(trade.get("entry_time")),
                 "exit_time": str(trade.get("exit_time")),
+                "entry_idx": None if pd.isna(trade.get("entry_idx")) else int(trade.get("entry_idx")),
+                "exit_idx": None if pd.isna(trade.get("exit_idx")) else int(trade.get("exit_idx")),
+                "exit_reason": str(trade.get("exit_reason") or ""),
+                "rr_ratio": float(trade.get("rr_ratio", 0.0) or 0.0),
+                "signal_return": signal_unit_return,
                 "return": trade_return,
                 "capital": capital,
                 "effective_leverage": effective_leverage,
                 "regime_label": str(trade.get("regime_label") or ""),
                 "trail_style": str(trade.get("trail_style") or ""),
                 "direction": str(trade.get("direction") or ""),
+                "entry_price": float(trade.get("entry_price", 0.0) or 0.0),
+                "exit_price": float(trade.get("exit_price", 0.0) or 0.0),
+                "initial_stop_price": float(trade.get("initial_stop_price", 0.0) or 0.0),
+                "pressure_target_applied": bool(trade.get("pressure_target_applied", False)),
+                "pressure_target_source": str(trade.get("pressure_target_source") or ""),
+                "pressure_target_level": None if pd.isna(trade.get("pressure_target_level")) else float(trade.get("pressure_target_level")),
+                "pressure_target_rr": None if pd.isna(trade.get("pressure_target_rr")) else float(trade.get("pressure_target_rr")),
+                "pressure_target_min_rr": None if pd.isna(trade.get("pressure_target_min_rr")) else float(trade.get("pressure_target_min_rr")),
+                "pressure_target_dynamic_reason": str(trade.get("pressure_target_dynamic_reason") or ""),
+                "pressure_target_update_idx": None if pd.isna(trade.get("pressure_target_update_idx")) else int(trade.get("pressure_target_update_idx")),
+                "pressure_touch_lock_applied": bool(trade.get("pressure_touch_lock_applied", False)),
+                "pressure_touch_lock_source": str(trade.get("pressure_touch_lock_source") or ""),
+                "pressure_touch_lock_level": None if pd.isna(trade.get("pressure_touch_lock_level")) else float(trade.get("pressure_touch_lock_level")),
+                "pressure_touch_lock_rr": None if pd.isna(trade.get("pressure_touch_lock_rr")) else float(trade.get("pressure_touch_lock_rr")),
+                "pressure_touch_lock_update_idx": None if pd.isna(trade.get("pressure_touch_lock_update_idx")) else int(trade.get("pressure_touch_lock_update_idx")),
                 "feature_adx": float(trade.get("feature_adx", 0.0) or 0.0),
                 "feature_momentum": float(trade.get("feature_momentum", 0.0) or 0.0),
                 "feature_ema_gap": float(trade.get("feature_ema_gap", 0.0) or 0.0),
@@ -467,6 +598,8 @@ def expansion_overlay(
                 "stop_distance_pct": float(diagnostics["stop_distance_pct"]),
                 "stop_distance_cap_pct": max_stop_distance_pct,
                 "reasons": reasons,
+                "failed_breakout_guard_applied": guard_applied,
+                "failed_breakout_guard_diagnostics": guard_diagnostics,
                 "market_healthy": market_healthy,
                 "risk_mode": risk_mode,
                 "risk_mode_stats": mode_stats,
@@ -497,6 +630,7 @@ def expansion_overlay(
             "mode_switch_events": mode_switch_events,
             "avg_effective_leverage": round(sum(leverages) / len(leverages), 6) if leverages else 0.0,
             "max_effective_leverage_seen": round(max(leverages), 6) if leverages else 0.0,
+            "failed_breakout_guard_applied": failed_breakout_guard_count,
             "worst_liquidation_buffer_pct": round(min(buffers), 6) if buffers else None,
             "widest_stop_distance_pct": round(max(stop_distances), 6) if stop_distances else None,
             "beats_historical_main_return": total_return_pct > HISTORICAL_MAIN_BEST_RETURN_PCT,
@@ -669,6 +803,16 @@ def candidate_params(args: argparse.Namespace) -> list[dict[str, Any]]:
         parse_float_list(args.defense_leverage or args.unhealthy_leverage or args.drawdown_leverage),
         parse_float_list(args.defense_max_stop_distance_pct or args.max_stop_distance_pct),
         parse_float_list(args.defense_structure_max_stop_distance_pct or args.defense_max_stop_distance_pct or args.max_stop_distance_pct),
+        parse_bool_list(args.failed_breakout_guard_enabled_values),
+        parse_float_list(args.failed_breakout_guard_leverage_values),
+        parse_float_list(args.failed_breakout_guard_min_leverage_values),
+        parse_int_list(args.failed_breakout_guard_min_quality_score_values),
+        parse_float_list(args.failed_breakout_guard_min_momentum_pct_values),
+        parse_float_list(args.failed_breakout_guard_min_ema_gap_pct_values),
+        parse_float_list(args.failed_breakout_guard_min_adx_values),
+        parse_str_list(args.failed_breakout_guard_regime_label_sets),
+        parse_str_list(args.failed_breakout_guard_risk_mode_sets),
+        parse_str_list(args.failed_breakout_guard_direction_sets),
     )
     params: list[dict[str, Any]] = []
     for (
@@ -705,6 +849,16 @@ def candidate_params(args: argparse.Namespace) -> list[dict[str, Any]]:
         defense_leverage,
         defense_max_stop_distance_pct,
         defense_structure_max_stop_distance_pct,
+        failed_breakout_guard_enabled,
+        failed_breakout_guard_leverage,
+        failed_breakout_guard_min_leverage,
+        failed_breakout_guard_min_quality_score,
+        failed_breakout_guard_min_momentum_pct,
+        failed_breakout_guard_min_ema_gap_pct,
+        failed_breakout_guard_min_adx,
+        failed_breakout_guard_regime_label_set,
+        failed_breakout_guard_risk_mode_set,
+        failed_breakout_guard_direction_set,
     ) in combos:
         if base_leverage > max_effective_leverage:
             continue
@@ -752,6 +906,16 @@ def candidate_params(args: argparse.Namespace) -> list[dict[str, Any]]:
                     min(defense_structure_max_stop_distance_pct, high_growth_max_stop_distance_pct),
                     min(defense_max_stop_distance_pct, max_stop_distance_pct),
                 ),
+                "failed_breakout_guard_enabled": failed_breakout_guard_enabled,
+                "failed_breakout_guard_leverage": min(failed_breakout_guard_leverage, max_effective_leverage),
+                "failed_breakout_guard_min_leverage": failed_breakout_guard_min_leverage,
+                "failed_breakout_guard_min_quality_score": failed_breakout_guard_min_quality_score,
+                "failed_breakout_guard_min_momentum_pct": failed_breakout_guard_min_momentum_pct,
+                "failed_breakout_guard_min_ema_gap_pct": failed_breakout_guard_min_ema_gap_pct,
+                "failed_breakout_guard_min_adx": failed_breakout_guard_min_adx,
+                "failed_breakout_guard_regime_labels": None if failed_breakout_guard_regime_label_set == "all" else failed_breakout_guard_regime_label_set.split("+"),
+                "failed_breakout_guard_risk_modes": None if failed_breakout_guard_risk_mode_set == "all" else failed_breakout_guard_risk_mode_set.split("+"),
+                "failed_breakout_guard_directions": None if failed_breakout_guard_direction_set == "all" else failed_breakout_guard_direction_set.split("+"),
                 "min_liq_buffer_pct": args.min_liq_buffer_pct,
                 "maintenance_margin_pct": args.maintenance_margin_pct,
             }

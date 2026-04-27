@@ -112,6 +112,89 @@ class PressureTouchLockTest(unittest.TestCase):
         self.assertTrue(action.metadata["touch_lock_requires_touch"])
         self.assertEqual(engine.position.sl_price, action.stop_price)
 
+    def test_dynamic_pressure_target_min_rr_tightens_in_compression(self) -> None:
+        engine = build_engine(Direction.BULL)
+        engine.config.pressure_enable_target_cap = True
+        engine.config.pressure_dynamic_target_min_rr_enabled = True
+        engine.config.pressure_dynamic_target_compression_rr = 1.0
+        engine.config.pressure_dynamic_target_flat_rr = 1.25
+        engine.config.pressure_dynamic_target_breakout_rr = 1.5
+        engine.position = PositionState(
+            direction=Direction.BULL,
+            signal_entry_price=1000.0,
+            entry_price=1000.0,
+            sl_price=950.0,
+            initial_sl_price=950.0,
+            target_price=1200.0,
+            entry_time="2023-11-14 22:13",
+            capital_at_entry=1000.0,
+            risk_amount=50.0,
+            notional=1000.0,
+            quantity=1.0,
+            entry_fee=0.0,
+            entry_slippage_cost=0.0,
+            entry_idx=0,
+            entry_regime_score=0,
+            target_rr=4.0,
+            max_hold_bars=None,
+            trail_style="normal",
+            regime_label="flat",
+        )
+        engine._regime_feature_cache[engine.mapping[1]] = {
+            "adx": 12.0,
+            "momentum": 0.002,
+            "ema_gap": 0.001,
+        }
+
+        target, rr, min_rr, reason = engine._pressure_target_cap_price(engine.position, 1060.0, 1)
+
+        self.assertIsNotNone(target)
+        self.assertGreater(rr, 1.0)
+        self.assertEqual(min_rr, 1.0)
+        self.assertEqual(reason, "dynamic_compression")
+
+    def test_dynamic_pressure_target_min_rr_relaxes_in_breakout(self) -> None:
+        engine = build_engine(Direction.BULL)
+        engine.config.pressure_enable_target_cap = True
+        engine.config.pressure_dynamic_target_min_rr_enabled = True
+        engine.config.pressure_dynamic_target_compression_rr = 1.0
+        engine.config.pressure_dynamic_target_flat_rr = 1.25
+        engine.config.pressure_dynamic_target_breakout_rr = 1.5
+        engine.position = PositionState(
+            direction=Direction.BULL,
+            signal_entry_price=1000.0,
+            entry_price=1000.0,
+            sl_price=950.0,
+            initial_sl_price=950.0,
+            target_price=1200.0,
+            entry_time="2023-11-14 22:13",
+            capital_at_entry=1000.0,
+            risk_amount=50.0,
+            notional=1000.0,
+            quantity=1.0,
+            entry_fee=0.0,
+            entry_slippage_cost=0.0,
+            entry_idx=0,
+            entry_regime_score=0,
+            target_rr=4.0,
+            max_hold_bars=None,
+            trail_style="normal",
+            regime_label="flat",
+        )
+        engine._regime_feature_cache[engine.mapping[1]] = {
+            "adx": 28.0,
+            "momentum": 0.03,
+            "ema_gap": 0.006,
+            "bullish_structure": True,
+        }
+
+        target, rr, min_rr, reason = engine._pressure_target_cap_price(engine.position, 1060.0, 1)
+
+        self.assertIsNone(target)
+        self.assertIsNone(rr)
+        self.assertEqual(min_rr, 1.5)
+        self.assertEqual(reason, "dynamic_breakout")
+
 
 if __name__ == "__main__":
     unittest.main()

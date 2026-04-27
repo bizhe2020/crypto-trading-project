@@ -1,7 +1,7 @@
 {
   "name": "high_leverage_pressure_approach_lock_retarget_best",
   "branch": "high_leverage_10x_research",
-  "description": "Current best high-leverage dynamic structure strategy with flat-regime pressure-level target cap plus earlier approach-lock stop tightening.",
+  "description": "Current best high-leverage dynamic structure strategy with flat-regime pressure-level target cap, approach-lock stop tightening, and failed-breakout offense leverage guard.",
   "base_config": "config/config.live.5x-3pct.json",
   "runtime_paper_config": "config/config.paper.high-leverage-structure.json",
   "runtime_live_template": "config/config.live.high-leverage-structure.template.json",
@@ -16,22 +16,22 @@
     "last_verified_4h_end": "2026-04-26 08:00:00+00:00"
   },
   "expected_result": {
-    "score": 49991.86,
+    "score": 92373.78,
     "full": {
-      "total_return_pct": 48028.76,
-      "max_drawdown_pct": 35.01
+      "total_return_pct": 88481.28,
+      "max_drawdown_pct": 33.87
     },
     "current_year_2026": {
-      "total_return_pct": 20.17,
-      "max_drawdown_pct": 17.86
+      "total_return_pct": 29.87,
+      "max_drawdown_pct": 11.35
     },
     "last_60d": {
-      "total_return_pct": 5.19,
-      "max_drawdown_pct": 10.77
+      "total_return_pct": 7.85,
+      "max_drawdown_pct": 11.35
     },
     "last_30d": {
-      "total_return_pct": 9.57,
-      "max_drawdown_pct": 3.37
+      "total_return_pct": 8.47,
+      "max_drawdown_pct": 4.13
     },
     "engine": {
       "total_return_pct": 7854.32,
@@ -44,6 +44,14 @@
         "target_rr": 25,
         "end_of_data": 1
       }
+    },
+    "previous_best_without_failed_breakout_guard": {
+      "total_return_pct": 48028.76,
+      "max_drawdown_pct": 35.01,
+      "current_year_2026_return_pct": 20.17,
+      "current_year_2026_max_drawdown_pct": 17.86,
+      "last_60d_return_pct": 5.19,
+      "last_30d_return_pct": 9.57
     },
     "previous_best_without_approach_lock": {
       "total_return_pct": 38420.7,
@@ -64,6 +72,47 @@
       "max_drawdown_pct": 35.56,
       "current_year_2026_return_pct": 12.73,
       "last_60d_return_pct": 3.42
+    }
+  },
+  "promoted_guard": {
+    "name": "failed_breakout_offense_guard",
+    "scan_script": "scripts/scan_failed_breakout_offense_guard.py",
+    "scan_output": "var/high_leverage_expansion/failed_breakout_offense_guard_refined_scan.json",
+    "status": "promoted_enabled",
+    "expected_result": {
+      "score": 92373.78,
+      "full": {
+        "total_return_pct": 88481.28,
+        "max_drawdown_pct": 33.87
+      },
+      "current_year_2026": {
+        "total_return_pct": 29.87,
+        "max_drawdown_pct": 11.35
+      },
+      "last_60d": {
+        "total_return_pct": 7.85
+      },
+      "last_30d": {
+        "total_return_pct": 8.47
+      }
+    },
+    "guard_params": {
+      "failed_breakout_guard_enabled": true,
+      "failed_breakout_guard_leverage": 2.0,
+      "failed_breakout_guard_min_leverage": 7.5,
+      "failed_breakout_guard_min_quality_score": 2,
+      "failed_breakout_guard_min_momentum_pct": 6.0,
+      "failed_breakout_guard_min_ema_gap_pct": 2.0,
+      "failed_breakout_guard_min_adx": 38.0,
+      "failed_breakout_guard_regime_labels": [
+        "high_growth"
+      ],
+      "failed_breakout_guard_risk_modes": [
+        "offense"
+      ],
+      "failed_breakout_guard_directions": [
+        "BULL"
+      ]
     }
   },
   "failed_research_archive": "HIGH_LEVERAGE_FAILED_RESEARCH.md",
@@ -90,6 +139,16 @@
     "pressure_enable_target_cap": true,
     "pressure_target_min_rr": 1.25,
     "pressure_target_buffer_pct": 0.03,
+    "pressure_dynamic_target_min_rr_enabled": false,
+    "pressure_dynamic_target_compression_rr": 1.0,
+    "pressure_dynamic_target_flat_rr": 1.25,
+    "pressure_dynamic_target_breakout_rr": 1.5,
+    "pressure_dynamic_target_compression_adx_max": 18.0,
+    "pressure_dynamic_target_compression_momentum_abs_pct": 1.0,
+    "pressure_dynamic_target_compression_ema_gap_abs_pct": 0.25,
+    "pressure_dynamic_target_breakout_adx_min": 22.0,
+    "pressure_dynamic_target_breakout_momentum_pct": 1.5,
+    "pressure_dynamic_target_breakout_ema_gap_pct": 0.35,
     "pressure_touch_lock_enabled": true,
     "pressure_touch_lock_min_rr": 1.0,
     "pressure_touch_lock_buffer_pct": 0.03,
@@ -147,6 +206,22 @@
     "defense_leverage": 2.0,
     "defense_max_stop_distance_pct": 1.5,
     "defense_structure_max_stop_distance_pct": 1.9,
+    "failed_breakout_guard_enabled": true,
+    "failed_breakout_guard_leverage": 2.0,
+    "failed_breakout_guard_min_leverage": 7.5,
+    "failed_breakout_guard_min_quality_score": 2,
+    "failed_breakout_guard_min_momentum_pct": 6.0,
+    "failed_breakout_guard_min_ema_gap_pct": 2.0,
+    "failed_breakout_guard_min_adx": 38.0,
+    "failed_breakout_guard_regime_labels": [
+      "high_growth"
+    ],
+    "failed_breakout_guard_risk_modes": [
+      "offense"
+    ],
+    "failed_breakout_guard_directions": [
+      "BULL"
+    ],
     "min_liq_buffer_pct": 1.2,
     "maintenance_margin_pct": 0.5
   },
@@ -181,7 +256,23 @@
     "dynamic_reattack_unit_return_pct": 0.5,
     "dynamic_reattack_win_rate_pct": 33.0,
     "dynamic_reattack_signal_mode": "high_growth_or_tight_or_structure",
-    "dynamic_min_liquidation_buffer_pct": 1.2
+    "dynamic_min_liquidation_buffer_pct": 1.2,
+    "dynamic_failed_breakout_guard_enabled": true,
+    "dynamic_failed_breakout_guard_leverage": 2.0,
+    "dynamic_failed_breakout_guard_min_leverage": 7.5,
+    "dynamic_failed_breakout_guard_min_quality_score": 2,
+    "dynamic_failed_breakout_guard_min_momentum_pct": 6.0,
+    "dynamic_failed_breakout_guard_min_ema_gap_pct": 2.0,
+    "dynamic_failed_breakout_guard_min_adx": 38.0,
+    "dynamic_failed_breakout_guard_regime_labels": [
+      "high_growth"
+    ],
+    "dynamic_failed_breakout_guard_risk_modes": [
+      "offense"
+    ],
+    "dynamic_failed_breakout_guard_directions": [
+      "BULL"
+    ]
   },
   "reproduction_command": [
     "python3",
@@ -212,6 +303,8 @@
     "1.25",
     "--pressure-target-buffer-pct-values",
     "0.03",
+    "--pressure-dynamic-target-min-rr-enabled-values",
+    "false",
     "--pressure-regime-label-sets",
     "flat",
     "--pressure-touch-lock-enabled-values",

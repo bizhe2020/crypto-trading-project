@@ -62,6 +62,16 @@
   "pressure_enable_target_cap": true,
   "pressure_target_min_rr": 1.25,
   "pressure_target_buffer_pct": 0.03,
+  "pressure_dynamic_target_min_rr_enabled": false,
+  "pressure_dynamic_target_compression_rr": 1.0,
+  "pressure_dynamic_target_flat_rr": 1.25,
+  "pressure_dynamic_target_breakout_rr": 1.5,
+  "pressure_dynamic_target_compression_adx_max": 18.0,
+  "pressure_dynamic_target_compression_momentum_abs_pct": 1.0,
+  "pressure_dynamic_target_compression_ema_gap_abs_pct": 0.25,
+  "pressure_dynamic_target_breakout_adx_min": 22.0,
+  "pressure_dynamic_target_breakout_momentum_pct": 1.5,
+  "pressure_dynamic_target_breakout_ema_gap_pct": 0.35,
   "pressure_touch_lock_enabled": true,
   "pressure_touch_lock_min_rr": 1.0,
   "pressure_touch_lock_buffer_pct": 0.03,
@@ -126,6 +136,22 @@
   "dynamic_reattack_win_rate_pct": 33.0,
   "dynamic_reattack_signal_mode": "high_growth_or_tight_or_structure",
   "dynamic_min_liquidation_buffer_pct": 1.2,
+  "dynamic_failed_breakout_guard_enabled": true,
+  "dynamic_failed_breakout_guard_leverage": 2.0,
+  "dynamic_failed_breakout_guard_min_leverage": 7.5,
+  "dynamic_failed_breakout_guard_min_quality_score": 2,
+  "dynamic_failed_breakout_guard_min_momentum_pct": 6.0,
+  "dynamic_failed_breakout_guard_min_ema_gap_pct": 2.0,
+  "dynamic_failed_breakout_guard_min_adx": 38.0,
+  "dynamic_failed_breakout_guard_regime_labels": [
+    "high_growth"
+  ],
+  "dynamic_failed_breakout_guard_risk_modes": [
+    "offense"
+  ],
+  "dynamic_failed_breakout_guard_directions": [
+    "BULL"
+  ],
   "enable_regime_switching": true,
   "regime_switcher_thresholds": {
     "high_growth_score_min": 3,

@@ -50,6 +50,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pressure-enable-target-cap-values", default="false,true")
     parser.add_argument("--pressure-target-min-rr-values", default="1.5,2.0")
     parser.add_argument("--pressure-target-buffer-pct-values", default="0.05")
+    parser.add_argument("--pressure-dynamic-target-min-rr-enabled-values", default="false")
+    parser.add_argument("--pressure-dynamic-target-compression-rr-values", default="1.0")
+    parser.add_argument("--pressure-dynamic-target-flat-rr-values", default="1.25")
+    parser.add_argument("--pressure-dynamic-target-breakout-rr-values", default="1.5")
+    parser.add_argument("--pressure-dynamic-target-compression-adx-max-values", default="18.0")
+    parser.add_argument("--pressure-dynamic-target-compression-momentum-abs-pct-values", default="1.0")
+    parser.add_argument("--pressure-dynamic-target-compression-ema-gap-abs-pct-values", default="0.25")
+    parser.add_argument("--pressure-dynamic-target-breakout-adx-min-values", default="22.0")
+    parser.add_argument("--pressure-dynamic-target-breakout-momentum-pct-values", default="1.5")
+    parser.add_argument("--pressure-dynamic-target-breakout-ema-gap-pct-values", default="0.35")
     parser.add_argument("--pressure-touch-lock-enabled-values", default="false")
     parser.add_argument("--pressure-touch-lock-min-rr-values", default="1.5")
     parser.add_argument("--pressure-touch-lock-buffer-pct-values", default="0.08")
@@ -89,6 +99,24 @@ def pressure_param_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
         ):
             touch_lock_sets.append((True, min_rr, buffer_pct, atr_multiplier, requires_touch))
 
+    dynamic_target_sets: list[tuple[bool, float, float, float, float, float, float, float, float, float]] = []
+    for enabled in parse_bool_list(args.pressure_dynamic_target_min_rr_enabled_values):
+        if not enabled:
+            dynamic_target_sets.append((False, 1.0, 1.25, 1.5, 18.0, 1.0, 0.25, 22.0, 1.5, 0.35))
+            continue
+        for values in itertools.product(
+            parse_float_list(args.pressure_dynamic_target_compression_rr_values),
+            parse_float_list(args.pressure_dynamic_target_flat_rr_values),
+            parse_float_list(args.pressure_dynamic_target_breakout_rr_values),
+            parse_float_list(args.pressure_dynamic_target_compression_adx_max_values),
+            parse_float_list(args.pressure_dynamic_target_compression_momentum_abs_pct_values),
+            parse_float_list(args.pressure_dynamic_target_compression_ema_gap_abs_pct_values),
+            parse_float_list(args.pressure_dynamic_target_breakout_adx_min_values),
+            parse_float_list(args.pressure_dynamic_target_breakout_momentum_pct_values),
+            parse_float_list(args.pressure_dynamic_target_breakout_ema_gap_pct_values),
+        ):
+            dynamic_target_sets.append((True, *values))
+
     seen: set[str] = set()
     for (
         min_rr,
@@ -103,6 +131,7 @@ def pressure_param_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
         regime_label_set,
         wick_ratio,
         close_pct,
+        dynamic_target,
         touch_lock,
     ) in itertools.product(
         parse_float_list(args.pressure_min_rr_values),
@@ -117,8 +146,21 @@ def pressure_param_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
         parse_str_list(args.pressure_regime_label_sets),
         parse_float_list(args.pressure_rejection_wick_ratio_values),
         parse_float_list(args.pressure_rejection_close_pct_values),
+        dynamic_target_sets,
         touch_lock_sets,
     ):
+        (
+            dynamic_target_enabled,
+            dynamic_target_compression_rr,
+            dynamic_target_flat_rr,
+            dynamic_target_breakout_rr,
+            dynamic_target_compression_adx_max,
+            dynamic_target_compression_momentum_abs_pct,
+            dynamic_target_compression_ema_gap_abs_pct,
+            dynamic_target_breakout_adx_min,
+            dynamic_target_breakout_momentum_pct,
+            dynamic_target_breakout_ema_gap_pct,
+        ) = dynamic_target
         (
             touch_lock_enabled,
             touch_lock_min_rr,
@@ -139,6 +181,16 @@ def pressure_param_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
             "pressure_enable_target_cap": target_cap,
             "pressure_target_min_rr": target_min_rr,
             "pressure_target_buffer_pct": target_buffer_pct,
+            "pressure_dynamic_target_min_rr_enabled": dynamic_target_enabled,
+            "pressure_dynamic_target_compression_rr": dynamic_target_compression_rr,
+            "pressure_dynamic_target_flat_rr": dynamic_target_flat_rr,
+            "pressure_dynamic_target_breakout_rr": dynamic_target_breakout_rr,
+            "pressure_dynamic_target_compression_adx_max": dynamic_target_compression_adx_max,
+            "pressure_dynamic_target_compression_momentum_abs_pct": dynamic_target_compression_momentum_abs_pct,
+            "pressure_dynamic_target_compression_ema_gap_abs_pct": dynamic_target_compression_ema_gap_abs_pct,
+            "pressure_dynamic_target_breakout_adx_min": dynamic_target_breakout_adx_min,
+            "pressure_dynamic_target_breakout_momentum_pct": dynamic_target_breakout_momentum_pct,
+            "pressure_dynamic_target_breakout_ema_gap_pct": dynamic_target_breakout_ema_gap_pct,
             "pressure_touch_lock_enabled": touch_lock_enabled,
             "pressure_touch_lock_min_rr": touch_lock_min_rr,
             "pressure_touch_lock_buffer_pct": touch_lock_buffer_pct,

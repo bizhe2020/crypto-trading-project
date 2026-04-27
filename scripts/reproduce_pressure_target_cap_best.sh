@@ -18,6 +18,7 @@ python3 scripts/scan_pressure_level_trailing.py \
   --pressure-enable-target-cap-values true \
   --pressure-target-min-rr-values 1.25 \
   --pressure-target-buffer-pct-values 0.03 \
+  --pressure-dynamic-target-min-rr-enabled-values false \
   --pressure-regime-label-sets flat \
   --pressure-touch-lock-enabled-values true \
   --pressure-touch-lock-min-rr-values 1.0 \
