@@ -52,6 +52,47 @@ Previous best without pressure-level target cap:
 full=26868.27%/35.56% year=12.73% 60d=3.42%
 ```
 
+## Controlled Scale-In Research
+
+Controlled scale-in was tested as a research-only extension on top of the current best pressure target-cap strategy. The implementation keeps a single aggregate position, allows at most two slots, uses shared total risk, requires the stop to be at breakeven, and only permits scale-in during `high_growth` regime.
+
+Research command:
+
+```bash
+scripts/reproduce_controlled_scale_in_scan.sh
+```
+
+Strict scan result from `var/high_leverage_expansion/controlled_scale_in_strict_scan.json`:
+
+| Case | Full Return | MaxDD | 2026 | 60d | Scale-In Events | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| Current best baseline / no triggered scale-in | `38420.70%` | `35.04%` | `19.48%` | `4.63%` | `0` | still best |
+| Best candidate with actual scale-in | `37657.53%` | `35.04%` | `19.48%` | `4.63%` | `1` | below baseline |
+| More permissive sample | `29649.80%` | `35.04%` | `17.31%` | `2.73%` | `8` | below baseline |
+
+Conclusion: controlled scale-in is implemented and reproducible, but it is not adopted as the current best strategy because every candidate that actually added size reduced full-window compounding. Keep `enable_controlled_scale_in=false` for live/current best until a later filter can prove improvement over `38420.70% / 35.04%`.
+
+Strict controlled scale-in parameters tested:
+
+```json
+{
+  "enable_controlled_scale_in": true,
+  "scale_in_max_slots": 2,
+  "scale_in_trigger_rr": [1.5, 2.0],
+  "scale_in_min_bars_held": 8,
+  "scale_in_min_interval_bars": 16,
+  "scale_in_risk_fraction": [0.1, 0.25],
+  "scale_in_total_risk_multiplier": 1.0,
+  "scale_in_max_total_notional_multiplier": 1.0,
+  "scale_in_min_target_rr": 3.0,
+  "scale_in_min_price_move_pct": 0.5,
+  "scale_in_max_stop_distance_pct": [1.0, 1.5],
+  "scale_in_require_stop_at_breakeven": true,
+  "scale_in_regime_labels": ["high_growth"],
+  "scale_in_trail_styles": ["loose"]
+}
+```
+
 Current best pressure-level parameters:
 
 ```json

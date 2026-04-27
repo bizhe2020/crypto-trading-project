@@ -52,6 +52,46 @@
       "last_60d_return_pct": 3.42
     }
   },
+  "controlled_scale_in_research": {
+    "adopted": false,
+    "reason": "Strict scans did not improve full-window compounding versus the no-scale baseline.",
+    "reproduction_script": "scripts/reproduce_controlled_scale_in_scan.sh",
+    "scan_output": "var/high_leverage_expansion/controlled_scale_in_strict_scan.json",
+    "baseline": {
+      "total_return_pct": 38420.7,
+      "max_drawdown_pct": 35.04,
+      "current_year_2026_return_pct": 19.48,
+      "last_60d_return_pct": 4.63,
+      "scale_in_events": 0
+    },
+    "best_actual_scale_in_candidate": {
+      "total_return_pct": 37657.53,
+      "max_drawdown_pct": 35.04,
+      "current_year_2026_return_pct": 19.48,
+      "last_60d_return_pct": 4.63,
+      "scale_in_events": 1,
+      "params": {
+        "enable_controlled_scale_in": true,
+        "scale_in_max_slots": 2,
+        "scale_in_trigger_rr": 1.5,
+        "scale_in_min_bars_held": 8,
+        "scale_in_min_interval_bars": 16,
+        "scale_in_risk_fraction": 0.1,
+        "scale_in_total_risk_multiplier": 1.0,
+        "scale_in_max_total_notional_multiplier": 1.0,
+        "scale_in_min_target_rr": 3.0,
+        "scale_in_min_price_move_pct": 0.5,
+        "scale_in_max_stop_distance_pct": 1.5,
+        "scale_in_require_stop_at_breakeven": true,
+        "scale_in_regime_labels": [
+          "high_growth"
+        ],
+        "scale_in_trail_styles": [
+          "loose"
+        ]
+      }
+    }
+  },
   "pressure_level_target_cap_params": {
     "enable_pressure_level_trailing": true,
     "pressure_min_rr": 2.0,

@@ -22,6 +22,7 @@ class ActionType(str, Enum):
     HOLD = "HOLD"
     OPEN_LONG = "OPEN_LONG"
     OPEN_SHORT = "OPEN_SHORT"
+    SCALE_IN = "SCALE_IN"
     CLOSE_POSITION = "CLOSE_POSITION"
     UPDATE_STOP = "UPDATE_STOP"
 
@@ -62,6 +63,9 @@ class Trade:
     regime_label: str | None = None
     time_based_trailing_enabled: bool = False
     auto_tit_reason: str | None = None
+    scale_in_count: int = 0
+    scale_in_notional: float = 0.0
+    scale_in_quantity: float = 0.0
 
 
 @dataclass
@@ -171,6 +175,20 @@ class StrategyConfig:
     regime_switcher_hg_overrides: dict[str, Any] | None = None
     regime_switcher_normal_overrides: dict[str, Any] | None = None
     regime_switcher_flat_overrides: dict[str, Any] | None = None
+    enable_controlled_scale_in: bool = False
+    scale_in_max_slots: int = 2
+    scale_in_trigger_rr: float = 1.0
+    scale_in_min_bars_held: int = 2
+    scale_in_min_interval_bars: int = 8
+    scale_in_risk_fraction: float = 0.5
+    scale_in_total_risk_multiplier: float = 1.0
+    scale_in_max_total_notional_multiplier: float = 1.0
+    scale_in_min_target_rr: float = 1.5
+    scale_in_min_price_move_pct: float = 0.0
+    scale_in_max_stop_distance_pct: float = 2.0
+    scale_in_require_stop_at_breakeven: bool = True
+    scale_in_regime_labels: list[str] | None = None
+    scale_in_trail_styles: list[str] | None = None
     taker_fee_rate: float = 0.0005
     slippage_bps: float = 2.0
 
@@ -217,6 +235,11 @@ class PositionState:
     exchange_order_id: str | None = None
     exchange_attach_algo_id: str | None = None
     exchange_attach_algo_client_id: str | None = None
+    scale_in_slots: int = 1
+    scale_in_count: int = 0
+    scale_in_last_idx: int | None = None
+    scale_in_notional: float = 0.0
+    scale_in_quantity: float = 0.0
 
 
 @dataclass
@@ -729,6 +752,9 @@ class ScalpRobustEngine:
                 regime_label=pos.regime_label,
                 time_based_trailing_enabled=pos.time_based_trailing_enabled,
                 auto_tit_reason=pos.auto_tit_reason,
+                scale_in_count=pos.scale_in_count,
+                scale_in_notional=pos.scale_in_notional,
+                scale_in_quantity=pos.scale_in_quantity,
             )
         )
         self.capital += pnl
@@ -795,6 +821,9 @@ class ScalpRobustEngine:
             ):
                 actions.append(self.close_position(idx, "target_rr", self.position.target_price))
                 return actions
+            scale_action = self._maybe_controlled_scale_in(pos, curr, idx)
+            if scale_action:
+                actions.append(scale_action)
         else:
             if curr.h >= pos.sl_price:
                 actions.append(self.close_position(idx, "stop_loss", pos.sl_price))
@@ -827,8 +856,189 @@ class ScalpRobustEngine:
             ):
                 actions.append(self.close_position(idx, "target_rr", self.position.target_price))
                 return actions
+            scale_action = self._maybe_controlled_scale_in(pos, curr, idx)
+            if scale_action:
+                actions.append(scale_action)
 
         return actions
+
+    def _open_risk_at_stop(self, pos: PositionState, stop_price: float) -> float:
+        if pos.direction == Direction.BULL:
+            return max((pos.entry_price - stop_price) * pos.quantity, 0.0)
+        return max((stop_price - pos.entry_price) * pos.quantity, 0.0)
+
+    def _target_reward_rr_from_entry(self, pos: PositionState, entry_price: float, stop_price: float) -> float:
+        risk_price = abs(entry_price - stop_price)
+        if risk_price <= 0:
+            return 0.0
+        if pos.direction == Direction.BULL:
+            return (pos.target_price - entry_price) / risk_price
+        return (entry_price - pos.target_price) / risk_price
+
+    def _controlled_scale_in_total_risk(self, pos: PositionState) -> float:
+        multiplier = max(float(self.config.scale_in_total_risk_multiplier or 0.0), 0.0)
+        if multiplier <= 0:
+            return 0.0
+        return pos.risk_amount * multiplier
+
+    def _controlled_scale_in_max_notional(self, pos: PositionState) -> float:
+        multiplier = max(float(self.config.scale_in_max_total_notional_multiplier or 0.0), 0.0)
+        if multiplier <= 0:
+            return 0.0
+        if self.config.fixed_notional_usdt is not None:
+            base = float(self.config.fixed_notional_usdt)
+        else:
+            base = pos.capital_at_entry * self.config.position_size_pct * self.config.leverage
+        return base * multiplier
+
+    def _controlled_scale_in_stop_ok(self, pos: PositionState) -> bool:
+        if not self.config.scale_in_require_stop_at_breakeven:
+            return True
+        if pos.direction == Direction.BULL:
+            return pos.sl_price >= pos.entry_price
+        return pos.sl_price <= pos.entry_price
+
+    def _maybe_controlled_scale_in(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
+        if not self.config.enable_controlled_scale_in:
+            return None
+        max_slots = max(int(self.config.scale_in_max_slots or 1), 1)
+        if pos.scale_in_slots >= max_slots:
+            return None
+        if self._bars_held(pos, idx) < max(int(self.config.scale_in_min_bars_held or 0), 0):
+            return None
+        if pos.scale_in_last_idx is not None:
+            min_interval = max(int(self.config.scale_in_min_interval_bars or 0), 0)
+            if idx - pos.scale_in_last_idx < min_interval:
+                return None
+
+        allowed_regime_labels = self._configured_set(self.config.scale_in_regime_labels)
+        current_regime = self._regime_switch_label_for_idx(idx)
+        if allowed_regime_labels is not None and current_regime not in allowed_regime_labels:
+            return None
+        allowed_trail_styles = self._configured_set(self.config.scale_in_trail_styles)
+        if allowed_trail_styles is not None and (pos.trail_style or "") not in allowed_trail_styles:
+            return None
+
+        unrealized_rr = self._unrealized_rr(pos, curr.c)
+        if unrealized_rr < float(self.config.scale_in_trigger_rr or 0.0):
+            return None
+        if not self._controlled_scale_in_stop_ok(pos):
+            return None
+        if pos.direction == Direction.BULL and curr.c <= pos.entry_price:
+            return None
+        if pos.direction == Direction.BEAR and curr.c >= pos.entry_price:
+            return None
+
+        min_move_pct = max(float(self.config.scale_in_min_price_move_pct or 0.0), 0.0)
+        if min_move_pct > 0 and pos.entry_price > 0:
+            move_pct = abs(curr.c - pos.entry_price) / pos.entry_price * 100.0
+            if move_pct < min_move_pct:
+                return None
+
+        add_entry_signal = curr.c
+        add_entry = self._apply_entry_slippage(add_entry_signal, pos.direction)
+        risk_price = abs(add_entry - pos.sl_price)
+        if risk_price <= 0:
+            return None
+        target_reward_rr = self._target_reward_rr_from_entry(pos, add_entry, pos.sl_price)
+        if target_reward_rr < float(self.config.scale_in_min_target_rr or 0.0):
+            return None
+
+        total_risk_cap = self._controlled_scale_in_total_risk(pos)
+        existing_risk = self._open_risk_at_stop(pos, pos.sl_price)
+        available_risk = total_risk_cap - existing_risk
+        if available_risk <= 0:
+            return None
+        add_risk = available_risk * max(float(self.config.scale_in_risk_fraction or 0.0), 0.0)
+        if add_risk <= 0:
+            return None
+        risk_based_notional = (add_risk / risk_price) * add_entry
+
+        max_total_notional = self._controlled_scale_in_max_notional(pos)
+        remaining_notional = max_total_notional - pos.notional
+        if remaining_notional <= 0:
+            return None
+        add_notional = min(risk_based_notional, remaining_notional)
+        if add_notional <= 0:
+            return None
+        add_quantity = add_notional / add_entry if add_entry > 0 else 0.0
+        if add_quantity <= 0:
+            return None
+
+        old_entry = pos.entry_price
+        old_quantity = pos.quantity
+        old_notional = pos.notional
+        old_initial_sl_price = pos.initial_sl_price
+        new_quantity = old_quantity + add_quantity
+        if new_quantity <= 0:
+            return None
+        new_entry_price = ((old_entry * old_quantity) + (add_entry * add_quantity)) / new_quantity
+        max_stop_distance_pct = max(float(self.config.scale_in_max_stop_distance_pct or 0.0), 0.0)
+        if max_stop_distance_pct > 0 and new_entry_price > 0:
+            projected_stop_distance_pct = abs(new_entry_price - pos.sl_price) / new_entry_price * 100.0
+            if projected_stop_distance_pct > max_stop_distance_pct:
+                return None
+
+        pos.entry_price = new_entry_price
+        pos.initial_sl_price = pos.sl_price
+        pos.quantity = new_quantity
+        pos.notional = old_notional + add_notional
+        pos.entry_fee += add_notional * self.config.taker_fee_rate
+        pos.entry_slippage_cost += add_quantity * abs(add_entry - add_entry_signal)
+        pos.scale_in_slots += 1
+        pos.scale_in_count += 1
+        pos.scale_in_last_idx = idx
+        pos.scale_in_notional += add_notional
+        pos.scale_in_quantity += add_quantity
+        risk_price_from_initial = abs(pos.entry_price - pos.initial_sl_price)
+        if risk_price_from_initial > 0:
+            if pos.direction == Direction.BULL:
+                pos.target_rr = (pos.target_price - pos.entry_price) / risk_price_from_initial
+            else:
+                pos.target_rr = (pos.entry_price - pos.target_price) / risk_price_from_initial
+
+        metadata = {
+            "index": idx,
+            "slot": pos.scale_in_slots,
+            "max_slots": max_slots,
+            "regime_label": current_regime,
+            "trail_style": pos.trail_style,
+            "unrealized_rr": unrealized_rr,
+            "old_entry_price": old_entry,
+            "new_entry_price": pos.entry_price,
+            "old_initial_sl_price": old_initial_sl_price,
+            "new_initial_sl_price": pos.initial_sl_price,
+            "projected_stop_distance_pct": (
+                abs(pos.entry_price - pos.sl_price) / pos.entry_price * 100.0 if pos.entry_price > 0 else None
+            ),
+            "max_stop_distance_pct": max_stop_distance_pct,
+            "entry_price": add_entry,
+            "signal_entry_price": add_entry_signal,
+            "stop_price": pos.sl_price,
+            "target_price": pos.target_price,
+            "target_reward_rr": target_reward_rr,
+            "existing_risk": existing_risk,
+            "available_risk": available_risk,
+            "add_risk": add_risk,
+            "risk_based_notional": risk_based_notional,
+            "max_total_notional": max_total_notional,
+            "remaining_notional": remaining_notional,
+            "notional": add_notional,
+            "quantity": add_quantity,
+            "total_notional": pos.notional,
+            "total_quantity": pos.quantity,
+            "scale_in_count": pos.scale_in_count,
+        }
+        return StrategyAction(
+            type=ActionType.SCALE_IN,
+            timestamp=self._timestamp_for_idx(idx),
+            direction=pos.direction,
+            entry_price=add_entry,
+            stop_price=pos.sl_price,
+            target_price=pos.target_price,
+            reason="controlled_scale_in",
+            metadata=metadata,
+        )
 
     def _round_steps_for_pressure_levels(self) -> list[float]:
         raw_steps = self.config.pressure_round_steps_usdt
@@ -1779,6 +1989,20 @@ class ScalpRobustEngine:
                 "pressure_target_buffer_pct": self.config.pressure_target_buffer_pct,
                 "pressure_regime_labels": self.config.pressure_regime_labels,
                 "pressure_trail_styles": self.config.pressure_trail_styles,
+                "enable_controlled_scale_in": self.config.enable_controlled_scale_in,
+                "scale_in_max_slots": self.config.scale_in_max_slots,
+                "scale_in_trigger_rr": self.config.scale_in_trigger_rr,
+                "scale_in_min_bars_held": self.config.scale_in_min_bars_held,
+                "scale_in_min_interval_bars": self.config.scale_in_min_interval_bars,
+                "scale_in_risk_fraction": self.config.scale_in_risk_fraction,
+                "scale_in_total_risk_multiplier": self.config.scale_in_total_risk_multiplier,
+                "scale_in_max_total_notional_multiplier": self.config.scale_in_max_total_notional_multiplier,
+                "scale_in_min_target_rr": self.config.scale_in_min_target_rr,
+                "scale_in_min_price_move_pct": self.config.scale_in_min_price_move_pct,
+                "scale_in_max_stop_distance_pct": self.config.scale_in_max_stop_distance_pct,
+                "scale_in_require_stop_at_breakeven": self.config.scale_in_require_stop_at_breakeven,
+                "scale_in_regime_labels": self.config.scale_in_regime_labels,
+                "scale_in_trail_styles": self.config.scale_in_trail_styles,
                 "taker_fee_rate": self.config.taker_fee_rate,
                 "slippage_bps": self.config.slippage_bps,
             },
