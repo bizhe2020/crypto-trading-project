@@ -125,6 +125,11 @@ class ExecutorConfig:
     pressure_enable_target_cap: bool = False
     pressure_target_min_rr: float = 1.5
     pressure_target_buffer_pct: float = 0.05
+    pressure_touch_lock_enabled: bool = False
+    pressure_touch_lock_min_rr: float = 1.5
+    pressure_touch_lock_buffer_pct: float = 0.08
+    pressure_touch_lock_atr_multiplier: float = 1.0
+    pressure_touch_lock_requires_touch: bool = True
     pressure_regime_labels: list[str] | None = None
     pressure_trail_styles: list[str] | None = None
     enable_shadow_risk_gate: bool = False
@@ -291,6 +296,11 @@ class ExecutorConfig:
             pressure_enable_target_cap=self.pressure_enable_target_cap,
             pressure_target_min_rr=self.pressure_target_min_rr,
             pressure_target_buffer_pct=self.pressure_target_buffer_pct,
+            pressure_touch_lock_enabled=self.pressure_touch_lock_enabled,
+            pressure_touch_lock_min_rr=self.pressure_touch_lock_min_rr,
+            pressure_touch_lock_buffer_pct=self.pressure_touch_lock_buffer_pct,
+            pressure_touch_lock_atr_multiplier=self.pressure_touch_lock_atr_multiplier,
+            pressure_touch_lock_requires_touch=self.pressure_touch_lock_requires_touch,
             pressure_regime_labels=self.pressure_regime_labels,
             pressure_trail_styles=self.pressure_trail_styles,
             enable_regime_switching=self.enable_regime_switching,

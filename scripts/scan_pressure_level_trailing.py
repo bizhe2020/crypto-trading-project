@@ -50,6 +50,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pressure-enable-target-cap-values", default="false,true")
     parser.add_argument("--pressure-target-min-rr-values", default="1.5,2.0")
     parser.add_argument("--pressure-target-buffer-pct-values", default="0.05")
+    parser.add_argument("--pressure-touch-lock-enabled-values", default="false")
+    parser.add_argument("--pressure-touch-lock-min-rr-values", default="1.5")
+    parser.add_argument("--pressure-touch-lock-buffer-pct-values", default="0.08")
+    parser.add_argument("--pressure-touch-lock-atr-multiplier-values", default="1.0")
+    parser.add_argument("--pressure-touch-lock-requires-touch-values", default="true")
     parser.add_argument(
         "--pressure-regime-label-sets",
         default="flat+normal",
@@ -71,6 +76,20 @@ def pressure_param_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.include_disabled_baseline:
         candidates.append({"enable_pressure_level_trailing": False})
 
+    touch_lock_sets: list[tuple[bool, float, float, float, bool]] = []
+    for enabled in parse_bool_list(args.pressure_touch_lock_enabled_values):
+        if not enabled:
+            touch_lock_sets.append((False, 0.0, 0.0, 0.0, True))
+            continue
+        for min_rr, buffer_pct, atr_multiplier, requires_touch in itertools.product(
+            parse_float_list(args.pressure_touch_lock_min_rr_values),
+            parse_float_list(args.pressure_touch_lock_buffer_pct_values),
+            parse_float_list(args.pressure_touch_lock_atr_multiplier_values),
+            parse_bool_list(args.pressure_touch_lock_requires_touch_values),
+        ):
+            touch_lock_sets.append((True, min_rr, buffer_pct, atr_multiplier, requires_touch))
+
+    seen: set[str] = set()
     for (
         min_rr,
         lock_rr,
@@ -84,6 +103,7 @@ def pressure_param_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
         regime_label_set,
         wick_ratio,
         close_pct,
+        touch_lock,
     ) in itertools.product(
         parse_float_list(args.pressure_min_rr_values),
         parse_float_list(args.pressure_lock_rr_values),
@@ -97,31 +117,47 @@ def pressure_param_grid(args: argparse.Namespace) -> list[dict[str, Any]]:
         parse_str_list(args.pressure_regime_label_sets),
         parse_float_list(args.pressure_rejection_wick_ratio_values),
         parse_float_list(args.pressure_rejection_close_pct_values),
+        touch_lock_sets,
     ):
-        candidates.append(
-            {
-                "enable_pressure_level_trailing": True,
-                "pressure_min_rr": min_rr,
-                "pressure_rejection_min_rr": rejection_min_rr,
-                "pressure_lock_rr": lock_rr,
-                "pressure_atr_multiplier": atr_multiplier,
-                "pressure_proximity_pct": proximity_pct,
-                "pressure_rejection_wick_ratio": wick_ratio,
-                "pressure_rejection_close_pct": close_pct,
-                "pressure_take_profit_on_rejection": take_profit,
-                "pressure_enable_target_cap": target_cap,
-                "pressure_target_min_rr": target_min_rr,
-                "pressure_target_buffer_pct": target_buffer_pct,
-                "pressure_regime_labels": None if regime_label_set == "all" else regime_label_set.split("+"),
-                "pressure_round_steps_usdt": [1000.0, 500.0],
-                "pressure_cluster_lookback_bars": 192,
-                "pressure_cluster_bin_usdt": 250.0,
-                "pressure_cluster_min_touches": 4,
-                "pressure_cluster_min_volume_ratio": 1.25,
-                "pressure_swing_lookback_bars": 96,
-                "pressure_min_bars_held": 1,
-            }
-        )
+        (
+            touch_lock_enabled,
+            touch_lock_min_rr,
+            touch_lock_buffer_pct,
+            touch_lock_atr_multiplier,
+            touch_lock_requires_touch,
+        ) = touch_lock
+        candidate = {
+            "enable_pressure_level_trailing": True,
+            "pressure_min_rr": min_rr,
+            "pressure_rejection_min_rr": rejection_min_rr,
+            "pressure_lock_rr": lock_rr,
+            "pressure_atr_multiplier": atr_multiplier,
+            "pressure_proximity_pct": proximity_pct,
+            "pressure_rejection_wick_ratio": wick_ratio,
+            "pressure_rejection_close_pct": close_pct,
+            "pressure_take_profit_on_rejection": take_profit,
+            "pressure_enable_target_cap": target_cap,
+            "pressure_target_min_rr": target_min_rr,
+            "pressure_target_buffer_pct": target_buffer_pct,
+            "pressure_touch_lock_enabled": touch_lock_enabled,
+            "pressure_touch_lock_min_rr": touch_lock_min_rr,
+            "pressure_touch_lock_buffer_pct": touch_lock_buffer_pct,
+            "pressure_touch_lock_atr_multiplier": touch_lock_atr_multiplier,
+            "pressure_touch_lock_requires_touch": touch_lock_requires_touch,
+            "pressure_regime_labels": None if regime_label_set == "all" else regime_label_set.split("+"),
+            "pressure_round_steps_usdt": [1000.0, 500.0],
+            "pressure_cluster_lookback_bars": 192,
+            "pressure_cluster_bin_usdt": 250.0,
+            "pressure_cluster_min_touches": 4,
+            "pressure_cluster_min_volume_ratio": 1.25,
+            "pressure_swing_lookback_bars": 96,
+            "pressure_min_bars_held": 1,
+        }
+        key = json.dumps(candidate, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
     return candidates
 
 

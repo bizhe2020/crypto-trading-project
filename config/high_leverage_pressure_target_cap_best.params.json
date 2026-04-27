@@ -1,13 +1,13 @@
 {
-  "name": "high_leverage_pressure_target_cap_flat_best",
+  "name": "high_leverage_pressure_approach_lock_retarget_best",
   "branch": "high_leverage_10x_research",
-  "description": "Current best high-leverage dynamic structure strategy with pressure-level target cap enabled only in flat regime.",
+  "description": "Current best high-leverage dynamic structure strategy with flat-regime pressure-level target cap plus earlier approach-lock stop tightening.",
   "base_config": "config/config.live.5x-3pct.json",
   "runtime_paper_config": "config/config.paper.high-leverage-structure.json",
   "runtime_live_template": "config/config.live.high-leverage-structure.template.json",
   "reproduction_script": "scripts/reproduce_pressure_target_cap_best.sh",
   "scan_script": "scripts/scan_pressure_level_trailing.py",
-  "scan_output": "var/high_leverage_expansion/pressure_target_cap_flat_scan_full.json",
+  "scan_output": "var/high_leverage_expansion/pressure_approach_lock_retarget_best_full.json",
   "data": {
     "start_date": "2022-01-01",
     "data_15m": "data/okx/futures/BTC_USDT_USDT-15m-futures.feather",
@@ -16,34 +16,48 @@
     "last_verified_4h_end": "2026-04-26 08:00:00+00:00"
   },
   "expected_result": {
-    "score": 40217.2,
+    "score": 49991.86,
     "full": {
-      "total_return_pct": 38420.7,
-      "max_drawdown_pct": 35.04
+      "total_return_pct": 48028.76,
+      "max_drawdown_pct": 35.01
     },
     "current_year_2026": {
-      "total_return_pct": 19.48,
+      "total_return_pct": 20.17,
       "max_drawdown_pct": 17.86
     },
     "last_60d": {
-      "total_return_pct": 4.63,
+      "total_return_pct": 5.19,
       "max_drawdown_pct": 10.77
     },
     "last_30d": {
-      "total_return_pct": 8.99,
+      "total_return_pct": 9.57,
       "max_drawdown_pct": 3.37
     },
     "engine": {
-      "total_return_pct": 7822.23,
+      "total_return_pct": 7854.32,
       "max_drawdown_pct": 45.56,
-      "sharpe_ratio": 2.642,
+      "sharpe_ratio": 2.644,
       "total_trades": 413,
       "exit_reasons": {
-        "stop_loss": 370,
+        "stop_loss": 374,
         "time_stop_exit": 13,
-        "target_rr": 29,
+        "target_rr": 25,
         "end_of_data": 1
       }
+    },
+    "previous_best_without_approach_lock": {
+      "total_return_pct": 38420.7,
+      "max_drawdown_pct": 35.04,
+      "current_year_2026_return_pct": 19.48,
+      "last_60d_return_pct": 4.63,
+      "last_30d_return_pct": 8.99
+    },
+    "previous_best_before_retarget": {
+      "total_return_pct": 47862.97,
+      "max_drawdown_pct": 35.04,
+      "current_year_2026_return_pct": 20.12,
+      "last_60d_return_pct": 5.19,
+      "last_30d_return_pct": 9.57
     },
     "previous_best_without_pressure_cap": {
       "total_return_pct": 26868.27,
@@ -74,8 +88,13 @@
     "pressure_min_bars_held": 1,
     "pressure_take_profit_on_rejection": false,
     "pressure_enable_target_cap": true,
-    "pressure_target_min_rr": 1.5,
-    "pressure_target_buffer_pct": 0.05,
+    "pressure_target_min_rr": 1.25,
+    "pressure_target_buffer_pct": 0.03,
+    "pressure_touch_lock_enabled": true,
+    "pressure_touch_lock_min_rr": 1.0,
+    "pressure_touch_lock_buffer_pct": 0.03,
+    "pressure_touch_lock_atr_multiplier": 0.0,
+    "pressure_touch_lock_requires_touch": false,
     "pressure_regime_labels": [
       "flat"
     ],
@@ -175,7 +194,6 @@
     "data/okx/futures/BTC_USDT_USDT-4h-futures.feather",
     "--start-date",
     "2022-01-01",
-    "--include-disabled-baseline",
     "--pressure-min-rr-values",
     "2.0",
     "--pressure-lock-rr-values",
@@ -191,14 +209,24 @@
     "--pressure-enable-target-cap-values",
     "true",
     "--pressure-target-min-rr-values",
-    "1.5",
+    "1.25",
     "--pressure-target-buffer-pct-values",
-    "0.05",
+    "0.03",
     "--pressure-regime-label-sets",
     "flat",
+    "--pressure-touch-lock-enabled-values",
+    "true",
+    "--pressure-touch-lock-min-rr-values",
+    "1.0",
+    "--pressure-touch-lock-buffer-pct-values",
+    "0.03",
+    "--pressure-touch-lock-atr-multiplier-values",
+    "0.0",
+    "--pressure-touch-lock-requires-touch-values",
+    "false",
     "--top",
-    "5",
+    "1",
     "--output",
-    "var/high_leverage_expansion/pressure_target_cap_flat_scan_full.json"
+    "var/high_leverage_expansion/pressure_approach_lock_retarget_best_full.json"
   ]
 }

@@ -164,6 +164,11 @@ class StrategyConfig:
     pressure_enable_target_cap: bool = False
     pressure_target_min_rr: float = 1.5
     pressure_target_buffer_pct: float = 0.05
+    pressure_touch_lock_enabled: bool = False
+    pressure_touch_lock_min_rr: float = 1.5
+    pressure_touch_lock_buffer_pct: float = 0.08
+    pressure_touch_lock_atr_multiplier: float = 1.0
+    pressure_touch_lock_requires_touch: bool = True
     pressure_regime_labels: list[str] | None = None
     pressure_trail_styles: list[str] | None = None
     enable_regime_switching: bool = False
@@ -1023,10 +1028,31 @@ class ScalpRobustEngine:
         atr = self._atr_for_idx(idx)
         atr_multiplier = float(self.config.pressure_atr_multiplier or 0.0)
         lock_rr = float(self.config.pressure_lock_rr or 0.0)
+        touch_lock_requires_touch = bool(self.config.pressure_touch_lock_requires_touch)
+        touch_lock_allowed = bool(pressure.get("touched")) or not touch_lock_requires_touch
+        touch_lock_enabled = (
+            bool(self.config.pressure_touch_lock_enabled)
+            and touch_lock_allowed
+            and unrealized_rr >= float(self.config.pressure_touch_lock_min_rr or 0.0)
+        )
+        touch_lock_buffer_pct = max(float(self.config.pressure_touch_lock_buffer_pct or 0.0), 0.0) / 100.0
+        touch_lock_atr_multiplier = float(self.config.pressure_touch_lock_atr_multiplier or 0.0)
         if pos.direction == Direction.BULL:
             new_stop = pos.entry_price + risk_price * lock_rr
             if atr > 0 and atr_multiplier > 0:
                 new_stop = max(new_stop, curr.c - atr_multiplier * atr)
+            if touch_lock_enabled:
+                touch_candidates = []
+                if touch_lock_buffer_pct > 0:
+                    touch_candidates.append(level * (1.0 - touch_lock_buffer_pct))
+                if atr > 0 and touch_lock_atr_multiplier > 0:
+                    touch_candidates.append(curr.c - touch_lock_atr_multiplier * atr)
+                if touch_candidates:
+                    new_stop = max(new_stop, max(touch_candidates))
+                    metadata["touch_lock_enabled"] = True
+                    metadata["touch_lock_requires_touch"] = touch_lock_requires_touch
+                    metadata["touch_lock_buffer_pct"] = touch_lock_buffer_pct * 100.0
+                    metadata["touch_lock_atr_multiplier"] = touch_lock_atr_multiplier
             new_stop = min(new_stop, curr.c * 0.9995)
             if new_stop <= pos.sl_price:
                 if target_update is None:
@@ -1044,6 +1070,18 @@ class ScalpRobustEngine:
             new_stop = pos.entry_price - risk_price * lock_rr
             if atr > 0 and atr_multiplier > 0:
                 new_stop = min(new_stop, curr.c + atr_multiplier * atr)
+            if touch_lock_enabled:
+                touch_candidates = []
+                if touch_lock_buffer_pct > 0:
+                    touch_candidates.append(level * (1.0 + touch_lock_buffer_pct))
+                if atr > 0 and touch_lock_atr_multiplier > 0:
+                    touch_candidates.append(curr.c + touch_lock_atr_multiplier * atr)
+                if touch_candidates:
+                    new_stop = min(new_stop, min(touch_candidates))
+                    metadata["touch_lock_enabled"] = True
+                    metadata["touch_lock_requires_touch"] = touch_lock_requires_touch
+                    metadata["touch_lock_buffer_pct"] = touch_lock_buffer_pct * 100.0
+                    metadata["touch_lock_atr_multiplier"] = touch_lock_atr_multiplier
             new_stop = max(new_stop, curr.c * 1.0005)
             if new_stop >= pos.sl_price:
                 if target_update is None:
@@ -1777,6 +1815,11 @@ class ScalpRobustEngine:
                 "pressure_enable_target_cap": self.config.pressure_enable_target_cap,
                 "pressure_target_min_rr": self.config.pressure_target_min_rr,
                 "pressure_target_buffer_pct": self.config.pressure_target_buffer_pct,
+                "pressure_touch_lock_enabled": self.config.pressure_touch_lock_enabled,
+                "pressure_touch_lock_min_rr": self.config.pressure_touch_lock_min_rr,
+                "pressure_touch_lock_buffer_pct": self.config.pressure_touch_lock_buffer_pct,
+                "pressure_touch_lock_atr_multiplier": self.config.pressure_touch_lock_atr_multiplier,
+                "pressure_touch_lock_requires_touch": self.config.pressure_touch_lock_requires_touch,
                 "pressure_regime_labels": self.config.pressure_regime_labels,
                 "pressure_trail_styles": self.config.pressure_trail_styles,
                 "taker_fee_rate": self.config.taker_fee_rate,

@@ -4,21 +4,22 @@ This document records how to reproduce the current best dynamic high-leverage ex
 
 ## Current Best Strategy
 
-The current best reproducible strategy is the pressure-aware target-cap iteration:
+The current best reproducible strategy is the pressure-aware retarget approach-lock iteration:
 
 1. Base autoTIT config from `config/config.live.5x-3pct.json`.
 2. 2026-aware structure high-leverage overlay.
 3. Pressure-level target cap only in `flat` regime.
-4. Shadow gate retuned on the fixed high-leverage event stream.
+4. Pressure-level approach lock: in `flat`, once an open trade is near a pressure/integer/volume-cluster level after `1.0R`, tighten the stop without requiring a full touch.
+5. Shadow gate retuned on the fixed high-leverage event stream.
 
 Current best result:
 
 | Window | Return | MaxDD | Notes |
 |---|---:|---:|---|
-| Full, from `2022-01-01` | `38420.70%` | `35.04%` | best current full-window compounding |
-| 2026 YTD | `19.48%` | `17.86%` | pressure-aware flat-regime target cap |
-| Last 60d | `4.63%` | `10.77%` | positive |
-| Last 30d | `8.99%` | `3.37%` | positive |
+| Full, from `2022-01-01` | `48028.76%` | `35.01%` | best current full-window compounding |
+| 2026 YTD | `20.17%` | `17.86%` | earlier flat-regime target cap plus approach lock |
+| Last 60d | `5.19%` | `10.77%` | positive |
+| Last 30d | `9.57%` | `3.37%` | positive |
 
 Use this command to reproduce the current best strategy:
 
@@ -37,13 +38,25 @@ It records the expected result, data paths, pressure-level target-cap params, sh
 The script expands to the fixed one-parameter command:
 
 ```bash
-python3 scripts/scan_pressure_level_trailing.py --config config/config.live.5x-3pct.json --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather --start-date 2022-01-01 --include-disabled-baseline --pressure-min-rr-values 2.0 --pressure-lock-rr-values 0.4 --pressure-atr-multiplier-values 3.0 --pressure-proximity-pct-values 0.15 --pressure-rejection-min-rr-values 3.0 --pressure-take-profit-on-rejection-values false --pressure-enable-target-cap-values true --pressure-target-min-rr-values 1.5 --pressure-target-buffer-pct-values 0.05 --pressure-regime-label-sets flat --top 5 --output var/high_leverage_expansion/pressure_target_cap_flat_scan_full.json
+python3 scripts/scan_pressure_level_trailing.py --config config/config.live.5x-3pct.json --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather --start-date 2022-01-01 --pressure-min-rr-values 2.0 --pressure-lock-rr-values 0.4 --pressure-atr-multiplier-values 3.0 --pressure-proximity-pct-values 0.15 --pressure-rejection-min-rr-values 3.0 --pressure-take-profit-on-rejection-values false --pressure-enable-target-cap-values true --pressure-target-min-rr-values 1.25 --pressure-target-buffer-pct-values 0.03 --pressure-regime-label-sets flat --pressure-touch-lock-enabled-values true --pressure-touch-lock-min-rr-values 1.0 --pressure-touch-lock-buffer-pct-values 0.03 --pressure-touch-lock-atr-multiplier-values 0.0 --pressure-touch-lock-requires-touch-values false --top 1 --output var/high_leverage_expansion/pressure_approach_lock_retarget_best_full.json
 ```
 
 Expected terminal line:
 
 ```text
-01 score=40217.20 full=38420.70%/35.04% year=19.48% 60d=4.63% params={'enable_pressure_level_trailing': True, ... 'pressure_regime_labels': ['flat'], ...}
+01 score=49991.86 full=48028.76%/35.01% year=20.17% 60d=5.19% params={'enable_pressure_level_trailing': True, ... 'pressure_touch_lock_requires_touch': False, ...}
+```
+
+Previous best before retargeting the pressure cap and approach lock:
+
+```text
+full=47862.97%/35.04% year=20.12% 60d=5.19% 30d=9.57%
+```
+
+Previous best without pressure-level approach lock:
+
+```text
+full=38420.70%/35.04% year=19.48% 60d=4.63% 30d=8.99%
 ```
 
 Previous best without pressure-level target cap:
@@ -68,8 +81,13 @@ Current best pressure-level parameters:
   "pressure_rejection_min_rr": 3.0,
   "pressure_take_profit_on_rejection": false,
   "pressure_enable_target_cap": true,
-  "pressure_target_min_rr": 1.5,
-  "pressure_target_buffer_pct": 0.05,
+  "pressure_target_min_rr": 1.25,
+  "pressure_target_buffer_pct": 0.03,
+  "pressure_touch_lock_enabled": true,
+  "pressure_touch_lock_min_rr": 1.0,
+  "pressure_touch_lock_buffer_pct": 0.03,
+  "pressure_touch_lock_atr_multiplier": 0.0,
+  "pressure_touch_lock_requires_touch": false,
   "pressure_regime_labels": ["flat"],
   "pressure_round_steps_usdt": [1000.0, 500.0],
   "pressure_cluster_lookback_bars": 192,
@@ -82,6 +100,35 @@ Current best pressure-level parameters:
   "pressure_min_bars_held": 1
 }
 ```
+
+## Next Iteration Route
+
+The 2026-focused pressure scan is recorded at:
+
+```text
+var/high_leverage_expansion/pressure_approach_lock_2026_scan.json
+```
+
+Main findings from that scan:
+
+- Best 2026-only retarget candidate from `2026-01-01` reached `47.52%` with `18.15%` MaxDD. The prior approach-lock baseline on the same 2026-only window was about `47.41%`, so the improvement is real but small.
+- The full-cycle accepted retarget candidate improves the active baseline from `47862.97%` to `48028.76%`, and 2026 YTD from `20.12%` to `20.17%`.
+- Extending pressure logic from `flat` to `flat+normal` consistently underperformed. Keep the target cap restricted to `flat`.
+- `pressure_proximity_pct=0.25` underperformed. Keep the next search around `0.15` and `0.20`.
+
+Next 2026 optimization path:
+
+1. Build a 2026 loss-bucket report around pressure levels: separate losses caused by late target cap, stop tightening after approach lock, time-stop exits, and trades that never reached a pressure/integer/cluster level.
+2. Add a dynamic flat-regime target schedule instead of one fixed `pressure_target_min_rr`: test `1.0`, `1.25`, and `1.5` based on compression, distance to the next pressure level, and current 4h structure.
+3. Add a structure-release rule: when the market is labeled `flat` but 4h momentum/EMA gap/ADX confirms a breakout, temporarily disable early target cap for that trade so expansion pockets are not capped too early.
+4. Retune shadow gate only after the trade-level pressure logic is fixed. The current shadow gate is already near the drawdown boundary, so retuning it first is likely to overfit.
+
+Acceptance gates for the next candidate:
+
+- Full return must stay above `48028.76%`.
+- MaxDD should stay at or below `35.5%`.
+- 2026 YTD should improve meaningfully, target at least `22%` before replacing the active runtime config.
+- Last 60d should not fall below `5.0%`, and Last 30d should not fall below `9.0%`.
 
 Current best shadow gate parameters:
 
