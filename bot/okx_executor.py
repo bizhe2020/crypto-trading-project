@@ -557,17 +557,32 @@ class OkxExecutionEngine:
         local_position = snapshot.get("position") if isinstance(snapshot.get("position"), dict) else None
         long_state = {"contracts": 0.0, "notional_usdt": 0.0}
         short_state = {"contracts": 0.0, "notional_usdt": 0.0}
+        pending_bracket = {
+            "algo_id": None,
+            "algo_client_id": None,
+            "stop_price": None,
+            "target_price": None,
+        }
         if self.config.mode == "live":
             try:
                 long_state = self._fetch_position_state("long")
                 short_state = self._fetch_position_state("short")
+                if float(long_state.get("contracts", 0.0) or 0.0) > 0:
+                    pending_bracket = self._extract_pending_algo_metadata(self._select_pending_algo_order("long"))
+                elif float(short_state.get("contracts", 0.0) or 0.0) > 0:
+                    pending_bracket = self._extract_pending_algo_metadata(self._select_pending_algo_order("short"))
             except Exception:
                 pass
         return {
             "local_position": local_position,
             "long": long_state,
             "short": short_state,
+            "pending_bracket": pending_bracket,
         }
+
+    def _format_optional_price(self, value: Any) -> str:
+        numeric = self._safe_float(value)
+        return f"{numeric:.1f}" if numeric is not None else "-"
 
     def _telegram_status_text(self, *, table: bool = False) -> str:
         snapshot = self._load_snapshot_payload()
@@ -578,10 +593,12 @@ class OkxExecutionEngine:
         paused = self._telegram_open_paused()
         long_contracts = float(position["long"].get("contracts", 0.0) or 0.0)
         short_contracts = float(position["short"].get("contracts", 0.0) or 0.0)
+        bracket = position.get("pending_bracket") if isinstance(position.get("pending_bracket"), dict) else {}
         exchange_side = "long" if long_contracts > 0 else "short" if short_contracts > 0 else "flat"
         local_side = "-"
         if local_position:
             local_side = "long" if local_position.get("direction") == "BULL" else "short"
+        bracket_id = bracket.get("algo_id") or bracket.get("algo_client_id") or "-"
         lines = ["[状态]" if not table else "[状态表]"]
         rows = [
             ("标的", self.config.symbol),
@@ -589,6 +606,9 @@ class OkxExecutionEngine:
             ("开仓", "暂停" if paused else "允许"),
             ("交易所仓位", exchange_side),
             ("本地仓位", local_side),
+            ("交易所止损", self._format_optional_price(bracket.get("stop_price"))),
+            ("交易所止盈", self._format_optional_price(bracket.get("target_price"))),
+            ("保护单ID", str(bracket_id)),
             ("策略资金", f"{float(snapshot.get('capital', 0.0) or 0.0):.2f}U"),
             ("交易次数", str(int(snapshot.get("trade_count", 0) or 0))),
             ("最近K线", self.store.get_value("last_processed_candle_time") or "-"),

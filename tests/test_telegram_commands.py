@@ -47,6 +47,27 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertIn("[状态]", status)
         self.assertIn("BTC/USDT:USDT", status)
 
+    def test_status_includes_exchange_bracket_prices(self) -> None:
+        engine = self._engine()
+        engine.config.mode = "live"
+        engine._fetch_position_state = lambda pos_side: (  # type: ignore[method-assign]
+            {"contracts": 1.0, "notional_usdt": 1000.0}
+            if pos_side == "long"
+            else {"contracts": 0.0, "notional_usdt": 0.0}
+        )
+        engine._select_pending_algo_order = lambda pos_side: {  # type: ignore[method-assign]
+            "algoId": "algo-123",
+            "slTriggerPx": "90000",
+            "tpTriggerPx": "110000",
+        }
+
+        status = engine._telegram_command_reply("/status")
+
+        self.assertIn("交易所仓位: long", status)
+        self.assertIn("交易所止损: 90000.0", status)
+        self.assertIn("交易所止盈: 110000.0", status)
+        self.assertIn("保护单ID: algo-123", status)
+
 
 if __name__ == "__main__":
     unittest.main()
