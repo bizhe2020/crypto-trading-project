@@ -125,6 +125,21 @@ class ExecutorConfig:
     pressure_enable_target_cap: bool = False
     pressure_target_min_rr: float = 1.5
     pressure_target_buffer_pct: float = 0.05
+    pressure_dynamic_target_min_rr_enabled: bool = False
+    pressure_dynamic_target_compression_rr: float = 1.0
+    pressure_dynamic_target_flat_rr: float = 1.25
+    pressure_dynamic_target_breakout_rr: float = 1.5
+    pressure_dynamic_target_compression_adx_max: float = 18.0
+    pressure_dynamic_target_compression_momentum_abs_pct: float = 1.0
+    pressure_dynamic_target_compression_ema_gap_abs_pct: float = 0.25
+    pressure_dynamic_target_breakout_adx_min: float = 22.0
+    pressure_dynamic_target_breakout_momentum_pct: float = 1.5
+    pressure_dynamic_target_breakout_ema_gap_pct: float = 0.35
+    pressure_touch_lock_enabled: bool = False
+    pressure_touch_lock_min_rr: float = 1.5
+    pressure_touch_lock_buffer_pct: float = 0.08
+    pressure_touch_lock_atr_multiplier: float = 1.0
+    pressure_touch_lock_requires_touch: bool = True
     pressure_regime_labels: list[str] | None = None
     pressure_trail_styles: list[str] | None = None
     enable_shadow_risk_gate: bool = False
@@ -168,6 +183,16 @@ class ExecutorConfig:
     dynamic_reattack_win_rate_pct: float = 33.0
     dynamic_reattack_signal_mode: str = "high_growth_or_tight_or_structure"
     dynamic_min_liquidation_buffer_pct: float = 1.2
+    dynamic_failed_breakout_guard_enabled: bool = False
+    dynamic_failed_breakout_guard_leverage: float = 2.0
+    dynamic_failed_breakout_guard_min_leverage: float = 7.5
+    dynamic_failed_breakout_guard_min_quality_score: int = 2
+    dynamic_failed_breakout_guard_min_momentum_pct: float = 6.0
+    dynamic_failed_breakout_guard_min_ema_gap_pct: float = 2.0
+    dynamic_failed_breakout_guard_min_adx: float = 35.0
+    dynamic_failed_breakout_guard_regime_labels: list[str] | None = None
+    dynamic_failed_breakout_guard_risk_modes: list[str] | None = None
+    dynamic_failed_breakout_guard_directions: list[str] | None = None
     enable_regime_switching: bool = False
     regime_switcher_thresholds: dict[str, Any] | None = None
     regime_switcher_hg_overrides: dict[str, Any] | None = None
@@ -291,6 +316,21 @@ class ExecutorConfig:
             pressure_enable_target_cap=self.pressure_enable_target_cap,
             pressure_target_min_rr=self.pressure_target_min_rr,
             pressure_target_buffer_pct=self.pressure_target_buffer_pct,
+            pressure_dynamic_target_min_rr_enabled=self.pressure_dynamic_target_min_rr_enabled,
+            pressure_dynamic_target_compression_rr=self.pressure_dynamic_target_compression_rr,
+            pressure_dynamic_target_flat_rr=self.pressure_dynamic_target_flat_rr,
+            pressure_dynamic_target_breakout_rr=self.pressure_dynamic_target_breakout_rr,
+            pressure_dynamic_target_compression_adx_max=self.pressure_dynamic_target_compression_adx_max,
+            pressure_dynamic_target_compression_momentum_abs_pct=self.pressure_dynamic_target_compression_momentum_abs_pct,
+            pressure_dynamic_target_compression_ema_gap_abs_pct=self.pressure_dynamic_target_compression_ema_gap_abs_pct,
+            pressure_dynamic_target_breakout_adx_min=self.pressure_dynamic_target_breakout_adx_min,
+            pressure_dynamic_target_breakout_momentum_pct=self.pressure_dynamic_target_breakout_momentum_pct,
+            pressure_dynamic_target_breakout_ema_gap_pct=self.pressure_dynamic_target_breakout_ema_gap_pct,
+            pressure_touch_lock_enabled=self.pressure_touch_lock_enabled,
+            pressure_touch_lock_min_rr=self.pressure_touch_lock_min_rr,
+            pressure_touch_lock_buffer_pct=self.pressure_touch_lock_buffer_pct,
+            pressure_touch_lock_atr_multiplier=self.pressure_touch_lock_atr_multiplier,
+            pressure_touch_lock_requires_touch=self.pressure_touch_lock_requires_touch,
             pressure_regime_labels=self.pressure_regime_labels,
             pressure_trail_styles=self.pressure_trail_styles,
             enable_regime_switching=self.enable_regime_switching,
@@ -1197,6 +1237,12 @@ class OkxExecutionEngine:
             "stop_distance_pct": stop_distance_pct,
             "regime_label": regime_label,
             "trail_style": trail_style,
+            "direction": action.direction,
+            "feature_adx": float(metadata.get("feature_adx", 0.0) or 0.0),
+            "feature_momentum": float(metadata.get("feature_momentum", 0.0) or 0.0),
+            "feature_ema_gap": float(metadata.get("feature_ema_gap", 0.0) or 0.0),
+            "feature_bullish_structure": bool(metadata.get("feature_bullish_structure", False)),
+            "feature_bearish_structure": bool(metadata.get("feature_bearish_structure", False)),
             "is_high_growth": is_high_growth,
             "is_tight_stop": is_tight_stop,
             "available_usdt": float(
@@ -1206,6 +1252,64 @@ class OkxExecutionEngine:
                 or 0.0
             ),
         }
+
+    def _dynamic_configured_set(self, value: Any) -> set[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = [value]
+        try:
+            items = [str(item) for item in value if str(item)]
+        except TypeError:
+            return None
+        return set(items) if items else None
+
+    def _dynamic_failed_breakout_guard(
+        self,
+        leverage: float,
+        risk_mode: str,
+        diagnostics: dict[str, Any],
+    ) -> tuple[float, list[str]]:
+        if not bool(self.config.dynamic_failed_breakout_guard_enabled):
+            return leverage, []
+        if leverage < float(self.config.dynamic_failed_breakout_guard_min_leverage):
+            return leverage, []
+
+        direction = str(diagnostics.get("direction") or "")
+        regime_label = str(diagnostics.get("regime_label") or "")
+        allowed_directions = self._dynamic_configured_set(self.config.dynamic_failed_breakout_guard_directions)
+        allowed_regimes = self._dynamic_configured_set(self.config.dynamic_failed_breakout_guard_regime_labels)
+        allowed_modes = self._dynamic_configured_set(self.config.dynamic_failed_breakout_guard_risk_modes)
+        if allowed_directions is not None and direction not in allowed_directions:
+            return leverage, []
+        if allowed_regimes is not None and regime_label not in allowed_regimes:
+            return leverage, []
+        if allowed_modes is not None and risk_mode not in allowed_modes:
+            return leverage, []
+
+        sign = 1.0 if direction == "BULL" else -1.0
+        momentum_pct = float(diagnostics.get("feature_momentum", 0.0) or 0.0) * 100.0 * sign
+        ema_gap_pct = float(diagnostics.get("feature_ema_gap", 0.0) or 0.0) * 100.0 * sign
+        adx = float(diagnostics.get("feature_adx", 0.0) or 0.0)
+        directional_structure = (
+            bool(diagnostics.get("feature_bullish_structure", False))
+            if direction == "BULL"
+            else bool(diagnostics.get("feature_bearish_structure", False))
+        )
+        checks = {
+            "momentum": momentum_pct >= float(self.config.dynamic_failed_breakout_guard_min_momentum_pct),
+            "ema_gap": ema_gap_pct >= float(self.config.dynamic_failed_breakout_guard_min_ema_gap_pct),
+            "adx": adx >= float(self.config.dynamic_failed_breakout_guard_min_adx),
+            "structure": directional_structure,
+        }
+        quality_score = sum(1 for passed in checks.values() if passed)
+        min_score = int(self.config.dynamic_failed_breakout_guard_min_quality_score)
+        if quality_score >= min_score:
+            return leverage, []
+        guarded_leverage = min(leverage, float(self.config.dynamic_failed_breakout_guard_leverage))
+        if guarded_leverage >= leverage:
+            return leverage, []
+        return guarded_leverage, [f"failed_breakout_guard:{quality_score}/{min_score}"]
 
     def _dynamic_signal_allows_reattack(self, diagnostics: dict[str, Any]) -> bool:
         mode = str(self.config.dynamic_reattack_signal_mode or "high_growth_or_tight")
@@ -1302,6 +1406,11 @@ class OkxExecutionEngine:
         if float(mode_stats.get("drawdown_pct", 0.0) or 0.0) >= float(self.config.dynamic_drawdown_threshold_pct):
             leverage = min(leverage, float(self.config.dynamic_drawdown_leverage))
             reasons.append("drawdown_reduce")
+
+        guarded_leverage, guard_reasons = self._dynamic_failed_breakout_guard(leverage, risk_mode, diagnostics)
+        if guard_reasons:
+            leverage = guarded_leverage
+            reasons.extend(guard_reasons)
 
         return max(0.0, min(leverage, max_leverage)), reasons
 

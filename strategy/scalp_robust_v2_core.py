@@ -62,6 +62,19 @@ class Trade:
     regime_label: str | None = None
     time_based_trailing_enabled: bool = False
     auto_tit_reason: str | None = None
+    exit_idx: int | None = None
+    pressure_target_applied: bool = False
+    pressure_target_source: str | None = None
+    pressure_target_level: float | None = None
+    pressure_target_rr: float | None = None
+    pressure_target_min_rr: float | None = None
+    pressure_target_dynamic_reason: str | None = None
+    pressure_target_update_idx: int | None = None
+    pressure_touch_lock_applied: bool = False
+    pressure_touch_lock_source: str | None = None
+    pressure_touch_lock_level: float | None = None
+    pressure_touch_lock_rr: float | None = None
+    pressure_touch_lock_update_idx: int | None = None
 
 
 @dataclass
@@ -164,6 +177,21 @@ class StrategyConfig:
     pressure_enable_target_cap: bool = False
     pressure_target_min_rr: float = 1.5
     pressure_target_buffer_pct: float = 0.05
+    pressure_dynamic_target_min_rr_enabled: bool = False
+    pressure_dynamic_target_compression_rr: float = 1.0
+    pressure_dynamic_target_flat_rr: float = 1.25
+    pressure_dynamic_target_breakout_rr: float = 1.5
+    pressure_dynamic_target_compression_adx_max: float = 18.0
+    pressure_dynamic_target_compression_momentum_abs_pct: float = 1.0
+    pressure_dynamic_target_compression_ema_gap_abs_pct: float = 0.25
+    pressure_dynamic_target_breakout_adx_min: float = 22.0
+    pressure_dynamic_target_breakout_momentum_pct: float = 1.5
+    pressure_dynamic_target_breakout_ema_gap_pct: float = 0.35
+    pressure_touch_lock_enabled: bool = False
+    pressure_touch_lock_min_rr: float = 1.5
+    pressure_touch_lock_buffer_pct: float = 0.08
+    pressure_touch_lock_atr_multiplier: float = 1.0
+    pressure_touch_lock_requires_touch: bool = True
     pressure_regime_labels: list[str] | None = None
     pressure_trail_styles: list[str] | None = None
     enable_regime_switching: bool = False
@@ -217,6 +245,18 @@ class PositionState:
     exchange_order_id: str | None = None
     exchange_attach_algo_id: str | None = None
     exchange_attach_algo_client_id: str | None = None
+    pressure_target_applied: bool = False
+    pressure_target_source: str | None = None
+    pressure_target_level: float | None = None
+    pressure_target_rr: float | None = None
+    pressure_target_min_rr: float | None = None
+    pressure_target_dynamic_reason: str | None = None
+    pressure_target_update_idx: int | None = None
+    pressure_touch_lock_applied: bool = False
+    pressure_touch_lock_source: str | None = None
+    pressure_touch_lock_level: float | None = None
+    pressure_touch_lock_rr: float | None = None
+    pressure_touch_lock_update_idx: int | None = None
 
 
 @dataclass
@@ -609,6 +649,7 @@ class ScalpRobustEngine:
         position_size_pct = self._position_size_pct_for_idx(idx)
         entry_regime_score, target_rr, max_hold_bars, trail_style = self._exit_template_for_idx(idx, direction)
         regime_label = self._regime_switch_label_for_idx(idx)
+        regime_features = self._regime_features_for_idx(idx)
         tit_enabled, auto_tit_reason = self._time_based_trailing_for_entry(
             idx=idx,
             direction=direction,
@@ -684,6 +725,11 @@ class ScalpRobustEngine:
                 "time_based_trailing_enabled": tit_enabled,
                 "auto_tit_reason": auto_tit_reason,
                 "regime_label": regime_label,
+                "feature_adx": float(regime_features.get("adx", 0.0) or 0.0),
+                "feature_momentum": float(regime_features.get("momentum", 0.0) or 0.0),
+                "feature_ema_gap": float(regime_features.get("ema_gap", 0.0) or 0.0),
+                "feature_bullish_structure": bool(regime_features.get("bullish_structure", False)),
+                "feature_bearish_structure": bool(regime_features.get("bearish_structure", False)),
             },
         )
 
@@ -729,6 +775,19 @@ class ScalpRobustEngine:
                 regime_label=pos.regime_label,
                 time_based_trailing_enabled=pos.time_based_trailing_enabled,
                 auto_tit_reason=pos.auto_tit_reason,
+                exit_idx=idx,
+                pressure_target_applied=pos.pressure_target_applied,
+                pressure_target_source=pos.pressure_target_source,
+                pressure_target_level=pos.pressure_target_level,
+                pressure_target_rr=pos.pressure_target_rr,
+                pressure_target_min_rr=pos.pressure_target_min_rr,
+                pressure_target_dynamic_reason=pos.pressure_target_dynamic_reason,
+                pressure_target_update_idx=pos.pressure_target_update_idx,
+                pressure_touch_lock_applied=pos.pressure_touch_lock_applied,
+                pressure_touch_lock_source=pos.pressure_touch_lock_source,
+                pressure_touch_lock_level=pos.pressure_touch_lock_level,
+                pressure_touch_lock_rr=pos.pressure_touch_lock_rr,
+                pressure_touch_lock_update_idx=pos.pressure_touch_lock_update_idx,
             )
         )
         self.capital += pnl
@@ -951,25 +1010,96 @@ class ScalpRobustEngine:
         close_rejected = curr.c >= level * (1.0 + close_pct)
         return curr.l <= level and close_rejected and lower_wick_ratio >= wick_ratio
 
-    def _pressure_target_cap_price(self, pos: PositionState, level: float) -> tuple[float | None, float | None]:
+    def _regime_features_for_idx(self, idx: int) -> dict[str, Any]:
+        if idx < 0 or idx >= len(self.mapping):
+            return {}
+        c4h_idx = self.mapping[idx]
+        features = self._regime_feature_cache.get(c4h_idx)
+        if features is None:
+            history = self._effective_regime_history(idx)
+            if not history:
+                self._regime_feature_cache[c4h_idx] = {}
+                return {}
+            try:
+                from scripts.regime_detector import compute_regime_features
+
+                features = compute_regime_features(history, self._base_config.regime_switcher_thresholds)
+            except Exception:
+                features = {}
+            self._regime_feature_cache[c4h_idx] = features
+        return features or {}
+
+    def _pressure_target_min_rr_for_position(self, pos: PositionState, idx: int) -> tuple[float, str]:
+        base_min_rr = float(self.config.pressure_target_min_rr or 0.0)
+        if not self.config.pressure_dynamic_target_min_rr_enabled:
+            return base_min_rr, "static"
+
+        features = self._regime_features_for_idx(idx)
+        if not features:
+            return base_min_rr, "dynamic_no_features"
+
+        adx = float(features.get("adx", 0.0) or 0.0)
+        momentum_pct = float(features.get("momentum", 0.0) or 0.0) * 100.0
+        ema_gap_pct = float(features.get("ema_gap", 0.0) or 0.0) * 100.0
+        direction_sign = 1.0 if pos.direction == Direction.BULL else -1.0
+        directional_momentum_pct = momentum_pct * direction_sign
+        directional_ema_gap_pct = ema_gap_pct * direction_sign
+        directional_structure = (
+            bool(features.get("bullish_structure", False))
+            if pos.direction == Direction.BULL
+            else bool(features.get("bearish_structure", False))
+        )
+
+        compression = (
+            adx <= float(self.config.pressure_dynamic_target_compression_adx_max or 0.0)
+            and abs(momentum_pct) <= float(self.config.pressure_dynamic_target_compression_momentum_abs_pct or 0.0)
+            and abs(ema_gap_pct) <= float(self.config.pressure_dynamic_target_compression_ema_gap_abs_pct or 0.0)
+        )
+        breakout = (
+            adx >= float(self.config.pressure_dynamic_target_breakout_adx_min or 0.0)
+            and (
+                directional_momentum_pct >= float(self.config.pressure_dynamic_target_breakout_momentum_pct or 0.0)
+                or directional_ema_gap_pct >= float(self.config.pressure_dynamic_target_breakout_ema_gap_pct or 0.0)
+                or directional_structure
+            )
+        )
+
+        if breakout:
+            return float(self.config.pressure_dynamic_target_breakout_rr or base_min_rr), "dynamic_breakout"
+        if compression:
+            return float(self.config.pressure_dynamic_target_compression_rr or base_min_rr), "dynamic_compression"
+        return float(self.config.pressure_dynamic_target_flat_rr or base_min_rr), "dynamic_flat"
+
+    def _pressure_activation_min_rr(self) -> float:
+        base_min_rr = float(self.config.pressure_min_rr or 0.0)
+        if not (self.config.pressure_enable_target_cap and self.config.pressure_dynamic_target_min_rr_enabled):
+            return base_min_rr
+        dynamic_values = [
+            float(self.config.pressure_dynamic_target_compression_rr or base_min_rr),
+            float(self.config.pressure_dynamic_target_flat_rr or base_min_rr),
+            float(self.config.pressure_dynamic_target_breakout_rr or base_min_rr),
+        ]
+        return min([base_min_rr, *[value for value in dynamic_values if value > 0]])
+
+    def _pressure_target_cap_price(self, pos: PositionState, level: float, idx: int) -> tuple[float | None, float | None, float | None, str | None]:
         if not self.config.pressure_enable_target_cap:
-            return None, None
+            return None, None, None, None
         risk_price = abs(pos.entry_price - pos.initial_sl_price)
         if risk_price <= 0 or level <= 0:
-            return None, None
+            return None, None, None, None
         buffer_pct = max(float(self.config.pressure_target_buffer_pct or 0.0), 0.0) / 100.0
-        min_rr = float(self.config.pressure_target_min_rr or 0.0)
+        min_rr, min_rr_reason = self._pressure_target_min_rr_for_position(pos, idx)
         if pos.direction == Direction.BULL:
             capped_target = level * (1.0 - buffer_pct)
             capped_rr = (capped_target - pos.entry_price) / risk_price
             if capped_target <= pos.entry_price or capped_target >= pos.target_price or capped_rr < min_rr:
-                return None, None
-            return capped_target, capped_rr
+                return None, None, min_rr, min_rr_reason
+            return capped_target, capped_rr, min_rr, min_rr_reason
         capped_target = level * (1.0 + buffer_pct)
         capped_rr = (pos.entry_price - capped_target) / risk_price
         if capped_target >= pos.entry_price or capped_target <= pos.target_price or capped_rr < min_rr:
-            return None, None
-        return capped_target, capped_rr
+            return None, None, min_rr, min_rr_reason
+        return capped_target, capped_rr, min_rr, min_rr_reason
 
     def _apply_pressure_level_exit_or_trail(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
         if not self.config.enable_pressure_level_trailing:
@@ -983,7 +1113,7 @@ class ScalpRobustEngine:
         if self._bars_held(pos, idx) < int(self.config.pressure_min_bars_held or 0):
             return None
         unrealized_rr = self._unrealized_rr(pos, curr.c)
-        if unrealized_rr < float(self.config.pressure_min_rr or 0.0):
+        if unrealized_rr < self._pressure_activation_min_rr():
             return None
         pressure = self._nearest_pressure_level(pos, curr, idx)
         if pressure is None:
@@ -1001,10 +1131,20 @@ class ScalpRobustEngine:
             "rejected": rejected,
             "bars_held": self._bars_held(pos, idx),
         }
-        target_update, target_rr_update = self._pressure_target_cap_price(pos, level)
+        target_update, target_rr_update, target_min_rr, target_min_rr_reason = self._pressure_target_cap_price(pos, level, idx)
+        if target_min_rr is not None:
+            metadata["pressure_target_min_rr"] = target_min_rr
+            metadata["pressure_target_min_rr_reason"] = target_min_rr_reason
         if target_update is not None and target_rr_update is not None:
             pos.target_price = target_update
             pos.target_rr = target_rr_update
+            pos.pressure_target_applied = True
+            pos.pressure_target_source = str(pressure.get("source") or "")
+            pos.pressure_target_level = level
+            pos.pressure_target_rr = target_rr_update
+            pos.pressure_target_min_rr = target_min_rr
+            pos.pressure_target_dynamic_reason = target_min_rr_reason
+            pos.pressure_target_update_idx = idx
             metadata["target_price"] = target_update
             metadata["target_rr"] = target_rr_update
 
@@ -1023,10 +1163,36 @@ class ScalpRobustEngine:
         atr = self._atr_for_idx(idx)
         atr_multiplier = float(self.config.pressure_atr_multiplier or 0.0)
         lock_rr = float(self.config.pressure_lock_rr or 0.0)
+        touch_lock_requires_touch = bool(self.config.pressure_touch_lock_requires_touch)
+        touch_lock_allowed = bool(pressure.get("touched")) or not touch_lock_requires_touch
+        touch_lock_enabled = (
+            bool(self.config.pressure_touch_lock_enabled)
+            and touch_lock_allowed
+            and unrealized_rr >= float(self.config.pressure_touch_lock_min_rr or 0.0)
+        )
+        touch_lock_buffer_pct = max(float(self.config.pressure_touch_lock_buffer_pct or 0.0), 0.0) / 100.0
+        touch_lock_atr_multiplier = float(self.config.pressure_touch_lock_atr_multiplier or 0.0)
         if pos.direction == Direction.BULL:
             new_stop = pos.entry_price + risk_price * lock_rr
             if atr > 0 and atr_multiplier > 0:
                 new_stop = max(new_stop, curr.c - atr_multiplier * atr)
+            if touch_lock_enabled:
+                touch_candidates = []
+                if touch_lock_buffer_pct > 0:
+                    touch_candidates.append(level * (1.0 - touch_lock_buffer_pct))
+                if atr > 0 and touch_lock_atr_multiplier > 0:
+                    touch_candidates.append(curr.c - touch_lock_atr_multiplier * atr)
+                if touch_candidates:
+                    new_stop = max(new_stop, max(touch_candidates))
+                    pos.pressure_touch_lock_applied = True
+                    pos.pressure_touch_lock_source = str(pressure.get("source") or "")
+                    pos.pressure_touch_lock_level = level
+                    pos.pressure_touch_lock_rr = unrealized_rr
+                    pos.pressure_touch_lock_update_idx = idx
+                    metadata["touch_lock_enabled"] = True
+                    metadata["touch_lock_requires_touch"] = touch_lock_requires_touch
+                    metadata["touch_lock_buffer_pct"] = touch_lock_buffer_pct * 100.0
+                    metadata["touch_lock_atr_multiplier"] = touch_lock_atr_multiplier
             new_stop = min(new_stop, curr.c * 0.9995)
             if new_stop <= pos.sl_price:
                 if target_update is None:
@@ -1044,6 +1210,23 @@ class ScalpRobustEngine:
             new_stop = pos.entry_price - risk_price * lock_rr
             if atr > 0 and atr_multiplier > 0:
                 new_stop = min(new_stop, curr.c + atr_multiplier * atr)
+            if touch_lock_enabled:
+                touch_candidates = []
+                if touch_lock_buffer_pct > 0:
+                    touch_candidates.append(level * (1.0 + touch_lock_buffer_pct))
+                if atr > 0 and touch_lock_atr_multiplier > 0:
+                    touch_candidates.append(curr.c + touch_lock_atr_multiplier * atr)
+                if touch_candidates:
+                    new_stop = min(new_stop, min(touch_candidates))
+                    pos.pressure_touch_lock_applied = True
+                    pos.pressure_touch_lock_source = str(pressure.get("source") or "")
+                    pos.pressure_touch_lock_level = level
+                    pos.pressure_touch_lock_rr = unrealized_rr
+                    pos.pressure_touch_lock_update_idx = idx
+                    metadata["touch_lock_enabled"] = True
+                    metadata["touch_lock_requires_touch"] = touch_lock_requires_touch
+                    metadata["touch_lock_buffer_pct"] = touch_lock_buffer_pct * 100.0
+                    metadata["touch_lock_atr_multiplier"] = touch_lock_atr_multiplier
             new_stop = max(new_stop, curr.c * 1.0005)
             if new_stop >= pos.sl_price:
                 if target_update is None:
@@ -1777,6 +1960,11 @@ class ScalpRobustEngine:
                 "pressure_enable_target_cap": self.config.pressure_enable_target_cap,
                 "pressure_target_min_rr": self.config.pressure_target_min_rr,
                 "pressure_target_buffer_pct": self.config.pressure_target_buffer_pct,
+                "pressure_touch_lock_enabled": self.config.pressure_touch_lock_enabled,
+                "pressure_touch_lock_min_rr": self.config.pressure_touch_lock_min_rr,
+                "pressure_touch_lock_buffer_pct": self.config.pressure_touch_lock_buffer_pct,
+                "pressure_touch_lock_atr_multiplier": self.config.pressure_touch_lock_atr_multiplier,
+                "pressure_touch_lock_requires_touch": self.config.pressure_touch_lock_requires_touch,
                 "pressure_regime_labels": self.config.pressure_regime_labels,
                 "pressure_trail_styles": self.config.pressure_trail_styles,
                 "taker_fee_rate": self.config.taker_fee_rate,

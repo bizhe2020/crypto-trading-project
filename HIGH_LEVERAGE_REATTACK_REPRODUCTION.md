@@ -4,21 +4,32 @@ This document records how to reproduce the current best dynamic high-leverage ex
 
 ## Current Best Strategy
 
-The current best reproducible strategy is the pressure-aware target-cap iteration:
+The current best reproducible strategy is the pressure-aware retarget approach-lock iteration plus failed-breakout offense guard:
 
 1. Base autoTIT config from `config/config.live.5x-3pct.json`.
 2. 2026-aware structure high-leverage overlay.
 3. Pressure-level target cap only in `flat` regime.
-4. Shadow gate retuned on the fixed high-leverage event stream.
+4. Pressure-level approach lock: in `flat`, once an open trade is near a pressure/integer/volume-cluster level after `1.0R`, tighten the stop without requiring a full touch.
+5. Failed-breakout offense guard: weak `high_growth/offense/BULL` signals at `7.5x+` are reduced to `2.0x`.
+6. Shadow gate retuned on the fixed high-leverage event stream.
 
 Current best result:
 
 | Window | Return | MaxDD | Notes |
 |---|---:|---:|---|
-| Full, from `2022-01-01` | `38420.70%` | `35.04%` | best current full-window compounding |
-| 2026 YTD | `19.48%` | `17.86%` | pressure-aware flat-regime target cap |
-| Last 60d | `4.63%` | `10.77%` | positive |
-| Last 30d | `8.99%` | `3.37%` | positive |
+| Full, from `2022-01-01` | `88481.28%` | `33.87%` | best current full-window compounding |
+| 2026 YTD | `29.87%` | `11.35%` | failed-breakout guard improves 2026 |
+| Last 60d | `7.85%` | `11.35%` | positive |
+| Last 30d | `8.47%` | `4.13%` | positive, below prior baseline |
+
+Promoted guard comparison:
+
+| Candidate | Full Return | MaxDD | 2026 | 2026 MaxDD | Last 60d | Last 30d | Status |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Previous promoted baseline | `48028.76%` | `35.01%` | `20.17%` | `17.86%` | `5.19%` | `9.57%` | replaced |
+| Failed-breakout offense guard | `88481.28%` | `33.87%` | `29.87%` | `11.35%` | `7.85%` | `8.47%` | active |
+
+The failed-breakout guard reduces high-growth/offense `BULL` trades from `7.5x+` to `2.0x` when fewer than `2` of these quality checks pass: directional momentum >= `6.0%`, directional EMA gap >= `2.0%`, ADX >= `38.0`, and directional structure. It is enabled in the current paper config and live template.
 
 Use this command to reproduce the current best strategy:
 
@@ -37,13 +48,31 @@ It records the expected result, data paths, pressure-level target-cap params, sh
 The script expands to the fixed one-parameter command:
 
 ```bash
-python3 scripts/scan_pressure_level_trailing.py --config config/config.live.5x-3pct.json --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather --start-date 2022-01-01 --include-disabled-baseline --pressure-min-rr-values 2.0 --pressure-lock-rr-values 0.4 --pressure-atr-multiplier-values 3.0 --pressure-proximity-pct-values 0.15 --pressure-rejection-min-rr-values 3.0 --pressure-take-profit-on-rejection-values false --pressure-enable-target-cap-values true --pressure-target-min-rr-values 1.5 --pressure-target-buffer-pct-values 0.05 --pressure-regime-label-sets flat --top 5 --output var/high_leverage_expansion/pressure_target_cap_flat_scan_full.json
+python3 scripts/scan_pressure_level_trailing.py --config config/config.live.5x-3pct.json --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather --start-date 2022-01-01 --pressure-min-rr-values 2.0 --pressure-lock-rr-values 0.4 --pressure-atr-multiplier-values 3.0 --pressure-proximity-pct-values 0.15 --pressure-rejection-min-rr-values 3.0 --pressure-take-profit-on-rejection-values false --pressure-enable-target-cap-values true --pressure-target-min-rr-values 1.25 --pressure-target-buffer-pct-values 0.03 --pressure-dynamic-target-min-rr-enabled-values false --pressure-regime-label-sets flat --pressure-touch-lock-enabled-values true --pressure-touch-lock-min-rr-values 1.0 --pressure-touch-lock-buffer-pct-values 0.03 --pressure-touch-lock-atr-multiplier-values 0.0 --pressure-touch-lock-requires-touch-values false --top 1 --output var/high_leverage_expansion/pressure_approach_lock_retarget_best_full.json
 ```
 
 Expected terminal line:
 
 ```text
-01 score=40217.20 full=38420.70%/35.04% year=19.48% 60d=4.63% params={'enable_pressure_level_trailing': True, ... 'pressure_regime_labels': ['flat'], ...}
+01 score=92373.78 full=88481.28%/33.87% year=29.87% 60d=7.85% params={'enable_pressure_level_trailing': True, ... 'pressure_touch_lock_requires_touch': False, ...}
+```
+
+Previous best without failed-breakout offense guard:
+
+```text
+full=48028.76%/35.01% year=20.17% 60d=5.19% 30d=9.57%
+```
+
+Previous best before retargeting the pressure cap and approach lock:
+
+```text
+full=47862.97%/35.04% year=20.12% 60d=5.19% 30d=9.57%
+```
+
+Previous best without pressure-level approach lock:
+
+```text
+full=38420.70%/35.04% year=19.48% 60d=4.63% 30d=8.99%
 ```
 
 Previous best without pressure-level target cap:
@@ -51,6 +80,10 @@ Previous best without pressure-level target cap:
 ```text
 full=26868.27%/35.56% year=12.73% 60d=3.42%
 ```
+
+## Rejected Research
+
+Rejected research ideas are archived separately so this reproduction document only contains the active best strategy path. See `HIGH_LEVERAGE_FAILED_RESEARCH.md`.
 
 Current best pressure-level parameters:
 
@@ -64,8 +97,14 @@ Current best pressure-level parameters:
   "pressure_rejection_min_rr": 3.0,
   "pressure_take_profit_on_rejection": false,
   "pressure_enable_target_cap": true,
-  "pressure_target_min_rr": 1.5,
-  "pressure_target_buffer_pct": 0.05,
+  "pressure_target_min_rr": 1.25,
+  "pressure_target_buffer_pct": 0.03,
+  "pressure_dynamic_target_min_rr_enabled": false,
+  "pressure_touch_lock_enabled": true,
+  "pressure_touch_lock_min_rr": 1.0,
+  "pressure_touch_lock_buffer_pct": 0.03,
+  "pressure_touch_lock_atr_multiplier": 0.0,
+  "pressure_touch_lock_requires_touch": false,
   "pressure_regime_labels": ["flat"],
   "pressure_round_steps_usdt": [1000.0, 500.0],
   "pressure_cluster_lookback_bars": 192,
@@ -78,6 +117,48 @@ Current best pressure-level parameters:
   "pressure_min_bars_held": 1
 }
 ```
+
+## Next Iteration Route
+
+The 2026-focused pressure scan is recorded at:
+
+```text
+var/high_leverage_expansion/pressure_approach_lock_2026_scan.json
+```
+
+The 2026 loss-bucket report is recorded in:
+
+```text
+HIGH_LEVERAGE_2026_LOSS_BUCKET_REPORT.md
+```
+
+The failed-breakout offense guard scan is recorded at:
+
+```text
+var/high_leverage_expansion/failed_breakout_offense_guard_scan.json
+```
+
+Main findings from that scan:
+
+- Best 2026-only retarget candidate from `2026-01-01` reached `47.52%` with `18.15%` MaxDD. The prior approach-lock baseline on the same 2026-only window was about `47.41%`, so the improvement is real but small.
+- The full-cycle accepted retarget candidate improves the active baseline from `47862.97%` to `48028.76%`, and 2026 YTD from `20.12%` to `20.17%`.
+- Extending pressure logic from `flat` to `flat+normal` consistently underperformed. Keep the target cap restricted to `flat`.
+- `pressure_proximity_pct=0.25` underperformed. Keep the next search around `0.15` and `0.20`.
+- Dynamic `pressure_target_min_rr` was implemented and scanned, but it is not promoted. The 2026 loss bucket shows no early-cap losses and no pressure/integer sourced losses; dynamic cap protection reduced 2026 performance from `47.52%` to `26.37%` in the flat-only test.
+- A failed-breakout offense guard improved the full replay from `48028.76%` to `88481.28%`, 2026 from `20.17%` to `29.87%`, and Last 60d from `5.19%` to `7.85%`, while reducing MaxDD from `35.01%` to `33.87%`. Last 30d fell from `9.57%` to `8.47%`; this trade-off is accepted for the promoted full-cycle/2026 objective.
+
+Next 2026 optimization path:
+
+1. Run live-readiness style replay after every data refresh because the live readiness script validates core strategy health, while the high-leverage guard is applied in the execution overlay.
+2. Continue researching whether Last 30d can recover above `9.0%` without giving back 2026 and full-cycle gains.
+3. Retune shadow gate only after the guard is stable; otherwise shadow tuning may overfit to a moving event stream.
+
+Acceptance gates for the next candidate:
+
+- Full return must stay above `88481.28%`.
+- MaxDD should stay at or below `35.5%`.
+- 2026 YTD should stay above `29%`.
+- Last 60d should not fall below `7.0%`; Last 30d recovery above `9.0%` is the next improvement target.
 
 Current best shadow gate parameters:
 
