@@ -511,10 +511,17 @@ class OkxExecutionEngine:
             return self._telegram_help_text()
         if command == "/start":
             self.store.set_value("telegram_open_paused", "false")
-            return "\n".join(["[Bot控制]", "状态: 已恢复开仓", f"时间: {self._local_time_text()}"])
+            return "\n".join([self._telegram_title("🟢", "Bot 控制台"), "🚀 状态：已恢复开仓", self._telegram_time_line()])
         if command == "/stop":
             self.store.set_value("telegram_open_paused", "true")
-            return "\n".join(["[Bot控制]", "状态: 已暂停新开仓", "说明: 不会强平已有仓位", f"时间: {self._local_time_text()}"])
+            return "\n".join(
+                [
+                    self._telegram_title("🛑", "Bot 控制台"),
+                    "🚧 状态：已暂停新开仓",
+                    "🛡️ 说明：不会强平已有仓位",
+                    self._telegram_time_line(),
+                ]
+            )
         if command == "/status" or command == "/status table":
             return self._telegram_status_text(table=command == "/status table")
         if command == "/balance":
@@ -532,21 +539,39 @@ class OkxExecutionEngine:
     def _telegram_help_text(self) -> str:
         return "\n".join(
             [
-                "[命令列表]",
-                "/daily 今日已实现收益",
-                "/profit 累计已实现收益",
-                "/balance 账户余额",
-                "/status 运行和持仓状态",
-                "/status table 表格版状态",
-                "/performance 策略表现",
-                "/count 交易次数",
-                "/start 恢复开仓",
-                "/stop 暂停新开仓",
+                self._telegram_title("🧭", "指令面板"),
+                "💰 /daily 今日已实现收益",
+                "📈 /profit 累计已实现收益",
+                "🏦 /balance 账户余额",
+                "📡 /status 运行和持仓状态",
+                "🧾 /status table 面板版状态",
+                "🚀 /performance 策略表现",
+                "🔢 /count 交易次数",
+                "🟢 /start 恢复开仓",
+                "🛑 /stop 暂停新开仓",
             ]
         )
 
     def _local_time_text(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _telegram_title(self, icon: str, title: str) -> str:
+        return f"{icon} {title}\n━━━━━━━━━━━━"
+
+    def _telegram_time_line(self) -> str:
+        return f"⏱ 时间：{self._local_time_text()}"
+
+    def _open_status_text(self, paused: bool) -> str:
+        return "🔴 暂停" if paused else "🟢 允许"
+
+    def _side_status_text(self, side: str) -> str:
+        if side == "long":
+            return "🟢 long"
+        if side == "short":
+            return "🔴 short"
+        if side == "flat":
+            return "⚪ flat"
+        return str(side or "-")
 
     def _load_snapshot_payload(self) -> dict[str, Any]:
         snapshot = self.store.load_snapshot()
@@ -599,13 +624,13 @@ class OkxExecutionEngine:
         if local_position:
             local_side = "long" if local_position.get("direction") == "BULL" else "short"
         bracket_id = bracket.get("algo_id") or bracket.get("algo_client_id") or "-"
-        lines = ["[状态]" if not table else "[状态表]"]
+        lines = [self._telegram_title("📡", "状态雷达") if not table else self._telegram_title("🧾", "状态面板")]
         rows = [
             ("标的", self.config.symbol),
             ("模式", self.config.mode),
-            ("开仓", "暂停" if paused else "允许"),
-            ("交易所仓位", exchange_side),
-            ("本地仓位", local_side),
+            ("开仓", self._open_status_text(paused)),
+            ("交易所仓位", self._side_status_text(exchange_side)),
+            ("本地仓位", self._side_status_text(local_side) if local_side in {"long", "short", "flat"} else local_side),
             ("交易所止损", self._format_optional_price(bracket.get("stop_price"))),
             ("交易所止盈", self._format_optional_price(bracket.get("target_price"))),
             ("保护单ID", str(bracket_id)),
@@ -619,46 +644,62 @@ class OkxExecutionEngine:
         if table:
             row_map = dict(rows)
             lines = [
-                "[状态表]",
-                "运行",
-                f"标的 {row_map['标的']}",
-                f"模式 {row_map['模式']}",
-                f"开仓 {row_map['开仓']}",
+                self._telegram_title("🧾", "状态面板"),
+                "🧭 运行",
+                f"🎯 标的：{row_map['标的']}",
+                f"⚙️ 模式：{row_map['模式']}",
+                f"🚦 开仓：{row_map['开仓']}",
                 "",
-                "仓位",
-                f"交易所 {row_map['交易所仓位']}",
-                f"本地 {row_map['本地仓位']}",
-                f"止损 {row_map['交易所止损']}",
-                f"止盈 {row_map['交易所止盈']}",
-                f"保护单 {row_map['保护单ID']}",
+                "📦 仓位",
+                f"🏛️ 交易所：{row_map['交易所仓位']}",
+                f"🧠 本地：{row_map['本地仓位']}",
+                f"🛡️ 止损：{row_map['交易所止损']}",
+                f"🎯 止盈：{row_map['交易所止盈']}",
+                f"🔐 保护单：{row_map['保护单ID']}",
                 "",
-                "策略",
-                f"资金 {row_map['策略资金']}",
-                f"交易 {row_map['交易次数']}",
-                f"档位 {row_map['动态档位']}",
-                f"Shadow {row_map['Shadow暂停到']}",
+                "🚀 策略",
+                f"💎 资金：{row_map['策略资金']}",
+                f"🔢 交易：{row_map['交易次数']}",
+                f"⚡ 档位：{row_map['动态档位']}",
+                f"👤 Shadow：{row_map['Shadow暂停到']}",
                 "",
-                "时间",
-                f"K线 {row_map['最近K线']}",
-                row_map["时间"],
+                "⏱ 时间",
+                f"🕯️ K线：{row_map['最近K线']}",
+                f"📅 {row_map['时间']}",
             ]
         else:
-            lines.extend(f"{name}: {value}" for name, value in rows)
+            labels = {
+                "标的": "🎯 标的",
+                "模式": "⚙️ 模式",
+                "开仓": "🚦 开仓",
+                "交易所仓位": "🏛️ 交易所仓位",
+                "本地仓位": "🧠 本地仓位",
+                "交易所止损": "🛡️ 交易所止损",
+                "交易所止盈": "🎯 交易所止盈",
+                "保护单ID": "🔐 保护单ID",
+                "策略资金": "💎 策略资金",
+                "交易次数": "🔢 交易次数",
+                "最近K线": "🕯️ 最近K线",
+                "动态档位": "⚡ 动态档位",
+                "Shadow暂停到": "👤 Shadow暂停到",
+                "时间": "📅 时间",
+            }
+            lines.extend(f"{labels.get(name, name)}：{value}" for name, value in rows)
         return "\n".join(lines)
 
     def _telegram_balance_text(self) -> str:
-        lines = ["[账户余额]"]
+        lines = [self._telegram_title("🏦", "账户余额")]
         try:
             balance = self.client.fetch_balance()
             available, available_source = self._extract_available_usdt(balance)
             total = self._extract_total_usdt(balance)
-            lines.append(f"可用: {available:.2f} USDT")
-            lines.append(f"权益: {total:.2f} USDT")
-            lines.append(f"来源: {available_source}")
+            lines.append(f"💵 可用：{available:.2f} USDT")
+            lines.append(f"💎 权益：{total:.2f} USDT")
+            lines.append(f"🔎 来源：{available_source}")
         except Exception as exc:
-            lines.append(f"状态: 查询失败")
-            lines.append(f"错误: {exc}")
-        lines.append(f"时间: {self._local_time_text()}")
+            lines.append("🔴 状态：查询失败")
+            lines.append(f"⚠️ 错误：{exc}")
+        lines.append(self._telegram_time_line())
         return "\n".join(lines)
 
     def _realized_pnl_events(self, *, daily: bool) -> list[dict[str, Any]]:
@@ -687,14 +728,14 @@ class OkxExecutionEngine:
         events = self._realized_pnl_events(daily=daily)
         total = sum(float(event["pnl"]) for event in events)
         wins = sum(1 for event in events if float(event["pnl"]) > 0)
-        title = "[今日收益]" if daily else "[累计收益]"
+        title = self._telegram_title("💰", "今日收益") if daily else self._telegram_title("📈", "累计收益")
         return "\n".join(
             [
                 title,
-                f"已实现PnL: {total:.2f} USDT",
-                f"平仓笔数: {len(events)}",
-                f"胜率: {(wins / len(events) * 100.0):.1f}%" if events else "胜率: -",
-                f"时间: {self._local_time_text()}",
+                f"💵 已实现 PnL：{total:.2f} USDT",
+                f"🔒 平仓笔数：{len(events)}",
+                f"🏆 胜率：{(wins / len(events) * 100.0):.1f}%" if events else "🏆 胜率：-",
+                self._telegram_time_line(),
             ]
         )
 
@@ -708,17 +749,17 @@ class OkxExecutionEngine:
         trade_count = int(snapshot.get("trade_count", 0) or 0)
         exits = snapshot.get("exit_reasons") if isinstance(snapshot.get("exit_reasons"), dict) else {}
         lines = [
-            "[策略表现]",
-            f"策略资金: {capital:.2f}U",
-            f"交易次数: {trade_count}",
-            f"动态档位: {dyn.get('mode') or '-'}",
-            f"近期单位收益: {float(recent.get('unit_return_pct', 0.0) or 0.0):.2f}%",
-            f"近期胜率: {float(recent.get('win_rate_pct', 0.0) or 0.0):.1f}%",
-            f"Shadow资金: {float(shadow.get('capital', 0.0) or 0.0):.2f}U",
+            self._telegram_title("🚀", "策略表现"),
+            f"💎 策略资金：{capital:.2f}U",
+            f"🔢 交易次数：{trade_count}",
+            f"⚡ 动态档位：{dyn.get('mode') or '-'}",
+            f"📊 近期单位收益：{float(recent.get('unit_return_pct', 0.0) or 0.0):.2f}%",
+            f"🏆 近期胜率：{float(recent.get('win_rate_pct', 0.0) or 0.0):.1f}%",
+            f"👤 Shadow资金：{float(shadow.get('capital', 0.0) or 0.0):.2f}U",
         ]
         if exits:
-            lines.append("退出原因: " + ", ".join(f"{k}:{v}" for k, v in sorted(exits.items())))
-        lines.append(f"时间: {self._local_time_text()}")
+            lines.append("🚪 退出原因：" + ", ".join(f"{k}:{v}" for k, v in sorted(exits.items())))
+        lines.append(self._telegram_time_line())
         return "\n".join(lines)
 
     def _telegram_count_text(self) -> str:
@@ -728,11 +769,11 @@ class OkxExecutionEngine:
         close_count = sum(1 for item in actions if item.get("action_type") == ActionType.CLOSE_POSITION.value)
         return "\n".join(
             [
-                "[交易计数]",
-                f"策略交易数: {int(snapshot.get('trade_count', 0) or 0)}",
-                f"最近记录开仓: {open_count}",
-                f"最近记录平仓: {close_count}",
-                f"时间: {self._local_time_text()}",
+                self._telegram_title("🔢", "交易计数"),
+                f"🧠 策略交易数：{int(snapshot.get('trade_count', 0) or 0)}",
+                f"🟢 最近记录开仓：{open_count}",
+                f"🔒 最近记录平仓：{close_count}",
+                self._telegram_time_line(),
             ]
         )
 

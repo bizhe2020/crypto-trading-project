@@ -44,7 +44,7 @@ class TelegramCommandTests(unittest.TestCase):
 
         self.assertIn("/balance", engine._telegram_command_reply("/help"))
         status = engine._telegram_command_reply("/status")
-        self.assertIn("[状态]", status)
+        self.assertIn("📡 状态雷达", status)
         self.assertIn("BTC/USDT:USDT", status)
 
     def test_status_includes_exchange_bracket_prices(self) -> None:
@@ -63,15 +63,15 @@ class TelegramCommandTests(unittest.TestCase):
 
         status = engine._telegram_command_reply("/status")
 
-        self.assertIn("交易所仓位: long", status)
-        self.assertIn("交易所止损: 90000.0", status)
-        self.assertIn("交易所止盈: 110000.0", status)
-        self.assertIn("保护单ID: algo-123", status)
+        self.assertIn("🏛️ 交易所仓位：🟢 long", status)
+        self.assertIn("🛡️ 交易所止损：90000.0", status)
+        self.assertIn("🎯 交易所止盈：110000.0", status)
+        self.assertIn("🔐 保护单ID：algo-123", status)
 
         table = engine._telegram_command_reply("/status table")
-        self.assertIn("[状态表]", table)
-        self.assertIn("仓位\n交易所 long", table)
-        self.assertIn("止损 90000.0", table)
+        self.assertIn("🧾 状态面板", table)
+        self.assertIn("📦 仓位\n🏛️ 交易所：🟢 long", table)
+        self.assertIn("🛡️ 止损：90000.0", table)
         self.assertNotIn("|", table)
 
 
