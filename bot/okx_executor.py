@@ -1143,6 +1143,39 @@ class OkxExecutionEngine:
             lines.append("白话: 先向上打穿关键高点，再回踩不破确认价，才进入找 OB 的下一步。")
         return lines
 
+    def _regime_display_label(self, regime: str, features: dict[str, Any]) -> str:
+        if regime == "high_growth":
+            compression_score = int(features.get("compression_growth_score", 0) or 0)
+            strong_score = int(features.get("strong_growth_score", 0) or 0)
+            adx = float(features.get("adx", 0.0) or 0.0)
+            momentum = float(features.get("momentum", 0.0) or 0.0)
+            if compression_score >= 4 and strong_score < 3:
+                return "🟡 压缩蓄势"
+            if adx >= 35.0 and momentum >= 0.04:
+                return "🟢 强趋势扩张"
+            return "🟢 趋势扩张"
+        if regime == "flat":
+            return "⚪ 震荡防守"
+        if regime == "normal":
+            return "🔵 常规过滤"
+        if regime == "static":
+            return "⚙️ 静态参数"
+        return regime
+
+    def _regime_display_lines(self, regime: str, features: dict[str, Any]) -> list[str]:
+        lines = [f"市场状态: {self._regime_display_label(regime, features)}"]
+        lines.append(f"策略桶: {regime}")
+        if features:
+            adx = float(features.get("adx", 0.0) or 0.0)
+            momentum_pct = float(features.get("momentum", 0.0) or 0.0) * 100.0
+            ema_gap_pct = float(features.get("ema_gap", 0.0) or 0.0) * 100.0
+            atr_ratio = float(features.get("atr_ratio", 0.0) or 0.0)
+            lines.append(
+                f"因子: ADX {adx:.1f} | 动量 {momentum_pct:+.2f}% | "
+                f"EMA差 {ema_gap_pct:+.2f}% | ATR {atr_ratio:.2f}x"
+            )
+        return lines
+
     def _build_ob_status_message(self) -> str:
         try:
             engine, _ = self.load_engine()
@@ -1154,6 +1187,7 @@ class OkxExecutionEngine:
             latest = engine.c15m[latest_idx]
             bias = engine.precomputed.bias_4h[engine.mapping[latest_idx]]
             regime = engine._regime_label_for_idx(latest_idx)
+            regime_features = engine._regime_features_for_idx(latest_idx)
             timestamp = engine._timestamp_for_idx(latest_idx)
             structure_reference = self._structure_reference(engine, latest_idx, bias)
             lines = [
@@ -1162,8 +1196,8 @@ class OkxExecutionEngine:
                 f"时间: {timestamp} UTC",
                 f"价格: {self._format_price(float(latest.c))}",
                 f"4H Bias: {self._direction_label(bias)}",
-                f"Regime: {regime}",
             ]
+            lines.extend(self._regime_display_lines(regime, regime_features))
             lines.extend(self._structure_reference_lines(structure_reference))
 
             if engine.position is not None:

@@ -94,6 +94,40 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertEqual(engine._telegram_command_reply("/ob"), "OB_REPORT")
         self.assertEqual(engine._telegram_command_reply("/状态"), "OB_REPORT")
 
+    def test_ob_regime_display_labels_compression_bucket_plainly(self) -> None:
+        engine = object.__new__(OkxExecutionEngine)
+
+        lines = engine._regime_display_lines(
+            "high_growth",
+            {
+                "adx": 13.5049,
+                "momentum": -0.015076,
+                "ema_gap": 0.005431,
+                "atr_ratio": 0.865,
+                "strong_growth_score": 0,
+                "compression_growth_score": 4,
+            },
+        )
+
+        self.assertIn("市场状态: 🟡 压缩蓄势", lines)
+        self.assertIn("策略桶: high_growth", lines)
+        self.assertIn("动量 -1.51%", "\n".join(lines))
+
+    def test_ob_regime_display_keeps_strong_growth_distinct(self) -> None:
+        engine = object.__new__(OkxExecutionEngine)
+
+        label = engine._regime_display_label(
+            "high_growth",
+            {
+                "adx": 36.0,
+                "momentum": 0.05,
+                "strong_growth_score": 3,
+                "compression_growth_score": 1,
+            },
+        )
+
+        self.assertEqual(label, "🟢 强趋势扩张")
+
     def test_ob_stronger_bear_break_must_be_lower_than_primary(self) -> None:
         engine = object.__new__(OkxExecutionEngine)
         strategy_engine = SimpleNamespace(
