@@ -42,7 +42,10 @@ class TelegramCommandTests(unittest.TestCase):
     def test_help_and_status_reply(self) -> None:
         engine = self._engine()
 
-        self.assertIn("/balance", engine._telegram_command_reply("/help"))
+        help_text = engine._telegram_command_reply("/help")
+        self.assertIn("/balance", help_text)
+        self.assertIn("/drift", help_text)
+        self.assertIn("/ob", help_text)
         status = engine._telegram_command_reply("/status")
         self.assertIn("📡 状态雷达", status)
         self.assertIn("BTC/USDT:USDT", status)
@@ -73,6 +76,21 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertIn("📦 仓位\n🏛️ 交易所：🟢 long", table)
         self.assertIn("🛡️ 止损：90000.0", table)
         self.assertNotIn("|", table)
+
+    def test_drift_aliases_reply_with_drift_report(self) -> None:
+        engine = self._engine()
+        engine._build_drift_report_message = lambda: "DRIFT_REPORT"  # type: ignore[method-assign]
+
+        self.assertEqual(engine._telegram_command_reply("/drift@mybot"), "DRIFT_REPORT")
+        self.assertEqual(engine._telegram_command_reply("/health"), "DRIFT_REPORT")
+        self.assertEqual(engine._telegram_command_reply("/体检"), "DRIFT_REPORT")
+
+    def test_ob_aliases_reply_with_ob_report(self) -> None:
+        engine = self._engine()
+        engine._build_ob_status_message = lambda: "OB_REPORT"  # type: ignore[method-assign]
+
+        self.assertEqual(engine._telegram_command_reply("/ob"), "OB_REPORT")
+        self.assertEqual(engine._telegram_command_reply("/状态"), "OB_REPORT")
 
 
 if __name__ == "__main__":
