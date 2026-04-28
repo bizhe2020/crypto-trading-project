@@ -1063,29 +1063,43 @@ class OkxExecutionEngine:
         if lows:
             low_idx = lows[-1]
             low = engine.c15m[low_idx]
+            break_price = float(low.l)
             reference["bear"] = {
-                "break_price": float(low.l),
+                "break_price": break_price,
                 "reclaim_price": float(low.h),
                 "time": engine._timestamp_for_idx(low_idx),
             }
-        if len(lows) >= 2:
-            prev_low_idx = lows[-2]
-            prev_low = engine.c15m[prev_low_idx]
-            reference["bear"]["strong_break_price"] = float(prev_low.l)
-            reference["bear"]["strong_time"] = engine._timestamp_for_idx(prev_low_idx)
+            stronger_low_indices = [
+                idx for idx in lows[-6:-1] if float(engine.c15m[idx].l) < break_price
+            ]
+            if stronger_low_indices:
+                strong_low_idx = min(
+                    stronger_low_indices,
+                    key=lambda idx: float(engine.c15m[idx].l),
+                )
+                strong_low = engine.c15m[strong_low_idx]
+                reference["bear"]["strong_break_price"] = float(strong_low.l)
+                reference["bear"]["strong_time"] = engine._timestamp_for_idx(strong_low_idx)
         if highs:
             high_idx = highs[-1]
             high = engine.c15m[high_idx]
+            break_price = float(high.h)
             reference["bull"] = {
-                "break_price": float(high.h),
+                "break_price": break_price,
                 "reclaim_price": float(high.l),
                 "time": engine._timestamp_for_idx(high_idx),
             }
-        if len(highs) >= 2:
-            prev_high_idx = highs[-2]
-            prev_high = engine.c15m[prev_high_idx]
-            reference["bull"]["strong_break_price"] = float(prev_high.h)
-            reference["bull"]["strong_time"] = engine._timestamp_for_idx(prev_high_idx)
+            stronger_high_indices = [
+                idx for idx in highs[-6:-1] if float(engine.c15m[idx].h) > break_price
+            ]
+            if stronger_high_indices:
+                strong_high_idx = max(
+                    stronger_high_indices,
+                    key=lambda idx: float(engine.c15m[idx].h),
+                )
+                strong_high = engine.c15m[strong_high_idx]
+                reference["bull"]["strong_break_price"] = float(strong_high.h)
+                reference["bull"]["strong_time"] = engine._timestamp_for_idx(strong_high_idx)
 
         if bias == Direction.BEAR:
             reference["primary"] = reference.get("bear")

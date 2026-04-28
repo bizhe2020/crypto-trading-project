@@ -3,8 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from bot.okx_executor import ExecutorConfig, OkxExecutionEngine
+from strategy.scalp_robust_v2_core import Direction
 
 
 class TelegramCommandTests(unittest.TestCase):
@@ -91,6 +93,86 @@ class TelegramCommandTests(unittest.TestCase):
 
         self.assertEqual(engine._telegram_command_reply("/ob"), "OB_REPORT")
         self.assertEqual(engine._telegram_command_reply("/状态"), "OB_REPORT")
+
+    def test_ob_stronger_bear_break_must_be_lower_than_primary(self) -> None:
+        engine = object.__new__(OkxExecutionEngine)
+        strategy_engine = SimpleNamespace(
+            c15m=[
+                SimpleNamespace(c=120.0, h=121.0, l=119.0),
+                SimpleNamespace(c=118.0, h=120.0, l=115.0),
+                SimpleNamespace(c=94.0, h=96.0, l=90.0),
+                SimpleNamespace(c=106.0, h=108.0, l=105.0),
+                SimpleNamespace(c=102.0, h=110.0, l=100.0),
+                SimpleNamespace(c=104.0, h=109.0, l=101.0),
+            ],
+            precomputed=SimpleNamespace(highs_15m=[], lows_15m=[1, 2, 3, 4]),
+            _timestamp_for_idx=lambda idx: f"t{idx}",
+        )
+
+        reference = engine._structure_reference(strategy_engine, 5, Direction.BEAR)
+
+        self.assertEqual(reference["primary"]["break_price"], 100.0)
+        self.assertEqual(reference["primary"]["strong_break_price"], 90.0)
+
+    def test_ob_stronger_break_omitted_when_not_more_extreme(self) -> None:
+        engine = object.__new__(OkxExecutionEngine)
+        strategy_engine = SimpleNamespace(
+            c15m=[
+                SimpleNamespace(c=120.0, h=121.0, l=119.0),
+                SimpleNamespace(c=118.0, h=120.0, l=115.0),
+                SimpleNamespace(c=111.0, h=113.0, l=110.0),
+                SimpleNamespace(c=106.0, h=108.0, l=105.0),
+                SimpleNamespace(c=102.0, h=110.0, l=100.0),
+                SimpleNamespace(c=104.0, h=109.0, l=101.0),
+            ],
+            precomputed=SimpleNamespace(highs_15m=[], lows_15m=[1, 2, 3, 4]),
+            _timestamp_for_idx=lambda idx: f"t{idx}",
+        )
+
+        reference = engine._structure_reference(strategy_engine, 5, Direction.BEAR)
+
+        self.assertEqual(reference["primary"]["break_price"], 100.0)
+        self.assertNotIn("strong_break_price", reference["primary"])
+
+    def test_ob_stronger_bull_break_must_be_higher_than_primary(self) -> None:
+        engine = object.__new__(OkxExecutionEngine)
+        strategy_engine = SimpleNamespace(
+            c15m=[
+                SimpleNamespace(c=80.0, h=81.0, l=79.0),
+                SimpleNamespace(c=92.0, h=95.0, l=90.0),
+                SimpleNamespace(c=108.0, h=110.0, l=106.0),
+                SimpleNamespace(c=96.0, h=98.0, l=94.0),
+                SimpleNamespace(c=102.0, h=100.0, l=90.0),
+                SimpleNamespace(c=99.0, h=101.0, l=97.0),
+            ],
+            precomputed=SimpleNamespace(highs_15m=[1, 2, 3, 4], lows_15m=[]),
+            _timestamp_for_idx=lambda idx: f"t{idx}",
+        )
+
+        reference = engine._structure_reference(strategy_engine, 5, Direction.BULL)
+
+        self.assertEqual(reference["primary"]["break_price"], 100.0)
+        self.assertEqual(reference["primary"]["strong_break_price"], 110.0)
+
+    def test_ob_stronger_bull_break_omitted_when_not_more_extreme(self) -> None:
+        engine = object.__new__(OkxExecutionEngine)
+        strategy_engine = SimpleNamespace(
+            c15m=[
+                SimpleNamespace(c=80.0, h=81.0, l=79.0),
+                SimpleNamespace(c=92.0, h=95.0, l=90.0),
+                SimpleNamespace(c=96.0, h=98.0, l=94.0),
+                SimpleNamespace(c=99.0, h=99.0, l=95.0),
+                SimpleNamespace(c=102.0, h=100.0, l=90.0),
+                SimpleNamespace(c=99.0, h=101.0, l=97.0),
+            ],
+            precomputed=SimpleNamespace(highs_15m=[1, 2, 3, 4], lows_15m=[]),
+            _timestamp_for_idx=lambda idx: f"t{idx}",
+        )
+
+        reference = engine._structure_reference(strategy_engine, 5, Direction.BULL)
+
+        self.assertEqual(reference["primary"]["break_price"], 100.0)
+        self.assertNotIn("strong_break_price", reference["primary"])
 
 
 if __name__ == "__main__":
