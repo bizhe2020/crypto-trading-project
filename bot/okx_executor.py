@@ -925,6 +925,30 @@ class OkxExecutionEngine:
             return "-"
         return f"{value:,.1f}"
 
+    def _format_distance(self, current_price: float, target_price: float | None) -> str:
+        if target_price is None or current_price <= 0:
+            return "-"
+        diff = target_price - current_price
+        pct = diff / current_price * 100.0
+        direction = "向上" if diff > 0 else "向下" if diff < 0 else "当前价"
+        return f"{direction} {abs(diff):,.1f}U / {abs(pct):.2f}%"
+
+    def _format_level_condition(self, current_price: float, target_price: float | None, *, expect: str) -> str:
+        if target_price is None or current_price <= 0:
+            return "-"
+        diff = target_price - current_price
+        pct = abs(diff) / current_price * 100.0
+        amount = abs(diff)
+        if expect == "above":
+            if current_price >= target_price:
+                return f"已在上方 {amount:,.1f}U / {pct:.2f}%"
+            return f"向上还差 {amount:,.1f}U / {pct:.2f}%"
+        if expect == "below":
+            if current_price <= target_price:
+                return f"已在下方 {amount:,.1f}U / {pct:.2f}%"
+            return f"向下还差 {amount:,.1f}U / {pct:.2f}%"
+        return self._format_distance(current_price, target_price)
+
     def _direction_label(self, direction: str | None) -> str:
         if direction == Direction.BULL:
             return "🟢 多头"
@@ -1025,6 +1049,86 @@ class OkxExecutionEngine:
                 out.append((pending, self._pending_entry_conditions(engine, latest_idx, pending)))
         return out
 
+    def _structure_reference(self, engine: Any, latest_idx: int, bias: str) -> dict[str, Any]:
+        latest = engine.c15m[latest_idx]
+        highs = [idx for idx in engine.precomputed.highs_15m if idx < latest_idx]
+        lows = [idx for idx in engine.precomputed.lows_15m if idx < latest_idx]
+        reference: dict[str, Any] = {
+            "current_price": float(latest.c),
+            "bias": bias,
+            "primary": None,
+            "secondary": None,
+            "opposite": None,
+        }
+        if lows:
+            low_idx = lows[-1]
+            low = engine.c15m[low_idx]
+            reference["bear"] = {
+                "break_price": float(low.l),
+                "reclaim_price": float(low.h),
+                "time": engine._timestamp_for_idx(low_idx),
+            }
+        if len(lows) >= 2:
+            prev_low_idx = lows[-2]
+            prev_low = engine.c15m[prev_low_idx]
+            reference["bear"]["strong_break_price"] = float(prev_low.l)
+            reference["bear"]["strong_time"] = engine._timestamp_for_idx(prev_low_idx)
+        if highs:
+            high_idx = highs[-1]
+            high = engine.c15m[high_idx]
+            reference["bull"] = {
+                "break_price": float(high.h),
+                "reclaim_price": float(high.l),
+                "time": engine._timestamp_for_idx(high_idx),
+            }
+        if len(highs) >= 2:
+            prev_high_idx = highs[-2]
+            prev_high = engine.c15m[prev_high_idx]
+            reference["bull"]["strong_break_price"] = float(prev_high.h)
+            reference["bull"]["strong_time"] = engine._timestamp_for_idx(prev_high_idx)
+
+        if bias == Direction.BEAR:
+            reference["primary"] = reference.get("bear")
+            reference["opposite"] = reference.get("bull")
+        elif bias == Direction.BULL:
+            reference["primary"] = reference.get("bull")
+            reference["opposite"] = reference.get("bear")
+        return reference
+
+    def _structure_reference_lines(self, reference: dict[str, Any]) -> list[str]:
+        current_price = float(reference.get("current_price", 0.0) or 0.0)
+        primary = reference.get("primary") if isinstance(reference.get("primary"), dict) else None
+        bias = reference.get("bias")
+        if not primary:
+            return ["📍 结构参考: 暂无足够关键高低点"]
+
+        is_bear = bias == Direction.BEAR
+        break_label = "先跌破" if is_bear else "先突破"
+        reclaim_label = "再收回到" if is_bear else "再回踩守住"
+        break_expect = "below" if is_bear else "above"
+        lines = [
+            "",
+            "📍 结构参考价",
+            f"方向: {self._direction_label(bias)}",
+            f"{break_label}: {self._format_price(primary.get('break_price'))} "
+            f"({self._format_level_condition(current_price, primary.get('break_price'), expect=break_expect)})",
+        ]
+        if primary.get("strong_break_price") is not None:
+            strong_label = "更强跌破" if is_bear else "更强突破"
+            lines.append(
+                f"{strong_label}: {self._format_price(primary.get('strong_break_price'))} "
+                f"({self._format_level_condition(current_price, primary.get('strong_break_price'), expect=break_expect)})"
+            )
+        lines.append(
+            f"{reclaim_label}: {self._format_price(primary.get('reclaim_price'))} "
+            f"({self._format_level_condition(current_price, primary.get('reclaim_price'), expect='above')})"
+        )
+        if is_bear:
+            lines.append("白话: 先向下打穿关键低点，再拉回确认价上方，才进入找 OB 的下一步。")
+        else:
+            lines.append("白话: 先向上打穿关键高点，再回踩不破确认价，才进入找 OB 的下一步。")
+        return lines
+
     def _build_ob_status_message(self) -> str:
         try:
             engine, _ = self.load_engine()
@@ -1037,6 +1141,7 @@ class OkxExecutionEngine:
             bias = engine.precomputed.bias_4h[engine.mapping[latest_idx]]
             regime = engine._regime_label_for_idx(latest_idx)
             timestamp = engine._timestamp_for_idx(latest_idx)
+            structure_reference = self._structure_reference(engine, latest_idx, bias)
             lines = [
                 "🧭 <OB 开仓雷达>",
                 f"标的: {self.config.symbol}",
@@ -1045,6 +1150,7 @@ class OkxExecutionEngine:
                 f"4H Bias: {self._direction_label(bias)}",
                 f"Regime: {regime}",
             ]
+            lines.extend(self._structure_reference_lines(structure_reference))
 
             if engine.position is not None:
                 state = self._load_shadow_gate_state(engine) if self._shadow_gate_enabled() else {}
@@ -1073,7 +1179,19 @@ class OkxExecutionEngine:
                 if bias == Direction.NONE:
                     missing.append("形成方向性 4H bias")
                 else:
-                    missing.append("等待当前方向出现新的 MSS/BOS 破位并收回")
+                    primary = structure_reference.get("primary") if isinstance(structure_reference.get("primary"), dict) else {}
+                    break_price = primary.get("break_price")
+                    reclaim_price = primary.get("reclaim_price")
+                    if bias == Direction.BEAR and break_price is not None and reclaim_price is not None:
+                        missing.append(
+                            f"价格路径需出现: 跌破 {self._format_price(break_price)} -> 收回 {self._format_price(reclaim_price)} 上方"
+                        )
+                    elif bias == Direction.BULL and break_price is not None and reclaim_price is not None:
+                        missing.append(
+                            f"价格路径需出现: 突破 {self._format_price(break_price)} -> 回踩守住 {self._format_price(reclaim_price)}"
+                        )
+                    else:
+                        missing.append("先形成新的关键价破位和收回确认")
                 missing.extend(
                     [
                         "找到合格 OB 实体区",
