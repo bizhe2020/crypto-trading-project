@@ -14,6 +14,7 @@ from bot.okx_client import OkxClient, OkxCredentials
 from bot.state_store import StateStore
 from strategy.scalp_robust_v2_core import (
     ActionType,
+    Direction,
     ScalpRobustEngine,
     StrategyAction,
     StrategyConfig,
@@ -208,6 +209,15 @@ class ExecutorConfig:
     telegram_enabled: bool = False
     telegram_token: str | None = None
     telegram_chat_id: str | None = None
+    telegram_command_enabled: bool = True
+    telegram_poll_interval_seconds: int = 30
+    telegram_ob_status_enabled: bool = True
+    telegram_ob_status_interval_minutes: int = 60
+    telegram_drift_report_enabled: bool = True
+    telegram_drift_report_interval_hours: int = 24
+    telegram_drift_window_days: int = 30
+    telegram_drift_recent_trades: int = 20
+    telegram_drift_baseline_path: str = "config/live_drift_baseline.high_leverage.json"
     proxy: str | None = None
     api_key: str | None = None
     api_secret: str | None = None
@@ -343,8 +353,9 @@ class ExecutorConfig:
         )
 
 class OkxExecutionEngine:
-    def __init__(self, config: ExecutorConfig):
+    def __init__(self, config: ExecutorConfig, config_path: str | Path | None = None):
         self.config = config
+        self.config_path = Path(config_path).resolve() if config_path else None
         credentials = None
         if config.api_key and config.api_secret and config.api_passphrase:
             credentials = OkxCredentials(
@@ -359,8 +370,9 @@ class OkxExecutionEngine:
 
     @classmethod
     def from_file(cls, path: str | Path) -> "OkxExecutionEngine":
-        payload = json.loads(Path(path).read_text())
-        return cls(ExecutorConfig.from_dict(payload))
+        config_path = Path(path).resolve()
+        payload = json.loads(config_path.read_text())
+        return cls(ExecutorConfig.from_dict(payload), config_path=config_path)
 
     def check_safety(self) -> None:
         if self.config.symbol != "BTC/USDT:USDT":
@@ -382,20 +394,29 @@ class OkxExecutionEngine:
             if missing:
                 raise ValueError(f"live mode missing credentials: {', '.join(missing)}")
 
-    def _send_telegram(self, message: str) -> None:
+    def _telegram_proxies(self) -> dict[str, str] | None:
+        if not self.config.proxy:
+            return None
+        return {"http": self.config.proxy, "https": self.config.proxy}
+
+    def _send_telegram(self, message: str, chat_id: str | None = None) -> bool:
         if not self.config.telegram_enabled:
-            return
-        if not self.config.telegram_token or not self.config.telegram_chat_id:
-            return
+            return False
+        target_chat_id = chat_id or self.config.telegram_chat_id
+        if not self.config.telegram_token or not target_chat_id:
+            return False
         url = f"https://api.telegram.org/bot{self.config.telegram_token}/sendMessage"
         try:
-            requests.post(
+            response = requests.post(
                 url,
-                json={"chat_id": self.config.telegram_chat_id, "text": message},
+                json={"chat_id": target_chat_id, "text": message},
                 timeout=10,
+                proxies=self._telegram_proxies(),
             )
+            response.raise_for_status()
+            return True
         except Exception:
-            pass
+            return False
 
     def _send_startup_telegram(self, bootstrap_status: dict[str, Any]) -> None:
         status_text = "成功" if not bootstrap_status.get("bootstrap_error") else "异常"
@@ -413,6 +434,378 @@ class OkxExecutionEngine:
         if bootstrap_status.get("bootstrap_error"):
             lines.append(f"错误: {bootstrap_status['bootstrap_error']}")
         self._send_telegram("\n".join(lines))
+
+    def _telegram_command_name(self, text: str) -> str:
+        command = text.strip().split(maxsplit=1)[0].lower() if text.strip() else ""
+        if "@" in command:
+            command = command.split("@", 1)[0]
+        return command
+
+    def _telegram_get_updates(self, offset: int | None) -> list[dict[str, Any]]:
+        if not self.config.telegram_token:
+            return []
+        params: dict[str, Any] = {"timeout": 0, "allowed_updates": json.dumps(["message"])}
+        if offset is not None:
+            params["offset"] = offset
+        response = requests.get(
+            f"https://api.telegram.org/bot{self.config.telegram_token}/getUpdates",
+            params=params,
+            timeout=10,
+            proxies=self._telegram_proxies(),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        result = payload.get("result")
+        return result if isinstance(result, list) else []
+
+    def _telegram_poll_commands(self) -> None:
+        if not (
+            self.config.telegram_enabled
+            and self.config.telegram_command_enabled
+            and self.config.telegram_token
+            and self.config.telegram_chat_id
+        ):
+            return
+
+        offset_raw = self.store.get_value("telegram_last_update_id")
+        offset = int(offset_raw) if offset_raw else None
+        updates = self._telegram_get_updates(offset)
+        if not updates:
+            return
+
+        max_update_id = max(int(update.get("update_id", 0) or 0) for update in updates)
+        if offset is None:
+            self.store.set_value("telegram_last_update_id", str(max_update_id + 1))
+            return
+
+        expected_chat_id = str(self.config.telegram_chat_id)
+        for update in updates:
+            message = update.get("message") if isinstance(update, dict) else None
+            if not isinstance(message, dict):
+                continue
+            chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+            chat_id = str(chat.get("id") or "")
+            if chat_id != expected_chat_id:
+                continue
+            text = str(message.get("text") or "").strip()
+            if not text.startswith("/"):
+                continue
+            self._handle_telegram_command(text, chat_id=chat_id)
+        self.store.set_value("telegram_last_update_id", str(max_update_id + 1))
+
+    def _handle_telegram_command(self, text: str, chat_id: str | None = None) -> bool:
+        command = self._telegram_command_name(text)
+        if command in {"/drift", "/health", "/体检"}:
+            self._send_telegram(self._build_drift_report_message(), chat_id=chat_id)
+            return True
+        if command in {"/ob", "/status", "/状态"}:
+            self._send_telegram(self._build_ob_status_message(), chat_id=chat_id)
+            return True
+        if command in {"/help", "/start"}:
+            self._send_telegram(self._telegram_help_message(), chat_id=chat_id)
+            return True
+        return False
+
+    def _telegram_help_message(self) -> str:
+        return "\n".join(
+            [
+                "🤖 <High Leverage Bot>",
+                "",
+                "🩺 /drift - 实盘体检，查看胜率/PF/滑点/频率漂移",
+                "🧭 /ob - OB 雷达，查看距离开仓还差什么条件",
+                "📌 /status - 同 /ob",
+                "",
+                "⏱ 自动推送:",
+                f"🧭 OB 状态每 {self.config.telegram_ob_status_interval_minutes} 分钟",
+                f"🩺 Drift 每 {self.config.telegram_drift_report_interval_hours} 小时",
+            ]
+        )
+
+    def _resolve_runtime_path(self, value: str | Path) -> Path:
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        if self.config_path is not None:
+            return self.config_path.parents[0].parents[0] / path
+        return Path.cwd() / path
+
+    def _build_drift_report_message(self) -> str:
+        try:
+            from scripts.live_drift_monitor import (
+                build_live_trades,
+                build_report,
+                format_report,
+                load_action_log,
+                load_json,
+            )
+
+            baseline_path = self._resolve_runtime_path(self.config.telegram_drift_baseline_path)
+            baseline = load_json(baseline_path)
+            state_db = Path(self.store.db_path).resolve()
+            actions = load_action_log(state_db)
+            trades, diagnostics = build_live_trades(actions)
+            report = build_report(
+                config_path=self.config_path or Path("runtime_config"),
+                state_db=state_db,
+                baseline=baseline,
+                actions=actions,
+                trades=trades,
+                diagnostics=diagnostics,
+                window_days=int(self.config.telegram_drift_window_days),
+                recent_trades=int(self.config.telegram_drift_recent_trades),
+            )
+            return format_report(report)
+        except Exception as exc:
+            return "\n".join(
+                [
+                    "🩺 <Drift 体检>",
+                    "状态: ⚠️ 生成失败",
+                    f"原因: {exc}",
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                ]
+            )
+
+    def _format_price(self, value: float | None) -> str:
+        if value is None:
+            return "-"
+        return f"{value:,.1f}"
+
+    def _direction_label(self, direction: str | None) -> str:
+        if direction == Direction.BULL:
+            return "🟢 多头"
+        if direction == Direction.BEAR:
+            return "🔴 空头"
+        return "⚪ 无"
+
+    def _latest_shadow_status_lines(self) -> list[str]:
+        if not self._shadow_gate_enabled():
+            return ["🛡 Shadow: 关闭"]
+        state = self._load_shadow_gate_state()
+        pause_until_ts = float(state.get("pause_until_ts", 0.0) or 0.0)
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if pause_until_ts > now_ts:
+            return [f"🛡 Shadow: 防守冷却中，至 {self._shadow_format_ts(pause_until_ts)} UTC"]
+        return ["🛡 Shadow: 可进攻"]
+
+    def _pending_entry_conditions(self, engine: Any, idx: int, pending: Any) -> dict[str, Any]:
+        curr = engine.c15m[idx]
+        direction = pending.direction
+        top = float(pending.ob_zone["top"])
+        bottom = float(pending.ob_zone["bottom"])
+        in_ob = bottom <= curr.l <= top or bottom <= curr.h <= top
+        direction_allowed = (
+            direction == Direction.BULL
+            and engine.config.allow_long
+            and engine._regime_ok_for_direction_idx(idx, Direction.BULL)
+        ) or (
+            direction == Direction.BEAR
+            and engine.config.allow_short
+            and engine._regime_ok_for_direction_idx(idx, Direction.BEAR)
+        )
+        candle_confirmed = (direction == Direction.BULL and curr.c > curr.o) or (
+            direction == Direction.BEAR and curr.c < curr.o
+        )
+        expired = engine._pending_expired(idx, pending)
+        missing: list[str] = []
+        if expired:
+            missing.append("OB 等待窗口已过期")
+        if not direction_allowed:
+            missing.append("方向被 regime / allow_long / allow_short 过滤")
+        if not in_ob:
+            if curr.c > top:
+                distance_pct = (curr.c - top) / curr.c * 100.0 if curr.c > 0 else 0.0
+                missing.append(f"价格还没回踩 OB，上沿还差约 {distance_pct:.2f}%")
+            elif curr.c < bottom:
+                distance_pct = (bottom - curr.c) / curr.c * 100.0 if curr.c > 0 else 0.0
+                missing.append(f"价格已在 OB 下方，需重新收回区间约 {distance_pct:.2f}%")
+            else:
+                missing.append("影线尚未触及 OB 区间")
+        if not candle_confirmed:
+            missing.append("缺少确认 K：多头需收阳，空头需收阴")
+        expires_in = pending.bos_idx + pending.pullback_window - idx
+        return {
+            "ready": not missing,
+            "missing": missing,
+            "in_ob": in_ob,
+            "expires_in_bars": expires_in,
+            "current_close": float(curr.c),
+            "current_low": float(curr.l),
+            "current_high": float(curr.h),
+            "top": top,
+            "bottom": bottom,
+        }
+
+    def _active_ob_candidates(self, engine: Any, latest_idx: int) -> list[tuple[Any, dict[str, Any]]]:
+        max_window = max(int(self.config.pullback_window or 0), int(self.config.short_pullback_window or 0), 40)
+        scan_start = max(100, latest_idx - max(300, max_window + 120))
+        pending_by_direction: dict[str, Any | None] = {Direction.BULL: None, Direction.BEAR: None}
+
+        for idx in range(scan_start, latest_idx + 1):
+            engine._apply_regime_switch_for_idx(idx)
+            for direction in (Direction.BULL, Direction.BEAR):
+                pending = pending_by_direction[direction]
+                if pending is None:
+                    continue
+                detail = self._pending_entry_conditions(engine, idx, pending)
+                if detail["ready"] and idx < latest_idx:
+                    pending_by_direction[direction] = None
+                    continue
+                if engine._pending_expired(idx, pending):
+                    pending_by_direction[direction] = None
+
+            if idx not in (engine.precomputed.highs_set | engine.precomputed.lows_set):
+                continue
+            bias = engine.precomputed.bias_4h[engine.mapping[idx]]
+            active_pending = any(pending_by_direction.values())
+            if engine.config.use_hfvf_filter and bias == Direction.NONE and not active_pending:
+                continue
+            pending = engine._build_pending_pullback(idx, bias)
+            if pending and pending_by_direction[pending.direction] is None:
+                pending_by_direction[pending.direction] = pending
+
+        out: list[tuple[Any, dict[str, Any]]] = []
+        engine._apply_regime_switch_for_idx(latest_idx)
+        for pending in pending_by_direction.values():
+            if pending is not None:
+                out.append((pending, self._pending_entry_conditions(engine, latest_idx, pending)))
+        return out
+
+    def _build_ob_status_message(self) -> str:
+        try:
+            engine, _ = self.load_engine()
+            latest_idx = self._latest_closed_index(engine)
+            if latest_idx is None:
+                return "🧭 <OB 雷达>\n状态: 🕒 等待最新收盘 K 线"
+
+            engine._apply_regime_switch_for_idx(latest_idx)
+            latest = engine.c15m[latest_idx]
+            bias = engine.precomputed.bias_4h[engine.mapping[latest_idx]]
+            regime = engine._regime_label_for_idx(latest_idx)
+            timestamp = engine._timestamp_for_idx(latest_idx)
+            lines = [
+                "🧭 <OB 开仓雷达>",
+                f"标的: {self.config.symbol}",
+                f"时间: {timestamp} UTC",
+                f"价格: {self._format_price(float(latest.c))}",
+                f"4H Bias: {self._direction_label(bias)}",
+                f"Regime: {regime}",
+            ]
+
+            if engine.position is not None:
+                state = self._load_shadow_gate_state(engine) if self._shadow_gate_enabled() else {}
+                real_open = bool(state.get("real_position_open", True))
+                position = engine.position
+                label = "📌 持仓中" if real_open else "🧪 Shadow paper position"
+                lines.extend(
+                    [
+                        "",
+                        f"状态: {label}",
+                        f"方向: {self._direction_label(getattr(position, 'direction', None))}",
+                        f"入场: {self._format_price(getattr(position, 'entry_price', None))}",
+                        f"止损: {self._format_price(getattr(position, 'sl_price', None))}",
+                        f"止盈: {self._format_price(getattr(position, 'target_price', None))}",
+                        "开仓条件: 等当前策略仓位结束后再寻找下一组 OB",
+                    ]
+                )
+                lines.extend(self._latest_shadow_status_lines())
+                return "\n".join(lines)
+
+            candidates = self._active_ob_candidates(engine, latest_idx)
+            lines.append("")
+            lines.extend(self._latest_shadow_status_lines())
+            if not candidates:
+                missing = []
+                if bias == Direction.NONE:
+                    missing.append("形成方向性 4H bias")
+                else:
+                    missing.append("等待当前方向出现新的 MSS/BOS 破位并收回")
+                missing.extend(
+                    [
+                        "找到合格 OB 实体区",
+                        "价格回踩 OB 区间",
+                        "收出确认 K：多头收阳 / 空头收阴",
+                    ]
+                )
+                lines.extend(
+                    [
+                        "",
+                        "状态: 🕵️ 暂无有效 OB 等待区",
+                        "还差:",
+                    ]
+                )
+                lines.extend(f"{pos}. {item}" for pos, item in enumerate(missing, start=1))
+                return "\n".join(lines)
+
+            for idx, (pending, detail) in enumerate(candidates, start=1):
+                lines.extend(
+                    [
+                        "",
+                        f"候选 {idx}: {self._direction_label(pending.direction)}",
+                        f"OB 区间: {self._format_price(detail['bottom'])} - {self._format_price(detail['top'])}",
+                        f"剩余窗口: {detail['expires_in_bars']} 根 15m K",
+                        f"当前高低: {self._format_price(detail['current_low'])} / {self._format_price(detail['current_high'])}",
+                    ]
+                )
+                if detail["ready"]:
+                    lines.append("状态: 🚀 OB 条件已满足，等待下一次策略评估/风控确认")
+                else:
+                    lines.append("还差:")
+                    lines.extend(f"{pos}. {item}" for pos, item in enumerate(detail["missing"], start=1))
+            return "\n".join(lines)
+        except Exception as exc:
+            return "\n".join(
+                [
+                    "🧭 <OB 开仓雷达>",
+                    "状态: ⚠️ 生成失败",
+                    f"原因: {exc}",
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                ]
+            )
+
+    def _interval_due(self, key: str, interval_seconds: int) -> bool:
+        raw = self.store.get_value(key)
+        if not raw:
+            return True
+        try:
+            last_ts = float(raw)
+        except ValueError:
+            return True
+        return datetime.now(timezone.utc).timestamp() - last_ts >= interval_seconds
+
+    def _mark_interval_sent(self, key: str) -> None:
+        self.store.set_value(key, str(datetime.now(timezone.utc).timestamp()))
+
+    def _run_telegram_background_tasks(self) -> None:
+        if not self.config.telegram_enabled:
+            return
+        try:
+            self._telegram_poll_commands()
+        except Exception as exc:
+            self.store.append_action("runtime", "TELEGRAM_COMMAND_ERROR", {"error": str(exc)})
+
+        if self.config.telegram_ob_status_enabled:
+            key = "telegram_last_ob_status_ts"
+            interval = max(1, int(self.config.telegram_ob_status_interval_minutes)) * 60
+            if self._interval_due(key, interval):
+                if self._send_telegram(self._build_ob_status_message()):
+                    self._mark_interval_sent(key)
+
+        if self.config.telegram_drift_report_enabled:
+            key = "telegram_last_drift_report_ts"
+            interval = max(1, int(self.config.telegram_drift_report_interval_hours)) * 3600
+            if self._interval_due(key, interval):
+                if self._send_telegram(self._build_drift_report_message()):
+                    self._mark_interval_sent(key)
+
+    def _loop_sleep_seconds(self, wait_seconds: int, poll_interval_seconds: int) -> int:
+        sleep_seconds = max(wait_seconds, poll_interval_seconds)
+        if self.config.telegram_enabled and (
+            self.config.telegram_command_enabled
+            or self.config.telegram_ob_status_enabled
+            or self.config.telegram_drift_report_enabled
+        ):
+            sleep_seconds = min(sleep_seconds, max(5, int(self.config.telegram_poll_interval_seconds)))
+        return sleep_seconds
 
     def bootstrap(self) -> dict[str, Any]:
         self.check_safety()
@@ -536,25 +929,28 @@ class OkxExecutionEngine:
         self._send_startup_telegram(bootstrap_status)
         while True:
             try:
+                self._run_telegram_background_tasks()
                 wait_seconds = self.seconds_until_next_close(close_buffer_seconds)
                 latest_closed_time = self.latest_closed_candle_time(close_buffer_seconds)
                 last_processed = self.store.get_value("last_processed_candle_time")
                 if last_processed == latest_closed_time:
+                    sleep_seconds = self._loop_sleep_seconds(wait_seconds, poll_interval_seconds)
                     payload = {
                         "event": "waiting",
                         "symbol": self.config.symbol,
                         "last_processed_candle_time": last_processed,
                         "next_closed_candle_time": self.next_closed_candle_time(close_buffer_seconds),
-                        "sleep_seconds": wait_seconds,
+                        "sleep_seconds": sleep_seconds,
                     }
                     self.store.append_action(latest_closed_time, "WAIT", payload)
                     print(json.dumps(payload, ensure_ascii=False))
-                    time.sleep(max(wait_seconds, poll_interval_seconds))
+                    time.sleep(sleep_seconds)
                     continue
 
                 status = self.evaluate_latest()
                 print(json.dumps({"event": "evaluate", **status}, ensure_ascii=False))
-                time.sleep(poll_interval_seconds)
+                self._run_telegram_background_tasks()
+                time.sleep(self._loop_sleep_seconds(poll_interval_seconds, poll_interval_seconds))
             except KeyboardInterrupt:
                 stop_payload = {"event": "stopped", "symbol": self.config.symbol}
                 self.store.append_action("runtime", "STOP", stop_payload)

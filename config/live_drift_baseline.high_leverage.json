@@ -1,0 +1,36 @@
+{
+  "name": "high_leverage_pressure_shadow_best",
+  "source": "HIGH_LEVERAGE_REATTACK_REPRODUCTION.md",
+  "period_start": "2022-01-01",
+  "period_end": "2026-04-26",
+  "expected": {
+    "full_return_pct": 88481.28,
+    "max_drawdown_pct": 33.87,
+    "current_year_return_pct": 29.87,
+    "current_year_max_drawdown_pct": 11.35,
+    "trades_per_year": 65.34,
+    "trades_per_month": 5.44,
+    "win_rate_pct": 46.1,
+    "avg_win_pct": 11.59,
+    "avg_loss_pct": -4.374,
+    "payoff_ratio": 2.65,
+    "profit_factor": 2.266,
+    "expectancy_pct": 2.985,
+    "modeled_entry_slippage_bps": 5.0,
+    "modeled_exit_slippage_bps": 5.0
+  },
+  "thresholds": {
+    "min_trades_for_quality": 8,
+    "warn_win_rate_below_pct": 36.0,
+    "warn_profit_factor_below": 1.5,
+    "alert_profit_factor_below": 1.0,
+    "warn_payoff_below": 1.8,
+    "warn_expectancy_below_pct": 0.5,
+    "alert_expectancy_below_pct": 0.0,
+    "warn_trade_frequency_ratio_below": 0.5,
+    "warn_trade_frequency_ratio_above": 1.8,
+    "warn_avg_entry_slippage_bps_above": 12.0,
+    "warn_avg_exit_slippage_bps_above": 12.0,
+    "warn_stop_target_deviation_bps_above": 15.0
+  }
+}
