@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import MethodType
+from unittest.mock import patch
 
 from bot.okx_executor import OkxExecutionEngine
 from bot.state_store import StateStore
@@ -66,6 +68,30 @@ class LiveEvaluateWindowTest(unittest.TestCase):
         self.assertEqual(status["status"], "ok")
         self.assertEqual(engine.calls, [(5, 6)])
         self.assertEqual(store.get_value("last_processed_candle_time"), "t5")
+
+    def test_latest_closed_candle_uses_candle_open_timestamp(self) -> None:
+        executor = object.__new__(OkxExecutionEngine)
+        executor.config = type("Config", (), {"timeframe": "15m"})()
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 4, 29, 12, 15, 5, tzinfo=timezone.utc)
+
+        with patch("bot.okx_executor.datetime", FixedDateTime):
+            self.assertEqual(executor.latest_closed_candle_time(close_buffer_seconds=5), "2026-04-29 12:00")
+
+    def test_latest_closed_candle_respects_close_buffer(self) -> None:
+        executor = object.__new__(OkxExecutionEngine)
+        executor.config = type("Config", (), {"timeframe": "15m"})()
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 4, 29, 12, 15, 4, tzinfo=timezone.utc)
+
+        with patch("bot.okx_executor.datetime", FixedDateTime):
+            self.assertEqual(executor.latest_closed_candle_time(close_buffer_seconds=5), "2026-04-29 11:45")
 
 
 if __name__ == "__main__":

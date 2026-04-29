@@ -3740,7 +3740,9 @@ class OkxExecutionEngine:
 
     def latest_closed_candle_time(self, close_buffer_seconds: int = 5) -> str:
         now = datetime.now(timezone.utc) - timedelta(seconds=close_buffer_seconds)
-        closed = self._floor_to_timeframe(now)
+        # OHLCV timestamps are candle open times. At a boundary plus buffer,
+        # the candle that just closed is the previous timeframe bucket.
+        closed = self._floor_to_timeframe(now) - timedelta(seconds=self._timeframe_seconds())
         return closed.strftime("%Y-%m-%d %H:%M")
 
     def next_closed_candle_time(self, close_buffer_seconds: int = 5) -> str:
