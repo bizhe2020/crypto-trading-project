@@ -435,6 +435,58 @@ def format_value(value: Any, suffix: str = "") -> str:
     return f"{value}{suffix}"
 
 
+def health_conclusion(report: dict[str, Any]) -> list[str]:
+    status = str(report.get("status") or "")
+    recent = report.get("recent", {})
+    baseline = report.get("baseline_comparison", {})
+    flags = report.get("flags", [])
+    trade_count = int(recent.get("trade_count") or 0)
+    profit_factor = recent.get("profit_factor")
+    expectancy = recent.get("expectancy_pct")
+    frequency_ratio = baseline.get("trade_frequency_ratio")
+
+    if status == "NO_TRADES":
+        verdict = "🕒 暂无足够实盘样本，先看执行链路是否稳定。"
+    elif status == "ALERT":
+        verdict = "🚨 实盘质量明显偏离，暂停加资金，优先排查执行/滑点/信号漂移。"
+    elif status == "WATCH":
+        verdict = "🟡 实盘进入观察区，暂不加仓，等样本和质量恢复。"
+    else:
+        verdict = "✅ 实盘质量暂时贴近基准，可以继续小资金验证。"
+
+    details = [verdict]
+    if trade_count < 8:
+        details.append(f"样本: {trade_count} 笔，低于 8 笔，结论只看方向，不做重仓依据。")
+    elif profit_factor is not None and expectancy is not None:
+        details.append(f"质量: PF {profit_factor:.2f}，单笔期望 {expectancy:.2f}%。")
+    if isinstance(frequency_ratio, (int, float)):
+        details.append(f"频率: 当前约为基准的 {frequency_ratio:.2f}x。")
+    if flags:
+        details.append("动作: 先处理体检提示，再考虑扩大资金。")
+    return details
+
+
+def launch_capital_advice(report: dict[str, Any]) -> list[str]:
+    status = str(report.get("status") or "")
+    recent = report.get("recent", {})
+    trade_count = int(recent.get("trade_count") or 0)
+    profit_factor = recent.get("profit_factor")
+    expectancy = recent.get("expectancy_pct")
+
+    lines = [
+        "资金假设: 当前约 10,000U = 计划资金 20%。",
+        "回测压力: 最优策略 MaxDD 约 33.87%，20% 仓位下对应账户总资金压力约 6.8%。",
+    ]
+    if status == "OK" and trade_count >= 8 and (profit_factor or 0.0) >= 1.5 and (expectancy or 0.0) > 0.5:
+        lines.append("建议: 维持 20% 运行；连续 20-30 笔仍贴近基准后，再考虑提高到 25%-35%。")
+    elif status in {"NO_TRADES", "WATCH"} or trade_count < 8:
+        lines.append("建议: 暂时维持 20%，不要因为短期没开仓而加资金；先累计 8-20 笔闭环样本。")
+    else:
+        lines.append("建议: 不加资金；若 ALERT 持续，优先降到 10%-15% 或暂停新开仓排查。")
+    lines.append("红线: PF < 1.0、期望转负、滑点明显扩大或连续异常亏损时，不扩仓。")
+    return lines
+
+
 def format_report(report: dict[str, Any]) -> str:
     recent = report["recent"]
     all_metrics = report["all"]
@@ -475,6 +527,10 @@ def format_report(report: dict[str, Any]) -> str:
     if flags:
         lines.extend(["", "🚦 体检提示"])
         lines.extend(f"- {flag['level']}: {flag['message']}" for flag in flags)
+    lines.extend(["", "🧭 体检结论"])
+    lines.extend(health_conclusion(report))
+    lines.extend(["", "💰 启动资金建议"])
+    lines.extend(launch_capital_advice(report))
     return "\n".join(lines)
 
 

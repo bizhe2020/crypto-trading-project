@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.live_drift_monitor import build_live_trades, load_action_log, trade_metrics
+from scripts.live_drift_monitor import build_live_trades, format_report, load_action_log, trade_metrics
 
 
 def insert_action(conn: sqlite3.Connection, timestamp: str, action_type: str, payload: dict) -> None:
@@ -101,6 +101,36 @@ class LiveDriftMonitorTest(unittest.TestCase):
         self.assertEqual(metrics["win_rate_pct"], 100.0)
         self.assertEqual(metrics["avg_win_pct"], 6.0)
         self.assertEqual(metrics["expectancy_pct"], 6.0)
+
+    def test_format_report_includes_health_conclusion_and_capital_advice(self) -> None:
+        report = {
+            "status": "WATCH",
+            "window": {"window_days": 30, "recent_trades_floor": 20},
+            "recent": {
+                "trade_count": 3,
+                "total_return_pct": 2.0,
+                "win_rate_pct": 66.7,
+                "profit_factor": 1.8,
+                "payoff_ratio": 1.4,
+                "expectancy_pct": 0.7,
+                "trades_per_month": 4.2,
+                "trades_per_year": 50.4,
+                "avg_entry_slippage_bps": 4.0,
+                "avg_exit_slippage_bps": 5.0,
+                "avg_stop_target_deviation_bps": None,
+                "stop_target_reference_count": 0,
+            },
+            "all": {"trade_count": 3, "total_return_pct": 2.0},
+            "baseline_comparison": {"trade_frequency_ratio": 0.77},
+            "flags": [{"level": "watch", "message": "Small sample: 3 closed trades."}],
+        }
+
+        message = format_report(report)
+
+        self.assertIn("🧭 体检结论", message)
+        self.assertIn("💰 启动资金建议", message)
+        self.assertIn("当前约 10,000U = 计划资金 20%", message)
+        self.assertIn("暂时维持 20%", message)
 
 
 if __name__ == "__main__":
