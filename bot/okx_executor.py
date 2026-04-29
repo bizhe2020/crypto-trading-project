@@ -19,6 +19,7 @@ from strategy.scalp_robust_v2_core import (
     ScalpRobustEngine,
     StrategyAction,
     StrategyConfig,
+    Trade,
     dataframe_to_candles,
 )
 
@@ -2111,10 +2112,13 @@ class OkxExecutionEngine:
         state = self._load_shadow_gate_state(engine)
         metadata = action.metadata or {}
         pnl = float(metadata.get("net_pnl", 0.0) or 0.0)
-        capital_before = float(state.get("capital", 0.0) or 0.0)
-        if capital_before <= 0:
-            capital_before = float(getattr(engine, "capital", 0.0) or 0.0) - pnl
-        capital = capital_before + pnl
+        post_close_capital = float(getattr(engine, "capital", 0.0) or 0.0)
+        if post_close_capital > 0:
+            capital = post_close_capital
+            capital_before = post_close_capital - pnl
+        else:
+            capital_before = float(state.get("capital", 0.0) or 0.0)
+            capital = capital_before + pnl
         state["capital"] = capital
         state["drawdown_peak"] = max(float(state.get("drawdown_peak", capital) or capital), capital)
         action_dt = self._action_timestamp(action)
@@ -3083,30 +3087,202 @@ class OkxExecutionEngine:
         self.store.save_snapshot(snapshot)
         return asdict(snapshot)
 
+    def _current_live_total_usdt(self, fallback: float) -> float:
+        try:
+            balance = self.client.fetch_balance()
+            total = self._extract_total_usdt(balance)
+            if total > 0:
+                return total
+            available, _ = self._extract_available_usdt(balance)
+            if available > 0:
+                return available
+        except Exception:
+            pass
+        return float(fallback)
+
+    def _estimate_external_exit_price(self, position: Any, net_pnl: float) -> tuple[float, float, float]:
+        quantity = abs(float(getattr(position, "quantity", 0.0) or 0.0))
+        entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
+        entry_fee = float(getattr(position, "entry_fee", 0.0) or 0.0)
+        fee_rate = max(float(self.config.taker_fee_rate or 0.0), 0.0)
+        if quantity <= 0 or entry_price <= 0:
+            return entry_price, net_pnl, 0.0
+        if getattr(position, "direction", None) == Direction.BULL:
+            denominator = quantity * max(1.0 - fee_rate, 1e-9)
+            exit_price = (float(net_pnl) + quantity * entry_price + entry_fee) / denominator
+            gross_pnl = quantity * (exit_price - entry_price)
+        else:
+            denominator = quantity * (1.0 + fee_rate)
+            exit_price = (quantity * entry_price - float(net_pnl) - entry_fee) / denominator
+            gross_pnl = quantity * (entry_price - exit_price)
+        exit_fee = quantity * max(exit_price, 0.0) * fee_rate
+        return exit_price, gross_pnl, entry_fee + exit_fee
+
+    def _external_flat_exit_reason(self, position: Any, exit_price: float) -> str:
+        stop_price = self._safe_float(getattr(position, "sl_price", None))
+        target_price = self._safe_float(getattr(position, "target_price", None))
+        direction = getattr(position, "direction", None)
+        if exit_price > 0 and stop_price and stop_price > 0:
+            stop_diff = abs(exit_price - stop_price) / stop_price
+            if stop_diff <= 0.003:
+                return "external_stop_loss"
+            if direction == Direction.BULL and exit_price <= stop_price:
+                return "external_stop_loss"
+            if direction == Direction.BEAR and exit_price >= stop_price:
+                return "external_stop_loss"
+        if exit_price > 0 and target_price and target_price > 0:
+            target_diff = abs(exit_price - target_price) / target_price
+            if target_diff <= 0.003:
+                return "external_target_rr"
+            if direction == Direction.BULL and exit_price >= target_price:
+                return "external_target_rr"
+            if direction == Direction.BEAR and exit_price <= target_price:
+                return "external_target_rr"
+        return "external_flat_sync"
+
+    def _record_external_flat_close(
+        self,
+        engine: Any,
+        position: Any,
+        *,
+        context: str,
+        timestamp: str,
+    ) -> StrategyAction | None:
+        quantity = abs(float(getattr(position, "quantity", 0.0) or 0.0))
+        capital_at_entry = float(getattr(position, "capital_at_entry", 0.0) or 0.0)
+        if quantity <= 0 or capital_at_entry <= 0:
+            return None
+        live_total = self._current_live_total_usdt(float(getattr(engine, "capital", 0.0) or capital_at_entry))
+        net_pnl = live_total - capital_at_entry
+        exit_price, gross_pnl, fees = self._estimate_external_exit_price(position, net_pnl)
+        slippage_cost = float(getattr(position, "entry_slippage_cost", 0.0) or 0.0)
+        risk_amount = float(getattr(position, "risk_amount", 0.0) or 0.0)
+        rr_ratio = net_pnl / risk_amount if risk_amount > 0 else 0.0
+        pnl_pct = net_pnl / capital_at_entry if capital_at_entry > 0 else 0.0
+        reason = self._external_flat_exit_reason(position, exit_price)
+        trade = Trade(
+            entry_time=str(getattr(position, "entry_time", "")),
+            exit_time=timestamp,
+            direction=str(getattr(position, "direction", "")),
+            signal_entry_price=float(getattr(position, "signal_entry_price", 0.0) or 0.0),
+            entry_price=float(getattr(position, "entry_price", 0.0) or 0.0),
+            signal_exit_price=exit_price,
+            exit_price=exit_price,
+            gross_pnl=gross_pnl,
+            fees=fees,
+            slippage_cost=slippage_cost,
+            pnl=net_pnl,
+            pnl_pct=pnl_pct,
+            rr_ratio=rr_ratio,
+            exit_reason=reason,
+            capital_at_entry=capital_at_entry,
+            notional=self._safe_float(getattr(position, "notional", None)),
+            quantity=quantity,
+            entry_idx=getattr(position, "entry_idx", None),
+            initial_stop_price=self._safe_float(getattr(position, "initial_sl_price", None)),
+            trail_style=getattr(position, "trail_style", None),
+            risk_regime=getattr(position, "risk_regime", None),
+            regime_label=getattr(position, "regime_label", None),
+            time_based_trailing_enabled=bool(getattr(position, "time_based_trailing_enabled", False)),
+            auto_tit_reason=getattr(position, "auto_tit_reason", None),
+            exit_idx=None,
+            pressure_target_applied=bool(getattr(position, "pressure_target_applied", False)),
+            pressure_target_source=getattr(position, "pressure_target_source", None),
+            pressure_target_level=self._safe_float(getattr(position, "pressure_target_level", None)),
+            pressure_target_rr=self._safe_float(getattr(position, "pressure_target_rr", None)),
+            pressure_target_min_rr=self._safe_float(getattr(position, "pressure_target_min_rr", None)),
+            pressure_target_dynamic_reason=getattr(position, "pressure_target_dynamic_reason", None),
+            pressure_target_update_idx=getattr(position, "pressure_target_update_idx", None),
+            pressure_touch_lock_applied=bool(getattr(position, "pressure_touch_lock_applied", False)),
+            pressure_touch_lock_source=getattr(position, "pressure_touch_lock_source", None),
+            pressure_touch_lock_level=self._safe_float(getattr(position, "pressure_touch_lock_level", None)),
+            pressure_touch_lock_rr=self._safe_float(getattr(position, "pressure_touch_lock_rr", None)),
+            pressure_touch_lock_update_idx=getattr(position, "pressure_touch_lock_update_idx", None),
+        )
+        engine.trades.append(trade)
+        engine.exit_reasons[reason] = int(engine.exit_reasons.get(reason, 0) or 0) + 1
+        engine.capital = live_total
+        action = StrategyAction(
+            type=ActionType.CLOSE_POSITION,
+            timestamp=timestamp,
+            direction=getattr(position, "direction", None),
+            exit_price=exit_price,
+            reason=reason,
+            metadata={
+                "synthetic": True,
+                "source": "external_flat_sync",
+                "context": context,
+                "gross_pnl": gross_pnl,
+                "fees": fees,
+                "slippage_cost": slippage_cost,
+                "net_pnl": net_pnl,
+                "signal_exit_price": exit_price,
+                "capital_at_entry": capital_at_entry,
+                "live_total_usdt": live_total,
+                "rr_ratio": rr_ratio,
+                "pnl_pct": pnl_pct,
+            },
+        )
+        self.record_action(action)
+        self._shadow_gate_after_close(action, engine)
+        self._dynamic_high_leverage_after_close(action, engine)
+        return action
+
     def _sync_manual_flat_position(self, engine: Any, *, context: str) -> None:
         position = getattr(engine, "position", None)
         if position is None:
             return
+        direction = getattr(position, "direction", None)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        synthetic_action = self._record_external_flat_close(
+            engine,
+            position,
+            context=context,
+            timestamp=timestamp,
+        )
         payload = {
             "context": context,
-            "direction": getattr(position, "direction", None),
+            "direction": direction,
             "previous_quantity": float(getattr(position, "quantity", 0.0) or 0.0),
             "message": "Exchange position no longer exists; cleared local snapshot.",
         }
         engine.position = None
         snapshot = self._save_engine_snapshot(engine)
         payload["snapshot"] = snapshot
+        if synthetic_action is not None:
+            payload["synthetic_close_action"] = asdict(synthetic_action)
+        elif self._shadow_gate_enabled():
+            gate_state = self._load_shadow_gate_state(engine)
+            gate_state["real_position_open"] = False
+            gate_state["real_position_direction"] = None
+            events = gate_state.setdefault("events", [])
+            if isinstance(events, list):
+                events.append(
+                    {
+                        "time": timestamp,
+                        "event": "manual_flat_sync",
+                        "reason": context,
+                        "direction": direction,
+                    }
+                )
+            self._save_shadow_gate_state(gate_state)
+            payload["shadow_gate_state"] = gate_state
         self.store.append_action(timestamp, "MANUAL_POSITION_SYNC", payload)
-        direction = "做多" if payload["direction"] == "BULL" else "做空" if payload["direction"] == "BEAR" else "-"
+        direction_label = "做多" if direction == "BULL" else "做空" if direction == "BEAR" else "-"
+        pnl_line = ""
+        if synthetic_action is not None and isinstance(synthetic_action.metadata, dict):
+            pnl = self._safe_float(synthetic_action.metadata.get("net_pnl"))
+            reason = synthetic_action.reason or "-"
+            pnl_line = f"估算PnL: {pnl:.2f}U / {reason}" if pnl is not None else ""
         self._send_telegram(
             "\n".join(
                 [
                     "[手动平仓已同步]",
                     f"标的: {self.config.symbol}",
-                    f"方向: {direction}",
+                    f"方向: {direction_label}",
                     f"来源: {context}",
                     "检测到交易所仓位已被手动平掉，本地状态已清空",
+                    *([pnl_line] if pnl_line else []),
                     f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 ]
             )
