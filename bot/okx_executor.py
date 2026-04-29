@@ -674,6 +674,133 @@ class OkxExecutionEngine:
         numeric = self._safe_float(value)
         return f"{numeric:.1f}" if numeric is not None else "-"
 
+    def _format_optional_usdt(self, value: Any, *, digits: int = 2) -> str:
+        numeric = self._safe_float(value)
+        return f"{numeric:.{digits}f}U" if numeric is not None else "-"
+
+    def _format_optional_leverage(self, value: Any) -> str:
+        numeric = self._safe_float(value)
+        return f"{numeric:.2f}x" if numeric is not None else "-"
+
+    def _latest_open_action_metadata(self, entry_time: str | None) -> dict[str, Any]:
+        if not entry_time:
+            return {}
+        for item in self.store.recent_actions(50):
+            if item.get("timestamp") != entry_time:
+                continue
+            if item.get("action_type") not in {ActionType.OPEN_LONG.value, ActionType.OPEN_SHORT.value}:
+                continue
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            metadata = payload.get("metadata")
+            return metadata if isinstance(metadata, dict) else {}
+        return {}
+
+    def _current_position_execution_context(
+        self,
+        snapshot: dict[str, Any],
+        dyn: dict[str, Any],
+    ) -> dict[str, Any]:
+        position = snapshot.get("position") if isinstance(snapshot.get("position"), dict) else None
+        if not position:
+            return {}
+
+        entry_time = str(position.get("entry_time") or "")
+        action_metadata = self._latest_open_action_metadata(entry_time)
+        last_decision = dyn.get("last_decision") if isinstance(dyn.get("last_decision"), dict) else {}
+        decision_matches_position = (
+            bool(last_decision)
+            and str(dyn.get("last_update_time") or "") == entry_time
+        )
+
+        actual_notional = self._safe_float(position.get("notional"))
+        capital_at_entry = self._safe_float(position.get("capital_at_entry")) or self._safe_float(snapshot.get("capital"))
+        actual_effective_leverage = (
+            actual_notional / capital_at_entry
+            if actual_notional is not None and capital_at_entry and capital_at_entry > 0
+            else None
+        )
+        selected_effective_leverage = self._safe_float(position.get("execution_effective_leverage"))
+        risk_mode = position.get("execution_risk_mode")
+        leverage_reasons = position.get("execution_leverage_reasons")
+        diagnostics = position.get("execution_guard_diagnostics")
+        if selected_effective_leverage is None and decision_matches_position:
+            selected_effective_leverage = self._safe_float(last_decision.get("effective_leverage"))
+        if not risk_mode and decision_matches_position:
+            risk_mode = last_decision.get("risk_mode")
+        if not isinstance(leverage_reasons, list) and decision_matches_position:
+            leverage_reasons = last_decision.get("leverage_reasons")
+        if not isinstance(diagnostics, dict) and decision_matches_position:
+            diagnostics = last_decision.get("diagnostics")
+
+        theoretical_notional = self._safe_float(position.get("execution_requested_notional"))
+        if theoretical_notional is None:
+            theoretical_notional = self._safe_float(action_metadata.get("risk_based_notional"))
+        if theoretical_notional is None:
+            theoretical_notional = self._safe_float(action_metadata.get("notional"))
+        target_notional = self._safe_float(position.get("execution_target_notional")) or actual_notional
+
+        return {
+            "actual_notional": actual_notional,
+            "actual_effective_leverage": actual_effective_leverage,
+            "selected_effective_leverage": selected_effective_leverage,
+            "risk_mode": str(risk_mode or "-"),
+            "leverage_reasons": leverage_reasons if isinstance(leverage_reasons, list) else [],
+            "reason_text": self._dynamic_leverage_reason_text(leverage_reasons if isinstance(leverage_reasons, list) else []),
+            "theoretical_notional": theoretical_notional,
+            "target_notional": target_notional,
+            "diagnostics": diagnostics if isinstance(diagnostics, dict) else {},
+        }
+
+    def _dynamic_leverage_reason_text(self, reasons: list[Any]) -> str:
+        if not reasons:
+            return "-"
+        labels = {
+            "base": "基础",
+            "high_growth": "扩张期",
+            "tight_stop": "窄止损",
+            "win_streak_expand": "连胜扩张",
+            "market_unhealthy_reduce": "健康度降杠杆",
+            "drawdown_reduce": "回撤降杠杆",
+            "state_defense_reduce": "防守档降杠杆",
+        }
+        parts: list[str] = []
+        for raw in reasons:
+            reason = str(raw)
+            if reason.startswith("failed_breakout_guard:"):
+                score = reason.split(":", 1)[1]
+                parts.append(f"防假突破保护 {score}")
+            else:
+                parts.append(labels.get(reason, reason))
+        return " + ".join(parts)
+
+    def _position_execution_rows(self, snapshot: dict[str, Any], dyn: dict[str, Any]) -> list[tuple[str, str]]:
+        context = self._current_position_execution_context(snapshot, dyn)
+        if not context:
+            return []
+        theoretical = context.get("theoretical_notional")
+        actual = context.get("actual_notional")
+        target = context.get("target_notional")
+        rows = [
+            ("账户有效杠杆", self._format_optional_leverage(context.get("actual_effective_leverage"))),
+            (
+                "执行杠杆",
+                f"{self._format_optional_leverage(context.get('selected_effective_leverage'))} / {context.get('risk_mode') or '-'}",
+            ),
+            ("压仓原因", str(context.get("reason_text") or "-")),
+        ]
+        if theoretical is not None or actual is not None:
+            rows.append(
+                (
+                    "理论/实际仓位",
+                    f"{self._format_optional_usdt(theoretical, digits=0)} -> {self._format_optional_usdt(actual, digits=0)}",
+                )
+            )
+        elif target is not None:
+            rows.append(("目标仓位", self._format_optional_usdt(target, digits=0)))
+        return rows
+
     def _telegram_status_text(self, *, table: bool = False) -> str:
         snapshot = self._load_snapshot_payload()
         position = self._position_summary()
@@ -689,6 +816,7 @@ class OkxExecutionEngine:
         if local_position:
             local_side = "long" if local_position.get("direction") == "BULL" else "short"
         bracket_id = bracket.get("algo_id") or bracket.get("algo_client_id") or "-"
+        execution_rows = self._position_execution_rows(snapshot, dyn)
         lines = [self._telegram_title("📡", "状态雷达") if not table else self._telegram_title("🧾", "状态面板")]
         rows = [
             ("标的", self.config.symbol),
@@ -699,6 +827,7 @@ class OkxExecutionEngine:
             ("交易所止损", self._format_optional_price(bracket.get("stop_price"))),
             ("交易所止盈", self._format_optional_price(bracket.get("target_price"))),
             ("保护单ID", str(bracket_id)),
+            *execution_rows,
             ("策略资金", f"{float(snapshot.get('capital', 0.0) or 0.0):.2f}U"),
             ("交易次数", str(int(snapshot.get("trade_count", 0) or 0))),
             ("最近K线", self.store.get_value("last_processed_candle_time") or "-"),
@@ -721,17 +850,33 @@ class OkxExecutionEngine:
                 f"🛡️ 止损：{row_map['交易所止损']}",
                 f"🎯 止盈：{row_map['交易所止盈']}",
                 f"🔐 保护单：{row_map['保护单ID']}",
-                "",
-                "🚀 策略",
-                f"💎 资金：{row_map['策略资金']}",
-                f"🔢 交易：{row_map['交易次数']}",
-                f"⚡ 档位：{row_map['动态档位']}",
-                f"👤 Shadow：{row_map['Shadow暂停到']}",
-                "",
-                "⏱ 时间",
-                f"🕯️ K线：{row_map['最近K线']}",
-                f"📅 {row_map['时间']}",
             ]
+            if execution_rows:
+                lines.extend(
+                    [
+                        "",
+                        "📐 执行",
+                        f"⚡ 账户有效：{row_map['账户有效杠杆']}",
+                        f"🎚️ 执行杠杆：{row_map['执行杠杆']}",
+                        f"🧯 压仓：{row_map['压仓原因']}",
+                    ]
+                )
+                if "理论/实际仓位" in row_map:
+                    lines.append(f"📊 仓位：{row_map['理论/实际仓位']}")
+            lines.extend(
+                [
+                    "",
+                    "🚀 策略",
+                    f"💎 资金：{row_map['策略资金']}",
+                    f"🔢 交易：{row_map['交易次数']}",
+                    f"⚡ 档位：{row_map['动态档位']}",
+                    f"👤 Shadow：{row_map['Shadow暂停到']}",
+                    "",
+                    "⏱ 时间",
+                    f"🕯️ K线：{row_map['最近K线']}",
+                    f"📅 {row_map['时间']}",
+                ]
+            )
         else:
             labels = {
                 "标的": "🎯 标的",
@@ -742,6 +887,11 @@ class OkxExecutionEngine:
                 "交易所止损": "🛡️ 交易所止损",
                 "交易所止盈": "🎯 交易所止盈",
                 "保护单ID": "🔐 保护单ID",
+                "账户有效杠杆": "⚡ 账户有效杠杆",
+                "执行杠杆": "🎚️ 执行杠杆",
+                "压仓原因": "🧯 压仓原因",
+                "理论/实际仓位": "📊 理论/实际仓位",
+                "目标仓位": "📊 目标仓位",
                 "策略资金": "💎 策略资金",
                 "交易次数": "🔢 交易次数",
                 "最近K线": "🕯️ 最近K线",
@@ -817,6 +967,7 @@ class OkxExecutionEngine:
         exits = snapshot.get("exit_reasons") if isinstance(snapshot.get("exit_reasons"), dict) else {}
         recent_return = float(recent.get("unit_return_pct", 0.0) or 0.0)
         mood = self._telegram_mood(recent_return)
+        execution = self._current_position_execution_context(snapshot, dyn)
         lines = [
             self._telegram_title(self._telegram_random_icon(mood), "策略表现"),
             f"💎 策略资金：{capital:.2f}U",
@@ -826,6 +977,38 @@ class OkxExecutionEngine:
             f"🏆 近期胜率：{float(recent.get('win_rate_pct', 0.0) or 0.0):.1f}%",
             f"👤 Shadow资金：{float(shadow.get('capital', 0.0) or 0.0):.2f}U",
         ]
+        if execution:
+            lines.extend(
+                [
+                    "",
+                    "📐 当前执行",
+                    (
+                        "⚡ 有效杠杆："
+                        f"{self._format_optional_leverage(execution.get('actual_effective_leverage'))} "
+                        f"/ 执行 {self._format_optional_leverage(execution.get('selected_effective_leverage'))}"
+                    ),
+                    (
+                        "📊 仓位：理论 "
+                        f"{self._format_optional_usdt(execution.get('theoretical_notional'), digits=0)} "
+                        f"-> 实际 {self._format_optional_usdt(execution.get('actual_notional'), digits=0)}"
+                    ),
+                    f"🧯 风控：{execution.get('reason_text') or '-'}",
+                ]
+            )
+            diagnostics = execution.get("diagnostics") if isinstance(execution.get("diagnostics"), dict) else {}
+            if diagnostics:
+                adx = self._safe_float(diagnostics.get("feature_adx"))
+                momentum = self._safe_float(diagnostics.get("feature_momentum"))
+                ema_gap = self._safe_float(diagnostics.get("feature_ema_gap"))
+                quality_parts = []
+                if adx is not None:
+                    quality_parts.append(f"ADX {adx:.1f}")
+                if momentum is not None:
+                    quality_parts.append(f"动量 {momentum * 100.0:.2f}%")
+                if ema_gap is not None:
+                    quality_parts.append(f"EMA差 {ema_gap * 100.0:.2f}%")
+                if quality_parts:
+                    lines.append("🧪 质量：" + " / ".join(quality_parts))
         if exits:
             lines.append("🚪 退出原因：" + ", ".join(f"{k}:{v}" for k, v in sorted(exits.items())))
         lines.append(self._telegram_time_line())
@@ -1580,22 +1763,40 @@ class OkxExecutionEngine:
                 )
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
             self._shadow_gate_mark_real_position(True, action, "open_confirmed")
-            self._send_telegram(
-                "\n".join(
+            dynamic_info = sizing.get("dynamic_high_leverage") if isinstance(sizing.get("dynamic_high_leverage"), dict) else {}
+            open_lines = [
+                "[开仓已确认]",
+                f"方向: {direction}",
+                f"标的: {self.config.symbol}",
+                f"成交: {observed['contracts']:.4f} 张 (~{observed['notional_usdt']:.2f}U)",
+                f"目标仓位: {sizing['amount']:.4f} {sizing['order_unit']} (~{sizing['expected_notional_usdt']:.2f}U)",
+                f"杠杆: {self.config.leverage}x",
+            ]
+            if dynamic_info:
+                open_lines.extend(
                     [
-                        "[开仓已确认]",
-                        f"方向: {direction}",
-                        f"标的: {self.config.symbol}",
-                        f"成交: {observed['contracts']:.4f} 张 (~{observed['notional_usdt']:.2f}U)",
-                        f"目标仓位: {sizing['amount']:.4f} {sizing['order_unit']} (~{sizing['expected_notional_usdt']:.2f}U)",
-                        f"杠杆: {self.config.leverage}x",
-                        f"入场: {action.entry_price:.1f}" if action.entry_price is not None else "入场: -",
-                        f"止损: {action.stop_price:.1f}" if action.stop_price is not None else "止损: -",
-                        f"止盈: {action.target_price:.1f}" if action.target_price is not None else "止盈: -",
-                        f"订单: {order.get('id')}",
-                        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                        f"有效杠杆: {self._format_optional_leverage(dynamic_info.get('effective_leverage'))}",
+                        f"动态档位: {dynamic_info.get('risk_mode') or '-'}",
+                        f"压仓原因: {self._dynamic_leverage_reason_text(dynamic_info.get('leverage_reasons') if isinstance(dynamic_info.get('leverage_reasons'), list) else [])}",
                     ]
                 )
+                if sizing.get("risk_based_notional_usdt") is not None:
+                    open_lines.append(
+                        "理论/实际仓位: "
+                        f"{self._format_optional_usdt(sizing.get('risk_based_notional_usdt'), digits=0)} "
+                        f"-> {self._format_optional_usdt(observed.get('notional_usdt'), digits=0)}"
+                    )
+            open_lines.extend(
+                [
+                    f"入场: {action.entry_price:.1f}" if action.entry_price is not None else "入场: -",
+                    f"止损: {action.stop_price:.1f}" if action.stop_price is not None else "止损: -",
+                    f"止盈: {action.target_price:.1f}" if action.target_price is not None else "止盈: -",
+                    f"订单: {order.get('id')}",
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                ]
+            )
+            self._send_telegram(
+                "\n".join(open_lines)
             )
             return {"status": "submitted", "order": order, "observed_position": observed, **sizing}
 
@@ -2431,6 +2632,21 @@ class OkxExecutionEngine:
                 "reason": "invalid_reference_price",
                 "decision": decision,
             }
+        metadata = action.metadata or {}
+        requested_notional = (
+            self._safe_float(sizing.get("risk_based_notional_usdt"))
+            or self._safe_float(metadata.get("risk_based_notional"))
+            or self._safe_float(sizing.get("notional_usdt"))
+            or self._safe_float(metadata.get("notional"))
+        )
+        position = getattr(engine, "position", None)
+        if position is not None:
+            setattr(position, "execution_effective_leverage", round(effective_leverage, 6))
+            setattr(position, "execution_risk_mode", risk_mode)
+            setattr(position, "execution_leverage_reasons", list(leverage_reasons))
+            setattr(position, "execution_requested_notional", requested_notional)
+            setattr(position, "execution_target_notional", round(target_notional, 6))
+            setattr(position, "execution_guard_diagnostics", diagnostics)
         adjusted = self._build_order_sizing(target_notional / reference_price, target_notional, reference_price)
         adjusted.update(
             {

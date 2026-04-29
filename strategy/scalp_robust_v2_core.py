@@ -245,6 +245,12 @@ class PositionState:
     exchange_order_id: str | None = None
     exchange_attach_algo_id: str | None = None
     exchange_attach_algo_client_id: str | None = None
+    execution_effective_leverage: float | None = None
+    execution_risk_mode: str | None = None
+    execution_leverage_reasons: list[str] | None = None
+    execution_requested_notional: float | None = None
+    execution_target_notional: float | None = None
+    execution_guard_diagnostics: dict[str, Any] | None = None
     pressure_target_applied: bool = False
     pressure_target_source: str | None = None
     pressure_target_level: float | None = None
@@ -283,6 +289,7 @@ class StrategySnapshot:
     position: dict[str, Any] | None
     exit_reasons: dict[str, int]
     trade_count: int
+    pending_pullback_state: dict[str, Any] | None = None
 
 
 @dataclass
@@ -609,6 +616,7 @@ class ScalpRobustEngine:
         self._regime_switch_cache: dict[int, tuple[str, StrategyConfig]] = {}
         self._regime_feature_cache: dict[int, dict[str, Any]] = {}
         self._atr_15m = self._compute_atr_series(self.config.atr_period)
+        self._reset_pending_pullback_state()
 
     @classmethod
     def from_candles(
@@ -627,6 +635,7 @@ class ScalpRobustEngine:
             position=asdict(self.position) if self.position else None,
             exit_reasons=dict(self.exit_reasons),
             trade_count=self.restored_trade_count + len(self.trades),
+            pending_pullback_state=self._snapshot_pending_pullback_state(),
         )
 
     def restore_snapshot(self, snapshot: dict[str, Any] | None) -> None:
@@ -641,6 +650,77 @@ class ScalpRobustEngine:
             self.restored_trade_count = int(snapshot.get("trade_count", 0) or 0)
         except (TypeError, ValueError):
             self.restored_trade_count = 0
+        self._restore_pending_pullback_state(snapshot.get("pending_pullback_state"))
+
+    def _reset_pending_pullback_state(self) -> None:
+        self.waiting_for_pullback = False
+        self.bos_idx = -1
+        self.ob_zone: dict[str, float] | None = None
+        self.waiting_direction: str | None = None
+        self.waiting_pullback_window = self.config.pullback_window
+        self.pending_by_direction: dict[str, PendingPullback | None] = {
+            Direction.BULL: None,
+            Direction.BEAR: None,
+        }
+
+    def _pending_to_dict(self, pending: PendingPullback | None) -> dict[str, Any] | None:
+        return asdict(pending) if pending is not None else None
+
+    def _pending_from_dict(self, payload: Any) -> PendingPullback | None:
+        if not isinstance(payload, dict):
+            return None
+        ob_zone = payload.get("ob_zone")
+        if not isinstance(ob_zone, dict):
+            return None
+        try:
+            return PendingPullback(
+                direction=str(payload["direction"]),
+                bos_idx=int(payload["bos_idx"]),
+                ob_zone={str(key): float(value) for key, value in ob_zone.items()},
+                pullback_window=int(payload["pullback_window"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _snapshot_pending_pullback_state(self) -> dict[str, Any]:
+        return {
+            "waiting_for_pullback": bool(self.waiting_for_pullback),
+            "bos_idx": int(self.bos_idx),
+            "ob_zone": dict(self.ob_zone) if isinstance(self.ob_zone, dict) else None,
+            "waiting_direction": self.waiting_direction,
+            "waiting_pullback_window": int(self.waiting_pullback_window),
+            "pending_by_direction": {
+                Direction.BULL: self._pending_to_dict(self.pending_by_direction.get(Direction.BULL)),
+                Direction.BEAR: self._pending_to_dict(self.pending_by_direction.get(Direction.BEAR)),
+            },
+        }
+
+    def _restore_pending_pullback_state(self, payload: Any) -> None:
+        self._reset_pending_pullback_state()
+        if not isinstance(payload, dict):
+            return
+        self.waiting_for_pullback = bool(payload.get("waiting_for_pullback", False))
+        try:
+            self.bos_idx = int(payload.get("bos_idx", -1))
+        except (TypeError, ValueError):
+            self.bos_idx = -1
+        ob_zone = payload.get("ob_zone")
+        if isinstance(ob_zone, dict):
+            try:
+                self.ob_zone = {str(key): float(value) for key, value in ob_zone.items()}
+            except (TypeError, ValueError):
+                self.ob_zone = None
+        self.waiting_direction = payload.get("waiting_direction") if payload.get("waiting_direction") in {Direction.BULL, Direction.BEAR} else None
+        try:
+            self.waiting_pullback_window = int(payload.get("waiting_pullback_window", self.config.pullback_window))
+        except (TypeError, ValueError):
+            self.waiting_pullback_window = self.config.pullback_window
+        pending_by_direction = payload.get("pending_by_direction")
+        if isinstance(pending_by_direction, dict):
+            self.pending_by_direction = {
+                Direction.BULL: self._pending_from_dict(pending_by_direction.get(Direction.BULL)),
+                Direction.BEAR: self._pending_from_dict(pending_by_direction.get(Direction.BEAR)),
+            }
 
     def open_position(self, idx: int, direction: str, entry_price: float, sl_price: float, target_price: float) -> StrategyAction:
         applied_risk_per_trade, risk_regime = self._risk_per_trade_for_idx(idx, direction)
@@ -1698,15 +1778,6 @@ class ScalpRobustEngine:
         return self.compute_metrics()
 
     def evaluate_range(self, start_idx: int, end_idx: int) -> list[StrategyAction]:
-        waiting_for_pullback = False
-        bos_idx = -1
-        ob_zone: dict[str, float] | None = None
-        waiting_direction: str | None = None
-        waiting_pullback_window = self.config.pullback_window
-        pending_by_direction: dict[str, PendingPullback | None] = {
-            Direction.BULL: None,
-            Direction.BEAR: None,
-        }
         actions: list[StrategyAction] = []
 
         for i in range(start_idx, end_idx):
@@ -1719,60 +1790,60 @@ class ScalpRobustEngine:
 
             bias = self.precomputed.bias_4h[self.mapping[i]]
 
-            active_pending = waiting_for_pullback or any(pending_by_direction.values())
+            active_pending = self.waiting_for_pullback or any(self.pending_by_direction.values())
             if self.config.use_hfvf_filter and bias == Direction.NONE and not active_pending:
                 continue
 
             if self.config.enable_dual_pending_state:
                 if not self.position:
                     for direction in (Direction.BULL, Direction.BEAR):
-                        pending = pending_by_direction[direction]
+                        pending = self.pending_by_direction[direction]
                         if pending is None:
                             continue
                         action = self._open_action_from_pending(i, pending)
                         if action:
                             actions.append(action)
-                            pending_by_direction[Direction.BULL] = None
-                            pending_by_direction[Direction.BEAR] = None
+                            self.pending_by_direction[Direction.BULL] = None
+                            self.pending_by_direction[Direction.BEAR] = None
                             break
                         if self._pending_expired(i, pending):
-                            pending_by_direction[direction] = None
+                            self.pending_by_direction[direction] = None
                 if self.position:
                     continue
                 if i in (self.precomputed.highs_set | self.precomputed.lows_set):
                     pending = self._build_pending_pullback(i, bias)
-                    if pending and pending_by_direction[pending.direction] is None:
-                        pending_by_direction[pending.direction] = pending
+                    if pending and self.pending_by_direction[pending.direction] is None:
+                        self.pending_by_direction[pending.direction] = pending
                 continue
 
-            if waiting_for_pullback and ob_zone and waiting_direction:
+            if self.waiting_for_pullback and self.ob_zone and self.waiting_direction:
                 pending = PendingPullback(
-                    direction=waiting_direction,
-                    bos_idx=bos_idx,
-                    ob_zone=ob_zone,
-                    pullback_window=waiting_pullback_window,
+                    direction=self.waiting_direction,
+                    bos_idx=self.bos_idx,
+                    ob_zone=self.ob_zone,
+                    pullback_window=self.waiting_pullback_window,
                 )
                 action = self._open_action_from_pending(i, pending)
                 if action:
                     actions.append(action)
-                    waiting_for_pullback = False
-                    ob_zone = None
-                    waiting_direction = None
+                    self.waiting_for_pullback = False
+                    self.ob_zone = None
+                    self.waiting_direction = None
                     continue
                 if self._pending_expired(i, pending):
-                    waiting_for_pullback = False
-                    ob_zone = None
-                    waiting_direction = None
+                    self.waiting_for_pullback = False
+                    self.ob_zone = None
+                    self.waiting_direction = None
                     continue
 
-            if not self.position and not waiting_for_pullback and i in (self.precomputed.highs_set | self.precomputed.lows_set):
+            if not self.position and not self.waiting_for_pullback and i in (self.precomputed.highs_set | self.precomputed.lows_set):
                 pending = self._build_pending_pullback(i, bias)
                 if pending:
-                    waiting_for_pullback = True
-                    bos_idx = pending.bos_idx
-                    ob_zone = pending.ob_zone
-                    waiting_direction = pending.direction
-                    waiting_pullback_window = pending.pullback_window
+                    self.waiting_for_pullback = True
+                    self.bos_idx = pending.bos_idx
+                    self.ob_zone = pending.ob_zone
+                    self.waiting_direction = pending.direction
+                    self.waiting_pullback_window = pending.pullback_window
 
         return actions
 

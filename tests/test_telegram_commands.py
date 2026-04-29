@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +79,51 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertIn("📦 仓位\n🏛️ 交易所：🟢 long", table)
         self.assertIn("🛡️ 止损：90000.0", table)
         self.assertNotIn("|", table)
+
+    def test_status_and_performance_include_execution_overlay(self) -> None:
+        engine = self._engine()
+        engine.store.set_value(
+            "strategy_snapshot",
+            json.dumps(
+                {
+                    "capital": 9744.64,
+                    "position": {
+                        "direction": "BULL",
+                        "entry_time": "2026-04-29 12:00",
+                        "entry_price": 77553.0,
+                        "sl_price": 76555.2,
+                        "target_price": 83292.7,
+                        "capital_at_entry": 12182.16,
+                        "notional": 24371.04,
+                        "quantity": 0.3143,
+                        "execution_effective_leverage": 2.0,
+                        "execution_risk_mode": "offense",
+                        "execution_leverage_reasons": ["base", "high_growth", "failed_breakout_guard:0/2"],
+                        "execution_requested_notional": 54769.97,
+                        "execution_target_notional": 24388.64,
+                        "execution_guard_diagnostics": {
+                            "feature_adx": 13.48,
+                            "feature_momentum": -0.0083,
+                            "feature_ema_gap": 0.0017,
+                        },
+                    },
+                    "exit_reasons": {},
+                    "trade_count": 0,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+        status = engine._telegram_command_reply("/status")
+        self.assertIn("⚡ 账户有效杠杆：2.00x", status)
+        self.assertIn("🎚️ 执行杠杆：2.00x / offense", status)
+        self.assertIn("🧯 压仓原因：基础 + 扩张期 + 防假突破保护 0/2", status)
+        self.assertIn("📊 理论/实际仓位：54770U -> 24371U", status)
+
+        performance = engine._telegram_command_reply("/performance")
+        self.assertIn("📐 当前执行", performance)
+        self.assertIn("⚡ 有效杠杆：2.00x / 执行 2.00x", performance)
+        self.assertIn("🧪 质量：ADX 13.5 / 动量 -0.83% / EMA差 0.17%", performance)
 
     def test_drift_aliases_reply_with_drift_report(self) -> None:
         engine = self._engine()
