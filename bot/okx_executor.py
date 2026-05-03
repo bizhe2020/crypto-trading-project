@@ -640,6 +640,79 @@ class OkxExecutionEngine:
             return "⚪ flat"
         return str(side or "-")
 
+    def _overlay_event_label(self, event_type: Any) -> str:
+        event = str(event_type or "").lower()
+        labels = {
+            "sota": "SOTA做多",
+            "sota_long": "SOTA做多",
+            "main_sota": "SOTA做多",
+            "scalp_robust_v2": "SOTA做多",
+            "sota_short": "SOTA做空",
+            "stable": "Stable反手空",
+            "stable_reverse_short": "Stable反手空",
+            "smc": "SMC短空",
+            "smc_short": "SMC短空",
+        }
+        return labels.get(event, str(event_type or "-"))
+
+    def _overlay_reason_label(self, reason: Any) -> str:
+        labels = {
+            "priority_available": "可执行",
+            "position_lock_open": "单仓锁",
+            "local_position_open": "本地已有仓位",
+            "account_position_open": "交易所已有仓位",
+            "account_state_unavailable": "账户状态不可用",
+        }
+        return labels.get(str(reason or ""), str(reason or "-"))
+
+    def _overlay_candidate_text(self, candidate: Any | None) -> str:
+        if candidate is None:
+            return "空闲"
+        label = self._overlay_event_label(getattr(candidate, "event_type", None))
+        direction = self._direction_label(getattr(candidate, "direction", None))
+        exit_time = getattr(candidate, "exit_time", None)
+        if exit_time:
+            return f"🔒 {label} / {direction} / 至 {exit_time}"
+        return f"🔒 {label} / {direction}"
+
+    def _latest_overlay_decision(self) -> dict[str, Any] | None:
+        for item in self.store.recent_actions(200):
+            if item.get("action_type") != "SOTA_OVERLAY_LOCK":
+                continue
+            payload = item.get("payload")
+            if isinstance(payload, dict):
+                return payload
+        return None
+
+    def _overlay_decision_text(self, decision: dict[str, Any] | None) -> str:
+        if not decision:
+            return "暂无"
+        event_label = self._overlay_event_label(decision.get("event_type"))
+        status = str(decision.get("decision") or "")
+        reason = self._overlay_reason_label(decision.get("reason"))
+        paper_tag = str(decision.get("paper_tag") or "")
+        blocking = decision.get("blocking_event_type")
+        blocking_label = self._overlay_event_label(blocking) if blocking else None
+        if paper_tag == "stable_preempted_sota":
+            return f"Stable抢占SOTA：{blocking_label or 'Stable'} 挡住 {event_label}"
+        if status == "accepted":
+            return f"✅ 接受 {event_label}"
+        if status == "rejected":
+            if blocking_label:
+                return f"⛔ {event_label} 被 {blocking_label} 拦截：{reason}"
+            return f"⛔ {event_label}：{reason}"
+        return f"{event_label}：{reason}"
+
+    def _overlay_status_rows(self) -> list[tuple[str, str]]:
+        return [
+            ("Overlay锁仓", self._overlay_candidate_text(self._load_sota_overlay_open_candidate())),
+            ("最近Overlay", self._overlay_decision_text(self._latest_overlay_decision())),
+        ]
+
+    def _overlay_compact_line(self) -> str:
+        rows = dict(self._overlay_status_rows())
+        return f"Overlay: {rows['Overlay锁仓']} | 最近: {rows['最近Overlay']}"
+
     def _load_snapshot_payload(self) -> dict[str, Any]:
         snapshot = self.store.load_snapshot()
         return snapshot if isinstance(snapshot, dict) else {}
@@ -819,6 +892,7 @@ class OkxExecutionEngine:
             local_side = "long" if local_position.get("direction") == "BULL" else "short"
         bracket_id = bracket.get("algo_id") or bracket.get("algo_client_id") or "-"
         execution_rows = self._position_execution_rows(snapshot, dyn)
+        overlay_rows = self._overlay_status_rows()
         lines = [self._telegram_title("📡", "状态雷达") if not table else self._telegram_title("🧾", "状态面板")]
         rows = [
             ("标的", self.config.symbol),
@@ -835,6 +909,7 @@ class OkxExecutionEngine:
             ("最近K线", self.store.get_value("last_processed_candle_time") or "-"),
             ("动态档位", str(dyn.get("mode") or "-")),
             ("Shadow暂停到", self._shadow_format_ts(float(shadow.get("pause_until_ts", 0.0) or 0.0)) or "-"),
+            *overlay_rows,
             ("时间", self._local_time_text()),
         ]
         if table:
@@ -873,6 +948,8 @@ class OkxExecutionEngine:
                     f"🔢 交易：{row_map['交易次数']}",
                     f"⚡ 档位：{row_map['动态档位']}",
                     f"👤 Shadow：{row_map['Shadow暂停到']}",
+                    f"🧩 Overlay：{row_map['Overlay锁仓']}",
+                    f"📝 最近决策：{row_map['最近Overlay']}",
                     "",
                     "⏱ 时间",
                     f"🕯️ K线：{row_map['最近K线']}",
@@ -899,6 +976,8 @@ class OkxExecutionEngine:
                 "最近K线": "🕯️ 最近K线",
                 "动态档位": "⚡ 动态档位",
                 "Shadow暂停到": "👤 Shadow暂停到",
+                "Overlay锁仓": "🧩 Overlay锁仓",
+                "最近Overlay": "📝 最近Overlay",
                 "时间": "📅 时间",
             }
             lines.extend(f"{labels.get(name, name)}：{value}" for name, value in rows)
@@ -978,6 +1057,7 @@ class OkxExecutionEngine:
             f"{self._telegram_random_icon(mood)} 近期单位收益：{recent_return:.2f}%",
             f"🏆 近期胜率：{float(recent.get('win_rate_pct', 0.0) or 0.0):.1f}%",
             f"👤 Shadow资金：{float(shadow.get('capital', 0.0) or 0.0):.2f}U",
+            f"🧩 {self._overlay_compact_line()}",
         ]
         if execution:
             lines.extend(
@@ -1366,7 +1446,7 @@ class OkxExecutionEngine:
             engine, _ = self.load_engine()
             latest_idx = self._latest_closed_index(engine)
             if latest_idx is None:
-                return "🧭 <OB 雷达>\n状态: 🕒 等待最新收盘 K 线"
+                return "🧭 <OB 简报>\n状态: 等待最新收盘 K 线"
 
             engine._apply_regime_switch_for_idx(latest_idx)
             latest = engine.c15m[latest_idx]
@@ -1375,94 +1455,88 @@ class OkxExecutionEngine:
             regime_features = engine._regime_features_for_idx(latest_idx)
             timestamp = engine._timestamp_for_idx(latest_idx)
             structure_reference = self._structure_reference(engine, latest_idx, bias)
+            shadow_lines = self._latest_shadow_status_lines()
+            overlay_line = self._overlay_compact_line()
             lines = [
-                "🧭 <OB 开仓雷达>",
+                "🧭 <OB 简报>",
                 f"标的: {self.config.symbol}",
-                f"时间: {timestamp} UTC",
                 f"价格: {self._format_price(float(latest.c))}",
-                f"4H Bias: {self._direction_label(bias)}",
+                f"方向: {self._direction_label(bias)}",
+                f"市场: {self._regime_display_label(regime, regime_features)}",
+                f"保护: {shadow_lines[0].replace('🛡 ', '')}",
+                f"{overlay_line}",
             ]
-            lines.extend(self._regime_display_lines(regime, regime_features))
-            lines.extend(self._structure_reference_lines(structure_reference))
 
             if engine.position is not None:
                 state = self._load_shadow_gate_state(engine) if self._shadow_gate_enabled() else {}
                 real_open = bool(state.get("real_position_open", True))
                 position = engine.position
-                label = "📌 持仓中" if real_open else "🧪 Shadow paper position"
+                label = "持仓中" if real_open else "Shadow paper position"
                 lines.extend(
                     [
                         "",
-                        f"状态: {label}",
+                        f"状态: {label}，不开新仓",
                         f"方向: {self._direction_label(getattr(position, 'direction', None))}",
                         f"入场: {self._format_price(getattr(position, 'entry_price', None))}",
                         f"止损: {self._format_price(getattr(position, 'sl_price', None))}",
                         f"止盈: {self._format_price(getattr(position, 'target_price', None))}",
-                        "开仓条件: 等当前策略仓位结束后再寻找下一组 OB",
+                        "下一步: 等当前仓位结束",
+                        f"时间: {timestamp} UTC",
                     ]
                 )
-                lines.extend(self._latest_shadow_status_lines())
                 return "\n".join(lines)
 
             candidates = self._active_ob_candidates(engine, latest_idx)
-            lines.append("")
-            lines.extend(self._latest_shadow_status_lines())
             if not candidates:
-                missing = []
+                next_step = "等待方向性 4H bias"
                 if bias == Direction.NONE:
-                    missing.append("形成方向性 4H bias")
+                    next_step = "等待方向性 4H bias"
                 else:
                     primary = structure_reference.get("primary") if isinstance(structure_reference.get("primary"), dict) else {}
                     break_price = primary.get("break_price")
                     reclaim_price = primary.get("reclaim_price")
                     if bias == Direction.BEAR and break_price is not None and reclaim_price is not None:
-                        missing.append(
-                            f"价格路径需出现: 跌破 {self._format_price(break_price)} -> 收回 {self._format_price(reclaim_price)} 上方"
-                        )
+                        next_step = f"跌破 {self._format_price(break_price)} 后收回 {self._format_price(reclaim_price)}"
                     elif bias == Direction.BULL and break_price is not None and reclaim_price is not None:
-                        missing.append(
-                            f"价格路径需出现: 突破 {self._format_price(break_price)} -> 回踩守住 {self._format_price(reclaim_price)}"
-                        )
+                        next_step = f"突破 {self._format_price(break_price)} 后回踩守住 {self._format_price(reclaim_price)}"
                     else:
-                        missing.append("先形成新的关键价破位和收回确认")
-                missing.extend(
-                    [
-                        "找到合格 OB 实体区",
-                        "价格回踩 OB 区间",
-                        "收出确认 K：多头收阳 / 空头收阴",
-                    ]
-                )
+                        next_step = "等待关键价破位和收回确认"
                 lines.extend(
                     [
                         "",
-                        "状态: 🕵️ 暂无有效 OB 等待区",
-                        "还差:",
+                        "状态: 暂无 OB 候选",
+                        f"下一步: {next_step}",
+                        f"时间: {timestamp} UTC",
                     ]
                 )
-                lines.extend(f"{pos}. {item}" for pos, item in enumerate(missing, start=1))
                 return "\n".join(lines)
 
-            for idx, (pending, detail) in enumerate(candidates, start=1):
+            ready_candidates = [(pending, detail) for pending, detail in candidates if detail["ready"]]
+            if ready_candidates:
+                lines.append("")
+                lines.append("状态: 有 OB 候选满足，等策略风控确认")
+            else:
+                lines.append("")
+                lines.append("状态: 有 OB 候选，但未触发")
+
+            for idx, (pending, detail) in enumerate(candidates[:2], start=1):
+                missing = detail["missing"]
+                next_step = "等待策略评估/风控确认" if detail["ready"] else (str(missing[0]) if missing else "等待确认 K")
                 lines.extend(
                     [
                         "",
-                        f"候选 {idx}: {self._direction_label(pending.direction)}",
-                        f"OB 区间: {self._format_price(detail['bottom'])} - {self._format_price(detail['top'])}",
-                        f"剩余窗口: {detail['expires_in_bars']} 根 15m K",
-                        f"当前高低: {self._format_price(detail['current_low'])} / {self._format_price(detail['current_high'])}",
+                        f"候选{idx}: {self._direction_label(pending.direction)} | {self._format_price(detail['bottom'])}-{self._format_price(detail['top'])}",
+                        f"窗口: {detail['expires_in_bars']} 根15m",
+                        f"下一步: {next_step}",
                     ]
                 )
-                if detail["ready"]:
-                    lines.append("状态: 🚀 OB 条件已满足，等待下一次策略评估/风控确认")
-                else:
-                    lines.append("还差:")
-                    lines.extend(f"{pos}. {item}" for pos, item in enumerate(detail["missing"], start=1))
+            lines.append(f"时间: {timestamp} UTC")
             return "\n".join(lines)
         except Exception as exc:
             return "\n".join(
                 [
-                    "🧭 <OB 开仓雷达>",
-                    "状态: ⚠️ 生成失败",
+                    "🧭 <OB 简报>",
+                    "状态: 生成失败",
                     f"原因: {exc}",
                     f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 ]
@@ -1776,8 +1850,10 @@ class OkxExecutionEngine:
             self._shadow_gate_mark_real_position(True, action, "open_confirmed")
             self._save_sota_overlay_open_candidate(overlay_candidate)
             dynamic_info = sizing.get("dynamic_high_leverage") if isinstance(sizing.get("dynamic_high_leverage"), dict) else {}
+            signal_label = self._overlay_event_label(overlay_candidate.event_type) if overlay_candidate is not None else "-"
             open_lines = [
                 "[开仓已确认]",
+                f"信号: {signal_label}",
                 f"方向: {direction}",
                 f"标的: {self.config.symbol}",
                 f"成交: {observed['contracts']:.4f} 张 (~{observed['notional_usdt']:.2f}U)",
@@ -1898,6 +1974,19 @@ class OkxExecutionEngine:
         self.store.append_action(action.timestamp, "SOTA_OVERLAY_LOCK", decision)
         if decision["decision"] == "accepted":
             return None
+        if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+            self._send_telegram(
+                "\n".join(
+                    [
+                        "[Overlay拦截开仓]",
+                        f"信号: {self._overlay_event_label(candidate.event_type)}",
+                        f"方向: {self._direction_label(candidate.direction)}",
+                        f"原因: {self._overlay_decision_text(decision)}",
+                        f"锁仓: {self._overlay_candidate_text(self._load_sota_overlay_open_candidate())}",
+                        f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    ]
+                )
+            )
         return {
             "status": "sota_overlay_skipped_open",
             "action": action.type.value,

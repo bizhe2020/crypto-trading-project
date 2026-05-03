@@ -113,17 +113,47 @@ class TelegramCommandTests(unittest.TestCase):
                 ensure_ascii=False,
             ),
         )
+        engine.store.set_value(
+            "sota_overlay_open_candidate",
+            json.dumps(
+                {
+                    "event_type": "stable_reverse_short",
+                    "direction": "BEAR",
+                    "entry_idx": 10,
+                    "exit_idx": 20,
+                    "entry_time": "2026-04-29 12:00",
+                    "exit_time": "2026-04-29 15:00",
+                    "metadata": {},
+                },
+                ensure_ascii=False,
+            ),
+        )
+        engine.store.append_action(
+            "2026-04-29 12:15",
+            "SOTA_OVERLAY_LOCK",
+            {
+                "event_type": "sota_long",
+                "decision": "rejected",
+                "reason": "position_lock_open",
+                "paper_tag": "stable_preempted_sota",
+                "blocking_event_type": "stable_reverse_short",
+            },
+        )
 
         status = engine._telegram_command_reply("/status")
         self.assertIn("⚡ 账户有效杠杆：2.00x", status)
         self.assertIn("🎚️ 执行杠杆：2.00x / offense", status)
         self.assertIn("🧯 压仓原因：基础 + 扩张期 + 防假突破保护 0/2", status)
         self.assertIn("📊 理论/实际仓位：54770U -> 24371U", status)
+        self.assertIn("🧩 Overlay锁仓：🔒 Stable反手空 / 🔴 空头 / 至 2026-04-29 15:00", status)
+        self.assertIn("📝 最近Overlay：Stable抢占SOTA", status)
 
         performance = engine._telegram_command_reply("/performance")
         self.assertIn("📐 当前执行", performance)
         self.assertIn("⚡ 有效杠杆：2.00x / 执行 2.00x", performance)
         self.assertIn("🧪 质量：ADX 13.5 / 动量 -0.83% / EMA差 0.17%", performance)
+        self.assertIn("Overlay: 🔒 Stable反手空", performance)
+        self.assertIn("最近: Stable抢占SOTA", performance)
 
     def test_drift_aliases_reply_with_drift_report(self) -> None:
         engine = self._engine()
@@ -139,6 +169,37 @@ class TelegramCommandTests(unittest.TestCase):
 
         self.assertEqual(engine._telegram_command_reply("/ob"), "OB_REPORT")
         self.assertEqual(engine._telegram_command_reply("/状态"), "OB_REPORT")
+
+    def test_ob_summary_is_compact(self) -> None:
+        engine = self._engine()
+        strategy_engine = SimpleNamespace(
+            position=None,
+            c15m=[SimpleNamespace(c=100.0, h=101.0, l=99.0)],
+            mapping=[0],
+            precomputed=SimpleNamespace(
+                bias_4h=[Direction.NONE],
+                highs_set=set(),
+                lows_set=set(),
+                highs_15m=[],
+                lows_15m=[],
+            ),
+            _apply_regime_switch_for_idx=lambda idx: None,
+            _regime_label_for_idx=lambda idx: "flat",
+            _regime_features_for_idx=lambda idx: {"adx": 12.0, "momentum": 0.0, "ema_gap": 0.0, "atr_ratio": 0.8},
+            _timestamp_for_idx=lambda idx: "2026-04-29 12:00",
+        )
+        engine.load_engine = lambda: (strategy_engine, 0)  # type: ignore[method-assign]
+        engine._latest_closed_index = lambda loaded: 0  # type: ignore[method-assign]
+        engine._active_ob_candidates = lambda loaded, idx: []  # type: ignore[method-assign]
+
+        report = engine._telegram_command_reply("/ob")
+
+        self.assertIn("🧭 <OB 简报>", report)
+        self.assertIn("状态: 暂无 OB 候选", report)
+        self.assertIn("下一步: 等待方向性 4H bias", report)
+        self.assertIn("Overlay:", report)
+        self.assertNotIn("结构参考价", report)
+        self.assertNotIn("还差:", report)
 
     def test_ob_regime_display_labels_compression_bucket_plainly(self) -> None:
         engine = object.__new__(OkxExecutionEngine)
