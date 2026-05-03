@@ -22,6 +22,7 @@ from strategy.scalp_robust_v2_core import (
     Trade,
     dataframe_to_candles,
 )
+from strategy.sota_overlay_state import account_lock_decision, candidate_from_action
 
 
 @dataclass
@@ -1695,11 +1696,18 @@ class OkxExecutionEngine:
             }
         shadow_decision = self._shadow_gate_pre_execute(action, engine)
         if shadow_decision is not None:
+            if action.type == ActionType.CLOSE_POSITION:
+                self._clear_sota_overlay_open_candidate()
             return shadow_decision
         if action.type == ActionType.UPDATE_STOP:
             if self.config.mode != "live" or not self.config.enable_exchange_brackets:
                 return {"status": "recorded_only", "action": action.type.value, "stop_price": action.stop_price}
             return self._amend_exchange_brackets(action, engine)
+
+        overlay_candidate = candidate_from_action(action) if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT} else None
+        account_lock = self._sota_overlay_account_lock_pre_open(action, engine, overlay_candidate)
+        if account_lock is not None:
+            return account_lock
 
         sizing = self._resolve_order_sizing(action, engine)
         if sizing.get("status") != "ok":
@@ -1714,9 +1722,11 @@ class OkxExecutionEngine:
         if self.config.mode == "paper":
             if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
                 self._shadow_gate_mark_real_position(True, action, "paper_open_accepted")
+                self._save_sota_overlay_open_candidate(overlay_candidate)
             if action.type == ActionType.CLOSE_POSITION:
                 self._shadow_gate_after_close(action, engine)
                 self._dynamic_high_leverage_after_close(action, engine)
+                self._clear_sota_overlay_open_candidate()
             return {
                 "status": "paper_recorded",
                 "action": action.type.value,
@@ -1764,6 +1774,7 @@ class OkxExecutionEngine:
                 )
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
             self._shadow_gate_mark_real_position(True, action, "open_confirmed")
+            self._save_sota_overlay_open_candidate(overlay_candidate)
             dynamic_info = sizing.get("dynamic_high_leverage") if isinstance(sizing.get("dynamic_high_leverage"), dict) else {}
             open_lines = [
                 "[开仓已确认]",
@@ -1830,6 +1841,7 @@ class OkxExecutionEngine:
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
             self._shadow_gate_after_close(action, engine)
             self._dynamic_high_leverage_after_close(action, engine)
+            self._clear_sota_overlay_open_candidate()
             self._send_telegram(
                 "\n".join(
                     [
@@ -1847,6 +1859,111 @@ class OkxExecutionEngine:
             return {"status": "submitted", "order": order, "observed_position": observed, **sizing}
 
         return {"status": "recorded_only", "action": action.type.value}
+
+    def _sota_overlay_account_lock_pre_open(
+        self,
+        action: StrategyAction,
+        engine: Any,
+        candidate: Any | None = None,
+    ) -> dict[str, Any] | None:
+        if action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+            return None
+
+        if candidate is None:
+            candidate = candidate_from_action(action)
+        exchange_long_contracts = 0.0
+        exchange_short_contracts = 0.0
+        if self.config.mode == "live":
+            try:
+                long_state = self._fetch_position_state("long", reference_price=action.entry_price)
+                short_state = self._fetch_position_state("short", reference_price=action.entry_price)
+            except Exception as exc:
+                return {
+                    "status": "sota_overlay_account_lock_error",
+                    "action": action.type.value,
+                    "direction": action.direction,
+                    "reason": "account_state_unavailable",
+                    "error": str(exc),
+                }
+            exchange_long_contracts = float(long_state.get("contracts", 0.0) or 0.0)
+            exchange_short_contracts = float(short_state.get("contracts", 0.0) or 0.0)
+
+        decision = account_lock_decision(
+            candidate,
+            local_position_open=self._local_position_blocks_new_open(action, engine),
+            exchange_long_contracts=exchange_long_contracts,
+            exchange_short_contracts=exchange_short_contracts,
+            blocking_candidate=self._load_sota_overlay_open_candidate(),
+        )
+        self.store.append_action(action.timestamp, "SOTA_OVERLAY_LOCK", decision)
+        if decision["decision"] == "accepted":
+            return None
+        return {
+            "status": "sota_overlay_skipped_open",
+            "action": action.type.value,
+            "direction": action.direction,
+            "reason": decision["reason"],
+            "decision": decision,
+        }
+
+    def _local_position_blocks_new_open(self, action: StrategyAction, engine: Any) -> bool:
+        position = getattr(engine, "position", None)
+        if position is None:
+            return False
+        if action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+            return True
+        return not (
+            getattr(position, "entry_time", None) == action.timestamp
+            and getattr(position, "direction", None) == action.direction
+        )
+
+    def _save_sota_overlay_open_candidate(self, candidate: Any) -> None:
+        if candidate is None:
+            return
+        self.store.set_value(
+            "sota_overlay_open_candidate",
+            json.dumps(
+                {
+                    "event_type": candidate.event_type,
+                    "direction": candidate.direction,
+                    "entry_idx": candidate.entry_idx,
+                    "exit_idx": candidate.exit_idx,
+                    "entry_time": candidate.entry_time,
+                    "exit_time": candidate.exit_time,
+                    "return_rate": candidate.return_rate,
+                    "metadata": candidate.metadata,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    def _load_sota_overlay_open_candidate(self) -> Any | None:
+        from strategy.sota_overlay_state import OverlayCandidate
+
+        raw = self.store.get_value("sota_overlay_open_candidate")
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if not payload.get("event_type"):
+            return None
+        return OverlayCandidate(
+            event_type=str(payload.get("event_type") or "unknown"),
+            direction=payload.get("direction"),
+            entry_idx=payload.get("entry_idx"),
+            exit_idx=payload.get("exit_idx"),
+            entry_time=payload.get("entry_time"),
+            exit_time=payload.get("exit_time"),
+            return_rate=payload.get("return_rate"),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
+        )
+
+    def _clear_sota_overlay_open_candidate(self) -> None:
+        self.store.set_value("sota_overlay_open_candidate", "{}")
 
     def _shadow_gate_enabled(self) -> bool:
         return (

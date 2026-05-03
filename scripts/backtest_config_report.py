@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from bot.okx_executor import ExecutorConfig
 from strategy.scalp_robust_v2_core import ScalpRobustEngine, dataframe_to_candles
 
 
-DEFAULT_DATA_ROOT = Path("/Users/laoji/projects/crypto-trading-project/deployment/data/okx/futures")
+DEFAULT_DATA_ROOT = Path(os.environ.get("CRYPTO_TRADING_DATA_ROOT", "/Users/laoji/projects/crypto-trading-project/data/okx/futures"))
 DEFAULT_DATA_15M = DEFAULT_DATA_ROOT / "BTC_USDT_USDT-15m-futures.feather"
 DEFAULT_DATA_4H = DEFAULT_DATA_ROOT / "BTC_USDT_USDT-4h-futures.feather"
 DEFAULT_OUTPUT_DIR = ROOT / "var" / "reports"
