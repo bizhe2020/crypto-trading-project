@@ -80,7 +80,6 @@ class Trade:
 @dataclass
 class StrategyConfig:
     rr_ratio: float = 4.0
-    trailing_config: str = "B"
     sl_buffer_pct: float = 1.0
     use_hfvf_filter: bool = True
     leverage: float = 3.0
@@ -1948,10 +1947,9 @@ class ScalpRobustEngine:
             "total_fees_paid": total_fees,
             "total_slippage_cost": total_slippage_cost,
             "exit_reasons": dict(self.exit_reasons),
-            "parameters": {
-                "rr_ratio": self.config.rr_ratio,
-                "trailing_config": self.config.trailing_config,
-                "sl_buffer_pct": self.config.sl_buffer_pct,
+                "parameters": {
+                    "rr_ratio": self.config.rr_ratio,
+                    "sl_buffer_pct": self.config.sl_buffer_pct,
                 "use_hfvf_filter": self.config.use_hfvf_filter,
                 "leverage": self.config.leverage,
                 "position_size_pct": self.config.position_size_pct,
