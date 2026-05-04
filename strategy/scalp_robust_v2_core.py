@@ -126,10 +126,12 @@ class StrategyConfig:
     enable_atr_trailing: bool = False
     atr_period: int = 14
     atr_activation_rr: float = 2.0
+    atr_activation_rr_mode: str = "close"
     atr_loose_multiplier: float = 2.7
     atr_normal_multiplier: float = 2.25
     atr_tight_multiplier: float = 1.8
     enable_time_based_trailing: bool = False
+    time_trailing_rr_mode: str = "close"
     T1: int = 15
     T2: int = 40
     T_max: int = 96
@@ -137,6 +139,7 @@ class StrategyConfig:
     S1_trigger_rr: float = 1.0
     S3_trigger_rr: float = 3.0
     S4_close_rr: float = 0.5
+    stage_trigger_rr_mode: str = "close"
     enable_auto_time_based_trailing: bool = False
     auto_tit_mode: str = "health"
     auto_tit_drawdown_pct: float = 12.0
@@ -1333,7 +1336,7 @@ class ScalpRobustEngine:
         )
 
     def _apply_trailing_bull(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
-        pnl = pos.quantity * (curr.c - pos.entry_price)
+        pnl = pos.quantity * (self._rr_observation_price(pos, curr, self.config.stage_trigger_rr_mode) - pos.entry_price)
         stage = pos.stage
         new_stop = None
         new_stage = stage
@@ -1368,7 +1371,7 @@ class ScalpRobustEngine:
         )
 
     def _apply_trailing_bear(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
-        pnl = pos.quantity * (pos.entry_price - curr.c)
+        pnl = pos.quantity * (pos.entry_price - self._rr_observation_price(pos, curr, self.config.stage_trigger_rr_mode))
         stage = pos.stage
         new_stop = None
         new_stage = stage
@@ -1463,6 +1466,17 @@ class ScalpRobustEngine:
         else:
             pnl = pos.quantity * (pos.entry_price - price)
         return pnl / pos.risk_amount
+
+    def _rr_observation_price(self, pos: PositionState, curr: Candle, mode: str) -> float:
+        normalized_mode = (mode or "close").strip().lower()
+        if normalized_mode == "close":
+            return curr.c
+        if normalized_mode == "extreme":
+            return curr.h if pos.direction == Direction.BULL else curr.l
+        raise ValueError(f"Unsupported RR observation mode: {mode}")
+
+    def _unrealized_rr_for_mode(self, pos: PositionState, curr: Candle, mode: str) -> float:
+        return self._unrealized_rr(pos, self._rr_observation_price(pos, curr, mode))
 
     def _price_extrema_since_entry(self, pos: PositionState, idx: int) -> tuple[float, float]:
         start_idx = max(0, min(pos.entry_idx, idx))
@@ -1623,7 +1637,7 @@ class ScalpRobustEngine:
 
     def _time_based_trailing_state(self, pos: PositionState, curr: Candle, idx: int) -> TimeBasedTrailingState:
         bars_held = self._bars_held(pos, idx)
-        unrealized_rr = self._unrealized_rr(pos, curr.c)
+        unrealized_rr = self._unrealized_rr_for_mode(pos, curr, self.config.time_trailing_rr_mode)
         if not self._time_based_trailing_enabled_for_position(pos):
             return TimeBasedTrailingState(
                 stage=-1,
@@ -1697,7 +1711,7 @@ class ScalpRobustEngine:
     def _apply_atr_trailing_bull(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
         if not self._atr_trailing_enabled_for_position(pos):
             return None
-        if self._unrealized_rr(pos, curr.c) < self.config.atr_activation_rr:
+        if self._unrealized_rr_for_mode(pos, curr, self.config.atr_activation_rr_mode) < self.config.atr_activation_rr:
             return None
         atr = self._atr_for_idx(idx)
         if atr <= 0:
@@ -1731,7 +1745,7 @@ class ScalpRobustEngine:
     def _apply_atr_trailing_bear(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
         if not self._atr_trailing_enabled_for_position(pos):
             return None
-        if self._unrealized_rr(pos, curr.c) < self.config.atr_activation_rr:
+        if self._unrealized_rr_for_mode(pos, curr, self.config.atr_activation_rr_mode) < self.config.atr_activation_rr:
             return None
         atr = self._atr_for_idx(idx)
         if atr <= 0:
@@ -1980,10 +1994,12 @@ class ScalpRobustEngine:
                 "enable_atr_trailing": self.config.enable_atr_trailing,
                 "atr_period": self.config.atr_period,
                 "atr_activation_rr": self.config.atr_activation_rr,
+                "atr_activation_rr_mode": self.config.atr_activation_rr_mode,
                 "atr_loose_multiplier": self.config.atr_loose_multiplier,
                 "atr_normal_multiplier": self.config.atr_normal_multiplier,
                 "atr_tight_multiplier": self.config.atr_tight_multiplier,
                 "enable_time_based_trailing": self.config.enable_time_based_trailing,
+                "time_trailing_rr_mode": self.config.time_trailing_rr_mode,
                 "T1": self.config.T1,
                 "T2": self.config.T2,
                 "T_max": self.config.T_max,
@@ -1991,6 +2007,7 @@ class ScalpRobustEngine:
                 "S1_trigger_rr": self.config.S1_trigger_rr,
                 "S3_trigger_rr": self.config.S3_trigger_rr,
                 "S4_close_rr": self.config.S4_close_rr,
+                "stage_trigger_rr_mode": self.config.stage_trigger_rr_mode,
                 "enable_auto_time_based_trailing": self.config.enable_auto_time_based_trailing,
                 "auto_tit_mode": self.config.auto_tit_mode,
                 "auto_tit_drawdown_pct": self.config.auto_tit_drawdown_pct,

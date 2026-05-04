@@ -78,10 +78,12 @@ class ExecutorConfig:
     enable_atr_trailing: bool = False
     atr_period: int = 14
     atr_activation_rr: float = 2.0
+    atr_activation_rr_mode: str = "close"
     atr_loose_multiplier: float = 2.7
     atr_normal_multiplier: float = 2.25
     atr_tight_multiplier: float = 1.8
     enable_time_based_trailing: bool = False
+    time_trailing_rr_mode: str = "close"
     T1: int = 15
     T2: int = 40
     T_max: int = 96
@@ -89,6 +91,7 @@ class ExecutorConfig:
     S1_trigger_rr: float = 1.0
     S3_trigger_rr: float = 3.0
     S4_close_rr: float = 0.5
+    stage_trigger_rr_mode: str = "close"
     enable_auto_time_based_trailing: bool = False
     auto_tit_mode: str = "health"
     auto_tit_drawdown_pct: float = 12.0
@@ -278,10 +281,12 @@ class ExecutorConfig:
             enable_atr_trailing=self.enable_atr_trailing,
             atr_period=self.atr_period,
             atr_activation_rr=self.atr_activation_rr,
+            atr_activation_rr_mode=self.atr_activation_rr_mode,
             atr_loose_multiplier=self.atr_loose_multiplier,
             atr_normal_multiplier=self.atr_normal_multiplier,
             atr_tight_multiplier=self.atr_tight_multiplier,
             enable_time_based_trailing=self.enable_time_based_trailing,
+            time_trailing_rr_mode=self.time_trailing_rr_mode,
             T1=self.T1,
             T2=self.T2,
             T_max=self.T_max,
@@ -289,6 +294,7 @@ class ExecutorConfig:
             S1_trigger_rr=self.S1_trigger_rr,
             S3_trigger_rr=self.S3_trigger_rr,
             S4_close_rr=self.S4_close_rr,
+            stage_trigger_rr_mode=self.stage_trigger_rr_mode,
             enable_auto_time_based_trailing=self.enable_auto_time_based_trailing,
             auto_tit_mode=self.auto_tit_mode,
             auto_tit_drawdown_pct=self.auto_tit_drawdown_pct,

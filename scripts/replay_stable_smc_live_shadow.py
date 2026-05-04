@@ -40,6 +40,7 @@ from strategy.sota_overlay_state import replay_single_position_events  # noqa: E
 
 DEFAULT_OUTPUT = ROOT / "var" / "high_leverage_expansion" / "stable_smc_live_shadow_replay.json"
 DEFAULT_PAPER_LOG = ROOT / "var" / "high_leverage_expansion" / "stable_smc_live_shadow_paper_decisions.jsonl"
+RR_MODE_CHOICES = ("close", "extreme")
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,10 +64,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stable-leverage", type=float, default=5.0)
     parser.add_argument("--stable-stop-multiplier", type=float, default=1.0)
     parser.add_argument("--stable-max-short-stop-pct", type=float, default=1.75)
+    parser.add_argument("--stage-trigger-rr-mode", default="close", choices=RR_MODE_CHOICES)
+    parser.add_argument("--time-trailing-rr-mode", default="close", choices=RR_MODE_CHOICES)
+    parser.add_argument("--atr-activation-rr-mode", default="close", choices=RR_MODE_CHOICES)
     parser.add_argument("--sample-trades", type=int, default=40)
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--paper-log-output", default=str(DEFAULT_PAPER_LOG))
     return parser.parse_args()
+
+
+def apply_trailing_rr_modes(
+    payload: dict[str, Any],
+    *,
+    stage_trigger_rr_mode: str,
+    time_trailing_rr_mode: str,
+    atr_activation_rr_mode: str,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    updated = dict(payload)
+    updated["stage_trigger_rr_mode"] = stage_trigger_rr_mode
+    updated["time_trailing_rr_mode"] = time_trailing_rr_mode
+    updated["atr_activation_rr_mode"] = atr_activation_rr_mode
+    return updated, {
+        "stage_trigger_rr_mode": stage_trigger_rr_mode,
+        "time_trailing_rr_mode": time_trailing_rr_mode,
+        "atr_activation_rr_mode": atr_activation_rr_mode,
+    }
 
 
 def overlaps(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -283,6 +305,12 @@ def main() -> None:
     args = parse_args()
     base_payload = load_config_payload(Path(args.config))
     payload, pressure_params = apply_pressure_params(base_payload, Path(args.pressure_params))
+    payload, trailing_rr_modes = apply_trailing_rr_modes(
+        payload,
+        stage_trigger_rr_mode=str(args.stage_trigger_rr_mode),
+        time_trailing_rr_mode=str(args.time_trailing_rr_mode),
+        atr_activation_rr_mode=str(args.atr_activation_rr_mode),
+    )
     prepared = load_prepared_data(
         data_15m_path=Path(args.data_15m),
         data_4h_path=Path(args.data_4h),
@@ -369,6 +397,7 @@ def main() -> None:
             "smc_case": selected["smc_case"],
             "smc_allocation": selected["smc_allocation"],
             "stable_params": stable_summary["params"],
+            "trailing_rr_modes": trailing_rr_modes,
             "paper_log_output": str(Path(args.paper_log_output).resolve()),
         },
         "baseline_shadow_sota": {key: value for key, value in base_shadow_summary.items() if key != "events"},
