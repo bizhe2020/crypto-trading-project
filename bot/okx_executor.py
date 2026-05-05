@@ -21,6 +21,8 @@ from strategy.scalp_robust_v2_core import (
     StrategyAction,
     StrategyConfig,
     Trade,
+    align_timeframes,
+    build_precomputed_state_confirmed_4h,
     dataframe_to_candles,
 )
 
@@ -228,6 +230,11 @@ class ExecutorConfig:
     telegram_drift_baseline_path: str = "config/live_drift_baseline.high_leverage.json"
     enable_live_candidate_arbitration: bool = False
     live_candidate_priority: list[str] | None = None
+    enable_sota_score_gate_live: bool = False
+    sota_score_net_min: int = 2
+    sota_score_bull_min: int = 8
+    sota_score_bear_max: int = 6
+    sota_score_conflict_mode: str = "any"
     enable_smc_short_live: bool = False
     smc_case: str = "v2_medium_dispbody05_otherlag4_10x"
     smc_target_rr: float = 2.0
@@ -1575,11 +1582,20 @@ class OkxExecutionEngine:
 
         if not informative_candles:
             raise ValueError("No informative market data loaded for scalp executor")
-        engine = ScalpRobustEngine.from_candles(
-            informative_candles,
-            primary_candles,
-            self.config.to_scalp_strategy_config(),
-        )
+        if bool(self.config.enable_sota_score_gate_live):
+            engine = ScalpRobustEngine(
+                informative_candles,
+                primary_candles,
+                align_timeframes(informative_candles, primary_candles),
+                build_precomputed_state_confirmed_4h(informative_candles, primary_candles),
+                self.config.to_scalp_strategy_config(),
+            )
+        else:
+            engine = ScalpRobustEngine.from_candles(
+                informative_candles,
+                primary_candles,
+                self.config.to_scalp_strategy_config(),
+            )
         engine.restore_snapshot(self.store.load_snapshot())
         start_idx = max(100, self._find_resume_index(primary_candles))
         return engine, start_idx
@@ -1713,6 +1729,73 @@ class OkxExecutionEngine:
             "source_key": metadata.get("source_key"),
             "entry_idx": metadata.get("index"),
         }
+
+    def _sota_score_gate_rule(self) -> dict[str, Any]:
+        return {
+            "net_min": int(self.config.sota_score_net_min),
+            "bull_min": int(self.config.sota_score_bull_min),
+            "bear_max": int(self.config.sota_score_bear_max),
+            "conflict_mode": str(self.config.sota_score_conflict_mode or "any"),
+        }
+
+    def _sota_score_snapshot_for_idx(self, engine: Any, entry_idx: int) -> dict[str, Any]:
+        from scripts.confirmed_multiframe_score_utils import (
+            align_confirmed_mapping,
+            resample_confirmed_1h,
+            score_snapshot,
+        )
+
+        c1h = resample_confirmed_1h(engine.c15m)
+        mapping_1h = align_confirmed_mapping(c1h, engine.c15m)
+        snapshot = score_snapshot(engine, c1h, mapping_1h, int(entry_idx))
+        return asdict(snapshot)
+
+    def _sota_score_gate_decision(self, engine: Any, action: StrategyAction, entry_idx: int) -> dict[str, Any]:
+        rule = self._sota_score_gate_rule()
+        snapshot = self._sota_score_snapshot_for_idx(engine, entry_idx)
+        event = {**snapshot, "event_type": "sota_long"}
+        from scripts.confirmed_multiframe_score_utils import passes_score_gate
+
+        accepted = passes_score_gate(event, **rule)
+        return {
+            "enabled": True,
+            "accepted": bool(accepted),
+            "rule": rule,
+            "score": snapshot,
+            "candidate": self._action_candidate_summary(action, "sota_long"),
+        }
+
+    def _apply_sota_score_gate_to_open_actions(
+        self,
+        engine: Any,
+        open_actions: list[StrategyAction],
+        latest_closed_idx: int,
+    ) -> tuple[list[StrategyAction], list[dict[str, Any]]]:
+        if not bool(self.config.enable_sota_score_gate_live):
+            return open_actions, []
+        accepted: list[StrategyAction] = []
+        rejected: list[dict[str, Any]] = []
+        for action in open_actions:
+            event_type = self._open_action_event_type(action)
+            if event_type != "sota_long":
+                accepted.append(action)
+                continue
+            metadata = dict(action.metadata or {})
+            entry_idx = int(metadata.get("index", latest_closed_idx) or latest_closed_idx)
+            decision = self._sota_score_gate_decision(engine, action, entry_idx)
+            metadata["sota_score_gate"] = {
+                "accepted": bool(decision["accepted"]),
+                "rule": decision["rule"],
+                "score": decision["score"],
+            }
+            action.metadata = metadata
+            if bool(decision["accepted"]):
+                accepted.append(action)
+            else:
+                decision["decision"] = "rejected"
+                decision["reason"] = "sota_score_gate"
+                rejected.append(decision)
+        return accepted, rejected
 
     def _smc_case_params(self) -> dict[str, Any]:
         try:
@@ -1949,7 +2032,12 @@ class OkxExecutionEngine:
         actions: list[StrategyAction],
         latest_closed_idx: int,
     ) -> tuple[list[StrategyAction], dict[str, Any]]:
-        open_actions = [action for action in actions if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}]
+        raw_open_actions = [action for action in actions if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}]
+        open_actions, score_gate_rejected = self._apply_sota_score_gate_to_open_actions(
+            engine,
+            raw_open_actions,
+            latest_closed_idx,
+        )
         close_actions = [action for action in actions if action.type == ActionType.CLOSE_POSITION]
         candidates: list[dict[str, Any]] = []
         for action in open_actions:
@@ -1971,7 +2059,16 @@ class OkxExecutionEngine:
             candidates.append(smc_candidate)
 
         if not candidates:
-            return actions, {"enabled": True, "decision": "no_candidates", "candidates": []}
+            output_actions = [action for action in actions if action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}]
+            decision = {
+                "enabled": True,
+                "decision": "no_candidates",
+                "candidates": [],
+                "score_gate_rejected": score_gate_rejected,
+            }
+            if score_gate_rejected:
+                self.store.append_action(engine._timestamp_for_idx(latest_closed_idx), "LIVE_CANDIDATE_ARBITRATION", decision)
+            return output_actions, decision
 
         candidates.sort(
             key=lambda item: (
@@ -2015,8 +2112,9 @@ class OkxExecutionEngine:
                     "target_price": item.get("target_price"),
                 }
                 for item in rejected
-            ],
+            ] + score_gate_rejected,
             "priority": self._live_candidate_priority(),
+            "score_gate_rejected": score_gate_rejected,
         }
         self.store.append_action(selected_action.timestamp, "LIVE_CANDIDATE_ARBITRATION", decision)
         return output_actions, decision

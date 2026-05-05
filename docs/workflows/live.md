@@ -29,4 +29,10 @@ Recommended flow:
 3. Deploy to Tokyo from `main`.
 4. Use `scripts/live_drift_monitor.py` after startup if you need runtime drift diagnostics.
 
+Current live candidate stack:
+
+- `SOTA long + SMC short + single-position arbitration`
+- `SOTA score gate` is part of the live candidate filter path when enabled in config
+- `SMC short` remains an overlay candidate; `overlay_skip_dynamic_high_leverage` should stay enabled unless explicitly re-audited
+
 Do not use research scan scripts as a deployment entry.

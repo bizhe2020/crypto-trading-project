@@ -168,6 +168,82 @@ class LiveCandidateArbitrationTest(unittest.TestCase):
         self.assertFalse(result["overlay_skipped_dynamic_high_leverage"])
         self.assertIsInstance(result.get("dynamic_high_leverage"), dict)
 
+    def test_sota_score_gate_rejects_open_candidate(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_live_candidate_arbitration=True,
+            enable_sota_score_gate_live=True,
+            sota_score_net_min=99,
+            sota_score_bull_min=99,
+            sota_score_bear_max=0,
+            sota_score_conflict_mode="any",
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        action = StrategyAction(
+            type=ActionType.OPEN_LONG,
+            timestamp="2023-11-14 22:13",
+            direction=Direction.BULL,
+            entry_price=1000.0,
+            stop_price=990.0,
+            target_price=1040.0,
+            metadata={"index": 1},
+        )
+
+        filtered_actions, decision = executor._apply_live_candidate_arbitration(engine, [action], 1)
+
+        self.assertEqual(filtered_actions, [])
+        self.assertEqual(decision["decision"], "no_candidates")
+        self.assertEqual(len(decision["score_gate_rejected"]), 1)
+        self.assertEqual(decision["score_gate_rejected"][0]["reason"], "sota_score_gate")
+        self.assertFalse(decision["score_gate_rejected"][0]["accepted"])
+
+    def test_sota_score_gate_keeps_open_candidate(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_live_candidate_arbitration=True,
+            enable_sota_score_gate_live=True,
+            sota_score_net_min=-99,
+            sota_score_bull_min=0,
+            sota_score_bear_max=99,
+            sota_score_conflict_mode="any",
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        action = StrategyAction(
+            type=ActionType.OPEN_LONG,
+            timestamp="2023-11-14 22:13",
+            direction=Direction.BULL,
+            entry_price=1000.0,
+            stop_price=990.0,
+            target_price=1040.0,
+            metadata={"index": 1},
+        )
+
+        filtered_actions, decision = executor._apply_live_candidate_arbitration(engine, [action], 1)
+
+        self.assertEqual(len(filtered_actions), 1)
+        self.assertEqual(filtered_actions[0].type, ActionType.OPEN_LONG)
+        self.assertEqual(decision["decision"], "accepted")
+        self.assertEqual(decision["selected"]["event_type"], "sota_long")
+        self.assertEqual(decision["score_gate_rejected"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
