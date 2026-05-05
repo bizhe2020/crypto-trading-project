@@ -17,55 +17,7 @@ if str(ROOT) not in sys.path:
 from scripts.backtest_config_report import load_config_payload  # noqa: E402
 from scripts.live_readiness_report import load_prepared_data, run_engine, trade_return_sharpe, max_drawdown_from_capitals, trade_dataframe  # noqa: E402
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay, parse_float_list, parse_int_list  # noqa: E402
-
-
-FIXED_STRUCTURE_PARAMS: dict[str, Any] = {
-    "base_leverage": 4.0,
-    "high_growth_leverage": 7.5,
-    "tight_stop_leverage": 8.0,
-    "recovery_leverage": 2.0,
-    "drawdown_leverage": 2.0,
-    "unhealthy_leverage": 2.0,
-    "tight_stop_pct": 1.25,
-    "max_stop_distance_pct": 1.5,
-    "high_growth_max_stop_distance_pct": 2.0,
-    "wide_stop_mode": "all_healthy",
-    "max_effective_leverage": 8.0,
-    "loss_streak_threshold": 3,
-    "win_streak_threshold": 2,
-    "drawdown_threshold_pct": 20.0,
-    "health_lookback_trades": 6,
-    "health_min_unit_return_pct": 0.0,
-    "health_min_win_rate_pct": 25.0,
-    "state_lookback_trades": 8,
-    "defense_enter_unit_return_pct": -2.0,
-    "defense_enter_win_rate_pct": 20.0,
-    "offense_enter_unit_return_pct": -0.5,
-    "offense_enter_win_rate_pct": 40.0,
-    "reattack_lookback_trades": 2,
-    "reattack_unit_return_pct": 0.5,
-    "reattack_win_rate_pct": 33.0,
-    "reattack_signal_mode": "high_growth_or_tight_or_structure",
-    "price_structure_reattack_mode": "none",
-    "structure_reattack_min_momentum_pct": 0.0,
-    "structure_reattack_min_ema_gap_pct": 0.25,
-    "structure_reattack_min_adx": 0.0,
-    "defense_leverage": 2.0,
-    "defense_max_stop_distance_pct": 1.5,
-    "defense_structure_max_stop_distance_pct": 1.9,
-    "failed_breakout_guard_enabled": True,
-    "failed_breakout_guard_leverage": 2.0,
-    "failed_breakout_guard_min_leverage": 7.5,
-    "failed_breakout_guard_min_quality_score": 2,
-    "failed_breakout_guard_min_momentum_pct": 6.0,
-    "failed_breakout_guard_min_ema_gap_pct": 2.0,
-    "failed_breakout_guard_min_adx": 38.0,
-    "failed_breakout_guard_regime_labels": ["high_growth"],
-    "failed_breakout_guard_risk_modes": ["offense"],
-    "failed_breakout_guard_directions": ["BULL"],
-    "min_liq_buffer_pct": 1.2,
-    "maintenance_margin_pct": 0.5,
-}
+from strategy.live_overlay_shared import FIXED_STRUCTURE_PARAMS  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:

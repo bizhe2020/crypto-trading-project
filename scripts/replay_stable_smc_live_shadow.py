@@ -298,6 +298,7 @@ def compact_candidate_result(candidate: dict[str, Any]) -> dict[str, Any]:
         "live_shadow": candidate["live_shadow"],
         "reference_gap": candidate["reference_gap"],
         "stable_preempted_sota": candidate["stable_preempted_sota"],
+        "decisions_sample": candidate["decisions"][:40],
     }
 
 

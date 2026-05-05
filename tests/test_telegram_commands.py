@@ -82,6 +82,7 @@ class TelegramCommandTests(unittest.TestCase):
 
     def test_status_and_performance_include_execution_overlay(self) -> None:
         engine = self._engine()
+        engine.config.enable_live_overlay_strategy = True
         engine.store.set_value(
             "strategy_snapshot",
             json.dumps(
@@ -145,6 +146,7 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertIn("🎚️ 执行杠杆：2.00x / offense", status)
         self.assertIn("🧯 压仓原因：基础 + 扩张期 + 防假突破保护 0/2", status)
         self.assertIn("📊 理论/实际仓位：54770U -> 24371U", status)
+        self.assertIn("🧠 Formal状态：未初始化", status)
         self.assertIn("🧩 Overlay锁仓：🔒 Stable反手空 / 🔴 空头 / 至 2026-04-29 15:00", status)
         self.assertIn("📝 最近Overlay：Stable抢占SOTA", status)
 
@@ -152,8 +154,28 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertIn("📐 当前执行", performance)
         self.assertIn("⚡ 有效杠杆：2.00x / 执行 2.00x", performance)
         self.assertIn("🧪 质量：ADX 13.5 / 动量 -0.83% / EMA差 0.17%", performance)
+        self.assertIn("Formal: 未初始化", performance)
         self.assertIn("Overlay: 🔒 Stable反手空", performance)
         self.assertIn("最近: Stable抢占SOTA", performance)
+
+    def test_status_shows_cold_start_formal_state(self) -> None:
+        engine = self._engine()
+        engine.config.enable_live_overlay_strategy = True
+        engine.store.set_value(
+            "live_overlay_formal_state",
+            json.dumps(
+                {
+                    "initialized_without_history": True,
+                    "initialized_at_idx": 140256,
+                    "initialized_at_time": "2026-01-01 00:00",
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+        status = engine._telegram_command_reply("/status")
+
+        self.assertIn("🧠 Formal状态：冷启动(无历史)", status)
 
     def test_drift_aliases_reply_with_drift_report(self) -> None:
         engine = self._engine()

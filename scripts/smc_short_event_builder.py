@@ -12,8 +12,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from scripts.live_readiness_report import _high_leverage_trade_diagnostics
 from strategy.scalp_robust_v2_core import Candle, precompute_swings
+from strategy.live_overlay_shared import high_leverage_trade_diagnostics
 from strategy.sota_overlay_state import leveraged_net_return
 
 
@@ -883,7 +883,7 @@ def build_smc_events(
                 "notional": capital * float(case_args.leverage) * float(case_args.position_size_pct),
             }
         )
-        diagnostics = _high_leverage_trade_diagnostics(
+        diagnostics = high_leverage_trade_diagnostics(
             trade,
             capital=capital,
             leverage=float(case_args.leverage),

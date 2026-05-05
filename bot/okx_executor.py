@@ -1,28 +1,59 @@
 from __future__ import annotations
 
+import bisect
 import json
 import random
 import time
 import uuid
 import requests
+import pandas as pd
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
 
 from bot.market_data import OhlcvRepository
 from bot.okx_client import OkxClient, OkxCredentials
 from bot.state_store import StateStore
+from scripts.smc_short_event_builder import (
+    allowed_bucket,
+    allowed_direction,
+    FORMAL_SMC_CASE_NAMES,
+    SMC_CASES,
+    atr_series,
+    build_event_scan_args,
+    daily_candles_from_4h,
+    htf_structure_bias,
+    scan_events,
+    smc_case_namespace,
+    smc_strategy_args,
+    time_bucket,
+)
 from strategy.scalp_robust_v2_core import (
     ActionType,
     Direction,
+    PendingPullback,
+    PositionState,
     ScalpRobustEngine,
     StrategyAction,
     StrategyConfig,
     Trade,
     dataframe_to_candles,
 )
-from strategy.sota_overlay_state import account_lock_decision, candidate_from_action
+from strategy.scalp_robust_v2_core import precompute_swings
+from strategy.live_overlay_shared import (
+    FIXED_STRUCTURE_PARAMS,
+    FixedStructureState,
+    fixed_structure_entry_decision,
+    fixed_structure_step,
+    high_leverage_trade_diagnostics,
+    precompute_regime_state,
+    quality_snapshot,
+    selected_by,
+)
+from strategy.sota_overlay_state import OverlayCandidate, account_lock_decision, candidate_from_action, leveraged_net_return
 
 
 @dataclass
@@ -224,6 +255,23 @@ class ExecutorConfig:
     telegram_drift_window_days: int = 30
     telegram_drift_recent_trades: int = 20
     telegram_drift_baseline_path: str = "config/live_drift_baseline.high_leverage.json"
+    enable_live_candidate_arbitration: bool = False
+    enable_live_overlay_strategy: bool = False
+    enable_stable_reverse_short_live: bool = True
+    enable_smc_short_live: bool = True
+    overlay_skip_dynamic_high_leverage: bool = False
+    stable_reverse_short_live_params: dict[str, Any] | None = None
+    smc_short_live_params: dict[str, Any] | None = None
+    live_overlay_smc_case: str = "v2_medium_dispbody05_otherlag4_10x"
+    live_overlay_smc_allocation: float = 1.0
+    live_overlay_stable_allocation: float = 1.0
+    live_overlay_stable_target_rr: float = 2.875
+    live_overlay_stable_max_hold_bars: int = 40
+    live_overlay_stable_leverage: float = 5.0
+    live_overlay_stable_stop_multiplier: float = 1.0
+    live_overlay_stable_max_short_stop_pct: float = 1.75
+    live_overlay_use_formal_fixed_shadow: bool = True
+    live_overlay_rebuild_formal_state_from_history: bool = False
     proxy: str | None = None
     api_key: str | None = None
     api_secret: str | None = None
@@ -231,9 +279,52 @@ class ExecutorConfig:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ExecutorConfig":
+        normalized_payload = dict(payload)
+        if normalized_payload.get("enable_live_candidate_arbitration") is not None:
+            normalized_payload["enable_live_overlay_strategy"] = bool(
+                normalized_payload.get("enable_live_overlay_strategy", False)
+                or normalized_payload["enable_live_candidate_arbitration"]
+            )
+
+        stable_params = normalized_payload.get("stable_reverse_short_live_params")
+        if isinstance(stable_params, dict):
+            normalized_payload["enable_stable_reverse_short_live"] = bool(
+                stable_params.get(
+                    "enabled",
+                    normalized_payload.get("enable_stable_reverse_short_live", True),
+                )
+            )
+            for source_key, target_key in (
+                ("allocation", "live_overlay_stable_allocation"),
+                ("target_rr", "live_overlay_stable_target_rr"),
+                ("max_hold_bars", "live_overlay_stable_max_hold_bars"),
+                ("leverage", "live_overlay_stable_leverage"),
+                ("stop_multiplier", "live_overlay_stable_stop_multiplier"),
+                ("max_short_stop_pct", "live_overlay_stable_max_short_stop_pct"),
+                ("use_formal_fixed_shadow", "live_overlay_use_formal_fixed_shadow"),
+                ("rebuild_formal_state_from_history", "live_overlay_rebuild_formal_state_from_history"),
+            ):
+                if source_key in stable_params and target_key not in normalized_payload:
+                    normalized_payload[target_key] = stable_params[source_key]
+
+        smc_params = normalized_payload.get("smc_short_live_params")
+        if isinstance(smc_params, dict):
+            normalized_payload["enable_smc_short_live"] = bool(
+                smc_params.get(
+                    "enabled",
+                    normalized_payload.get("enable_smc_short_live", True),
+                )
+            )
+            for source_key, target_key in (
+                ("case", "live_overlay_smc_case"),
+                ("allocation", "live_overlay_smc_allocation"),
+            ):
+                if source_key in smc_params and target_key not in normalized_payload:
+                    normalized_payload[target_key] = smc_params[source_key]
+
         filtered_payload = {
             key: value
-            for key, value in payload.items()
+            for key, value in normalized_payload.items()
             if key in cls.__dataclass_fields__
         }
         return cls(**filtered_payload)
@@ -360,6 +451,44 @@ class ExecutorConfig:
             taker_fee_rate=self.taker_fee_rate,
             slippage_bps=self.slippage_bps,
         )
+
+
+@dataclass
+class OverlayRuntimePosition:
+    event_type: str
+    direction: str
+    entry_idx: int
+    entry_time: str
+    exit_idx: int | None
+    target_rr: float | None
+    max_hold_bars: int | None
+    allocation: float
+    leverage: float
+    capital_at_entry: float
+    signal_entry_price: float
+    entry_price: float
+    sl_price: float
+    initial_sl_price: float
+    target_price: float
+    risk_points: float
+    quantity: float
+    notional: float
+    entry_fee: float
+    entry_slippage_cost: float
+    stop_reason: str | None = None
+    target_reason: str | None = None
+    max_open_positions: int = 1
+    stop_buffer_atr: float | None = None
+    smc_case: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass
+class OverlayRuntimeDecision:
+    base_action: StrategyAction | None
+    candidate_actions: list[StrategyAction]
+    execution_actions: list[StrategyAction]
+    overlay_decisions: list[dict[str, Any]]
 
 class OkxExecutionEngine:
     def __init__(self, config: ExecutorConfig, config_path: str | Path | None = None):
@@ -709,15 +838,41 @@ class OkxExecutionEngine:
             return f"⛔ {event_label}：{reason}"
         return f"{event_label}：{reason}"
 
+    def _overlay_formal_state_text(self) -> str:
+        if not self._live_overlay_enabled():
+            return "关闭"
+        if not self._overlay_formal_fixed_shadow_enabled():
+            return "legacy"
+        raw = self.store.get_value("live_overlay_formal_state")
+        if not raw:
+            return "未初始化"
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return "状态异常"
+        if not isinstance(payload, dict):
+            return "状态异常"
+        if bool(payload.get("initialized_without_history")):
+            text = "冷启动(无历史)"
+        elif payload.get("warmed_until_time"):
+            text = f"历史重建至 {payload.get('warmed_until_time')}"
+        else:
+            text = "持久化"
+        active_entry = payload.get("active_sota_entry_idx")
+        if active_entry is not None:
+            text = f"{text} / SOTA#{active_entry}"
+        return text
+
     def _overlay_status_rows(self) -> list[tuple[str, str]]:
         return [
             ("Overlay锁仓", self._overlay_candidate_text(self._load_sota_overlay_open_candidate())),
+            ("Formal状态", self._overlay_formal_state_text()),
             ("最近Overlay", self._overlay_decision_text(self._latest_overlay_decision())),
         ]
 
     def _overlay_compact_line(self) -> str:
         rows = dict(self._overlay_status_rows())
-        return f"Overlay: {rows['Overlay锁仓']} | 最近: {rows['最近Overlay']}"
+        return f"Overlay: {rows['Overlay锁仓']} | Formal: {rows['Formal状态']} | 最近: {rows['最近Overlay']}"
 
     def _load_snapshot_payload(self) -> dict[str, Any]:
         snapshot = self.store.load_snapshot()
@@ -954,6 +1109,7 @@ class OkxExecutionEngine:
                     f"🔢 交易：{row_map['交易次数']}",
                     f"⚡ 档位：{row_map['动态档位']}",
                     f"👤 Shadow：{row_map['Shadow暂停到']}",
+                    f"🧠 Formal：{row_map['Formal状态']}",
                     f"🧩 Overlay：{row_map['Overlay锁仓']}",
                     f"📝 最近决策：{row_map['最近Overlay']}",
                     "",
@@ -982,6 +1138,7 @@ class OkxExecutionEngine:
                 "最近K线": "🕯️ 最近K线",
                 "动态档位": "⚡ 动态档位",
                 "Shadow暂停到": "👤 Shadow暂停到",
+                "Formal状态": "🧠 Formal状态",
                 "Overlay锁仓": "🧩 Overlay锁仓",
                 "最近Overlay": "📝 最近Overlay",
                 "时间": "📅 时间",
@@ -1141,6 +1298,7 @@ class OkxExecutionEngine:
             f"模式: {self.config.mode}",
             f"市场加载: {market_loaded}",
             f"快照加载: {snapshot_loaded}",
+            f"Formal状态: {bootstrap_status.get('formal_state_status') or '-'}",
             f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         ]
         if bootstrap_status.get("bootstrap_error"):
@@ -1612,6 +1770,7 @@ class OkxExecutionEngine:
             "market_loaded": market_loaded,
             "snapshot_loaded": snapshot is not None,
             "bootstrap_error": bootstrap_error,
+            "formal_state_status": self._overlay_formal_state_text() if self._live_overlay_enabled() else "关闭",
         }
         self.store.append_action("bootstrap", "BOOTSTRAP", status)
         return status
@@ -1638,6 +1797,17 @@ class OkxExecutionEngine:
             primary_candles,
             self.config.to_scalp_strategy_config(),
         )
+        if self.config.enable_regime_switching:
+            regime_labels, regime_features = precompute_regime_state(
+                informative_candles,
+                sorted(set(engine.mapping)),
+                self.config.regime_switcher_thresholds,
+            )
+            engine._regime_switch_cache = {
+                c4h_idx: (label, engine._config_for_regime(label))
+                for c4h_idx, label in regime_labels.items()
+            }
+            engine._regime_feature_cache = dict(regime_features)
         engine.restore_snapshot(self.store.load_snapshot())
         start_idx = max(100, self._find_resume_index(primary_candles))
         return engine, start_idx
@@ -1657,7 +1827,13 @@ class OkxExecutionEngine:
             }
         if not self.store.get_value("last_processed_candle_time"):
             return self._initialize_without_replay(engine, latest_closed_idx)
-        self._assert_live_state_synced(engine, context="before_evaluate")
+        last_closed_timestamp = engine._timestamp_for_idx(latest_closed_idx)
+        self._assert_live_state_synced(
+            engine,
+            context="before_evaluate",
+            timestamp=last_closed_timestamp,
+            exit_idx=latest_closed_idx,
+        )
         if latest_closed_idx < start_idx:
             snapshot = engine.snapshot()
             self.store.save_snapshot(snapshot)
@@ -1671,16 +1847,27 @@ class OkxExecutionEngine:
                 "live_capital": engine.capital,
             }
 
-        # evaluate_range uses a right-open end index. Include latest_closed_idx;
-        # otherwise live can mark a candle processed without evaluating it.
-        actions = engine.evaluate_range(start_idx, latest_closed_idx + 1)
+        if self._live_overlay_enabled():
+            self._overlay_ensure_formal_state_warmup(engine, start_idx)
+
+        if self._live_overlay_enabled():
+            actions = self._evaluate_latest_with_live_overlay(engine, start_idx, latest_closed_idx)
+        else:
+            # evaluate_range uses a right-open end index. Include latest_closed_idx;
+            # otherwise live can mark a candle processed without evaluating it.
+            actions = engine.evaluate_range(start_idx, latest_closed_idx + 1)
         execution_results = []
         for action in actions:
             result = self.execute_action(action, engine)
             execution_results.append({"action": asdict(action), "result": result})
-        self._assert_live_state_synced(engine, context="after_execute")
+        self._assert_live_state_synced(
+            engine,
+            context="after_execute",
+            timestamp=last_closed_timestamp,
+            exit_idx=latest_closed_idx,
+        )
 
-        last_timestamp = engine._timestamp_for_idx(latest_closed_idx)
+        last_timestamp = last_closed_timestamp
         snapshot = engine.snapshot()
         self.store.set_value("last_processed_candle_time", last_timestamp)
         self.store.save_snapshot(snapshot)
@@ -1745,6 +1932,68 @@ class OkxExecutionEngine:
                 print(json.dumps(error_payload, ensure_ascii=False))
                 self._sleep_with_telegram(poll_interval_seconds, poll_interval_seconds)
 
+    def _evaluate_latest_with_live_overlay(self, engine: Any, start_idx: int, latest_closed_idx: int) -> list[StrategyAction]:
+        actions: list[StrategyAction] = []
+        for idx in range(start_idx, latest_closed_idx + 1):
+            runtime_position_before = self._load_overlay_runtime_position()
+            managed_actions = self._overlay_manage_runtime_position(engine, idx)
+            actions.extend(managed_actions)
+            for action in managed_actions:
+                if action.type == ActionType.CLOSE_POSITION:
+                    self._overlay_post_execute_runtime_update(engine, action, idx)
+            if runtime_position_before is not None and getattr(engine, "position", None) is None:
+                continue
+
+            base_open_action, non_open_actions = self._overlay_base_actions_for_idx(engine, idx)
+            non_open_actions = [
+                self._overlay_mark_formal_close_action(engine, action)
+                if action.type == ActionType.CLOSE_POSITION
+                else action
+                for action in non_open_actions
+            ]
+            actions.extend(non_open_actions)
+            for action in non_open_actions:
+                if action.type == ActionType.CLOSE_POSITION:
+                    self._overlay_update_formal_state_after_base_close(engine, action)
+            candidate_actions: list[StrategyAction] = []
+            if base_open_action is not None:
+                formal_base_action = self._overlay_formal_sota_action(engine, base_open_action)
+                if formal_base_action is not None:
+                    candidate_actions.append(formal_base_action)
+            stable_action = self._overlay_maybe_build_stable_candidate(engine, idx)
+            if stable_action is not None:
+                candidate_actions.append(stable_action)
+            smc_action = self._overlay_maybe_build_smc_candidate(engine, idx)
+            if smc_action is not None:
+                candidate_actions.append(smc_action)
+
+            if not candidate_actions:
+                continue
+
+            for action in sorted(
+                candidate_actions,
+                key=lambda item: (
+                    int(((item.metadata or {}).get("entry_idx", (item.metadata or {}).get("index", idx)) or idx)),
+                    {"sota_long": 0, "stable_reverse_short": 1, "smc_short": 2}.get(
+                        str((item.metadata or {}).get("overlay_event_type") or candidate_from_action(item).event_type),
+                        9,
+                    ),
+                ),
+            ):
+                decision = self._sota_overlay_account_lock_pre_open(action, engine, candidate_from_action(action))
+                if decision is not None:
+                    continue
+                overlay_runtime_position = self._overlay_runtime_position_from_action(action)
+                if overlay_runtime_position is not None:
+                    if base_open_action is not None and hasattr(engine, "_open_action_from_pending"):
+                        self._overlay_commit_base_open_action(engine, base_open_action)
+                    self._overlay_bind_runtime_position(overlay_runtime_position)
+                elif base_open_action is not None:
+                    self._overlay_commit_base_open_action(engine, action)
+                actions.append(action)
+                break
+        return actions
+
     def record_action(self, action: StrategyAction) -> None:
         self.store.append_action(action.timestamp, action.type.value, asdict(action))
 
@@ -1801,12 +2050,23 @@ class OkxExecutionEngine:
 
         if self.config.mode == "paper":
             if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
-                self._shadow_gate_mark_real_position(True, action, "paper_open_accepted")
+                if not (self._overlay_formal_fixed_shadow_enabled() and bool((action.metadata or {}).get("overlay_formal_fixed"))):
+                    self._shadow_gate_mark_real_position(True, action, "paper_open_accepted")
                 self._save_sota_overlay_open_candidate(overlay_candidate)
+                overlay_runtime_position = self._overlay_runtime_position_from_action(action)
+                if overlay_runtime_position is not None:
+                    self._overlay_bind_runtime_position(overlay_runtime_position)
             if action.type == ActionType.CLOSE_POSITION:
-                self._shadow_gate_after_close(action, engine)
-                self._dynamic_high_leverage_after_close(action, engine)
+                if not (self._overlay_formal_fixed_shadow_enabled() and bool((action.metadata or {}).get("overlay_formal_fixed"))):
+                    self._shadow_gate_after_close(action, engine)
+                if not self._overlay_should_skip_dynamic_high_leverage(action):
+                    self._dynamic_high_leverage_after_close(action, engine)
                 self._clear_sota_overlay_open_candidate()
+                self._overlay_post_execute_runtime_update(
+                    engine,
+                    action,
+                    int((action.metadata or {}).get("index", -1) or -1),
+                )
             return {
                 "status": "paper_recorded",
                 "action": action.type.value,
@@ -1855,6 +2115,9 @@ class OkxExecutionEngine:
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
             self._shadow_gate_mark_real_position(True, action, "open_confirmed")
             self._save_sota_overlay_open_candidate(overlay_candidate)
+            overlay_runtime_position = self._overlay_runtime_position_from_action(action)
+            if overlay_runtime_position is not None:
+                self._overlay_bind_runtime_position(overlay_runtime_position)
             dynamic_info = sizing.get("dynamic_high_leverage") if isinstance(sizing.get("dynamic_high_leverage"), dict) else {}
             signal_label = self._overlay_event_label(overlay_candidate.event_type) if overlay_candidate is not None else "-"
             open_lines = [
@@ -1921,9 +2184,16 @@ class OkxExecutionEngine:
                     )
                 )
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
-            self._shadow_gate_after_close(action, engine)
-            self._dynamic_high_leverage_after_close(action, engine)
+            if not (self._overlay_formal_fixed_shadow_enabled() and bool((action.metadata or {}).get("overlay_formal_fixed"))):
+                self._shadow_gate_after_close(action, engine)
+            if not self._overlay_should_skip_dynamic_high_leverage(action):
+                self._dynamic_high_leverage_after_close(action, engine)
             self._clear_sota_overlay_open_candidate()
+            self._overlay_post_execute_runtime_update(
+                engine,
+                action,
+                int((action.metadata or {}).get("index", -1) or -1),
+            )
             self._send_telegram(
                 "\n".join(
                     [
@@ -2002,7 +2272,29 @@ class OkxExecutionEngine:
         }
 
     def _local_position_blocks_new_open(self, action: StrategyAction, engine: Any) -> bool:
+        if self._overlay_formal_fixed_shadow_enabled():
+            overlay_position = self._load_overlay_runtime_position()
+            if overlay_position is not None:
+                return not (
+                    getattr(overlay_position, "entry_time", None) == action.timestamp
+                    and getattr(overlay_position, "direction", None) == action.direction
+                )
+            state = self._load_overlay_formal_state(engine)
+            active_entry_idx = state.get("active_sota_entry_idx")
+            if active_entry_idx is not None:
+                metadata = action.metadata or {}
+                action_entry_idx = metadata.get("entry_idx", metadata.get("index"))
+                try:
+                    same_entry = int(active_entry_idx) == int(action_entry_idx)
+                except (TypeError, ValueError):
+                    same_entry = False
+                same_direction = action.direction == Direction.BULL
+                return not (same_entry and same_direction)
+            shadow_state = self._load_shadow_gate_state(engine)
+            return bool(shadow_state.get("real_position_open"))
         position = getattr(engine, "position", None)
+        if position is None:
+            position = self._managed_local_position(engine)
         if position is None:
             return False
         if action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
@@ -2059,6 +2351,1299 @@ class OkxExecutionEngine:
 
     def _clear_sota_overlay_open_candidate(self) -> None:
         self.store.set_value("sota_overlay_open_candidate", "{}")
+
+    def _live_overlay_enabled(self) -> bool:
+        return bool(
+            getattr(self.config, "enable_live_overlay_strategy", False)
+            or getattr(self.config, "enable_live_candidate_arbitration", False)
+        )
+
+    def _stable_live_enabled(self) -> bool:
+        return self._live_overlay_enabled() and bool(getattr(self.config, "enable_stable_reverse_short_live", True))
+
+    def _smc_live_enabled(self) -> bool:
+        return self._live_overlay_enabled() and bool(getattr(self.config, "enable_smc_short_live", True))
+
+    def _overlay_formal_fixed_shadow_enabled(self) -> bool:
+        return self._live_overlay_enabled() and bool(getattr(self.config, "live_overlay_use_formal_fixed_shadow", True))
+
+    def _overlay_formal_state_default(self, engine: Any | None = None) -> dict[str, Any]:
+        capital = float(getattr(engine, "capital", 0.0) or 0.0) if engine is not None else 0.0
+        fixed_state = FixedStructureState(
+            capital=capital,
+            peak=capital,
+            signal_health_returns=[],
+        ).to_dict()
+        return {
+            "fixed": fixed_state,
+            "shadow": {
+                "capital": capital,
+                "drawdown_peak": capital,
+                "loss_streak": 0,
+                "pause_until_ts": 0.0,
+                "day_start_capital": {},
+                "day_pnl": {},
+                "events": [],
+            },
+            "last_formal_event": None,
+            "last_shadow_event": None,
+            "last_trade_key": None,
+            "active_sota_entry_idx": None,
+            "active_sota_entry_time": None,
+            "warmed_until_idx": None,
+            "warmed_until_time": None,
+        }
+
+    def _load_overlay_formal_state(self, engine: Any | None = None) -> dict[str, Any]:
+        raw = self.store.get_value("live_overlay_formal_state")
+        if not raw:
+            return self._overlay_formal_state_default(engine)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._overlay_formal_state_default(engine)
+        default = self._overlay_formal_state_default(engine)
+        if isinstance(payload, dict):
+            default.update(payload)
+        shadow = default.get("shadow")
+        if not isinstance(shadow, dict):
+            shadow = self._overlay_formal_state_default(engine)["shadow"]
+            default["shadow"] = shadow
+        shadow.setdefault("events", [])
+        shadow.setdefault("day_start_capital", {})
+        shadow.setdefault("day_pnl", {})
+        fixed = default.get("fixed")
+        if not isinstance(fixed, dict):
+            default["fixed"] = self._overlay_formal_state_default(engine)["fixed"]
+        return default
+
+    def _save_overlay_formal_state(self, state: dict[str, Any]) -> None:
+        self.store.set_value("live_overlay_formal_state", json.dumps(state, ensure_ascii=False))
+
+    def _overlay_rebuild_formal_state_from_history(self, engine: Any, end_idx: int) -> dict[str, Any]:
+        state = self._overlay_formal_state_default(engine)
+        sim_engine = ScalpRobustEngine(
+            list(engine.c4h),
+            list(engine.c15m),
+            list(engine.mapping),
+            engine.precomputed,
+            self.config.to_scalp_strategy_config(),
+        )
+        if hasattr(engine, "_regime_switch_cache"):
+            sim_engine._regime_switch_cache = deepcopy(getattr(engine, "_regime_switch_cache", {}))
+        if hasattr(engine, "_regime_feature_cache"):
+            sim_engine._regime_feature_cache = deepcopy(getattr(engine, "_regime_feature_cache", {}))
+        sim_engine.evaluate_range(100, max(101, int(end_idx) + 1))
+        for trade in getattr(sim_engine, "trades", []):
+            if int(getattr(trade, "exit_idx", -1) or -1) > int(end_idx):
+                continue
+            if str(getattr(trade, "regime_label", "") or "") in {"stable_reverse_short", "smc_short"}:
+                continue
+            fixed_state = FixedStructureState.from_dict(state.get("fixed"), float(state.get("fixed", {}).get("capital", 0.0) or 0.0))
+            formal_trade = self._overlay_enriched_trade_for_formal_step(sim_engine, trade)
+            next_fixed_state, formal_event, _decision = fixed_structure_step(formal_trade, fixed_state, FIXED_STRUCTURE_PARAMS)
+            state["fixed"] = next_fixed_state.to_dict()
+            state["last_trade_key"] = self._overlay_trade_key(trade)
+            state["last_formal_event"] = formal_event
+            if formal_event is not None:
+                state["last_shadow_event"] = self._overlay_shadow_accept_event(state, formal_event)
+            else:
+                state["last_shadow_event"] = None
+        state["active_sota_entry_idx"] = None
+        state["active_sota_entry_time"] = None
+        state["warmed_until_idx"] = int(end_idx)
+        state["warmed_until_time"] = self._overlay_action_timestamp(engine, int(end_idx)) if 0 <= int(end_idx) < len(engine.c15m) else None
+        return state
+
+    def _overlay_ensure_formal_state_warmup(self, engine: Any, start_idx: int) -> None:
+        if not self._overlay_formal_fixed_shadow_enabled():
+            return
+        if self.store.get_value("live_overlay_formal_state"):
+            return
+        if not bool(getattr(self.config, "live_overlay_rebuild_formal_state_from_history", False)):
+            state = self._overlay_formal_state_default(engine)
+            state["initialized_without_history"] = True
+            state["initialized_at_idx"] = int(start_idx)
+            state["initialized_at_time"] = self._overlay_action_timestamp(engine, int(start_idx)) if 0 <= int(start_idx) < len(engine.c15m) else None
+            self._save_overlay_formal_state(state)
+            return
+        warm_end_idx = max(100, int(start_idx) - 1)
+        if warm_end_idx <= 100:
+            self._save_overlay_formal_state(self._overlay_formal_state_default(engine))
+            return
+        state = self._overlay_rebuild_formal_state_from_history(engine, warm_end_idx)
+        self._save_overlay_formal_state(state)
+
+    def _overlay_trade_key(self, trade: Any) -> str:
+        return (
+            f"{getattr(trade, 'entry_time', '')}|"
+            f"{getattr(trade, 'exit_time', '')}|"
+            f"{getattr(trade, 'entry_idx', '')}|"
+            f"{getattr(trade, 'exit_idx', '')}|"
+            f"{getattr(trade, 'direction', '')}"
+        )
+
+    def _overlay_utc_timestamp(self, value: Any) -> pd.Timestamp:
+        timestamp = pd.Timestamp(str(value))
+        if timestamp.tzinfo is None:
+            return timestamp.tz_localize("UTC")
+        return timestamp.tz_convert("UTC")
+
+    def _overlay_shadow_accept_event(self, state: dict[str, Any], event: dict[str, Any]) -> dict[str, Any] | None:
+        shadow = state.get("shadow")
+        if not isinstance(shadow, dict):
+            return None
+        entry_time = self._overlay_utc_timestamp(event["entry_time"])
+        exit_time = self._overlay_utc_timestamp(event["exit_time"])
+        pause_until_ts = float(shadow.get("pause_until_ts", 0.0) or 0.0)
+        if entry_time.timestamp() < pause_until_ts:
+            return None
+
+        capital_before = float(shadow.get("capital", 0.0) or 0.0)
+        trade_return = float(event["return"])
+        pnl = capital_before * trade_return
+        capital = capital_before + pnl
+        shadow["capital"] = capital
+        shadow["drawdown_peak"] = max(float(shadow.get("drawdown_peak", capital) or capital), capital)
+        accepted = dict(event)
+        accepted["shadow_capital"] = capital
+        events = shadow.get("events")
+        if not isinstance(events, list):
+            events = []
+        events.append(accepted)
+        shadow["events"] = events[-500:]
+
+        exit_day = exit_time.normalize().strftime("%Y-%m-%d")
+        day_start_capital = shadow.get("day_start_capital")
+        day_pnl = shadow.get("day_pnl")
+        if not isinstance(day_start_capital, dict):
+            day_start_capital = {}
+        if not isinstance(day_pnl, dict):
+            day_pnl = {}
+        if exit_day not in day_start_capital:
+            day_start_capital[exit_day] = capital_before
+            day_pnl[exit_day] = 0.0
+        day_pnl[exit_day] = float(day_pnl.get(exit_day, 0.0) or 0.0) + pnl
+        shadow["day_start_capital"] = day_start_capital
+        shadow["day_pnl"] = day_pnl
+
+        if pnl > 0:
+            shadow["loss_streak"] = 0
+        else:
+            shadow["loss_streak"] = int(shadow.get("loss_streak", 0) or 0) + 1
+
+        daily_stop = float(self.config.shadow_daily_loss_stop_pct or 0.0)
+        start_capital = float(day_start_capital.get(exit_day, 0.0) or 0.0)
+        if daily_stop > 0 and start_capital > 0:
+            daily_loss_pct = -float(day_pnl[exit_day]) / start_capital * 100.0
+            if daily_loss_pct >= daily_stop:
+                shadow["pause_until_ts"] = max(
+                    float(shadow.get("pause_until_ts", 0.0) or 0.0),
+                    self._shadow_next_utc_day_ts(exit_time.to_pydatetime()),
+                )
+        streak_stop = int(self.config.shadow_consecutive_loss_stop or 0)
+        if streak_stop > 0 and int(shadow.get("loss_streak", 0) or 0) >= streak_stop:
+            shadow["pause_until_ts"] = max(
+                float(shadow.get("pause_until_ts", 0.0) or 0.0),
+                self._shadow_next_utc_day_ts(exit_time.to_pydatetime()),
+            )
+            shadow["loss_streak"] = 0
+        dd_stop = float(self.config.shadow_equity_drawdown_stop_pct or 0.0)
+        peak = float(shadow.get("drawdown_peak", capital) or capital)
+        if dd_stop > 0 and peak > 0:
+            drawdown_pct = (peak - capital) / peak * 100.0
+            if drawdown_pct >= dd_stop:
+                shadow["pause_until_ts"] = max(
+                    float(shadow.get("pause_until_ts", 0.0) or 0.0),
+                    self._shadow_cooldown_until_ts(exit_time.to_pydatetime(), int(self.config.shadow_equity_drawdown_cooldown_days or 0)),
+                )
+                shadow["drawdown_peak"] = capital
+                shadow["loss_streak"] = 0
+        state["shadow"] = shadow
+        state["last_shadow_event"] = accepted
+        return accepted
+
+    def _overlay_update_formal_state_after_base_close(self, engine: Any, action: StrategyAction) -> None:
+        if not self._overlay_formal_fixed_shadow_enabled():
+            return
+        latest_trade = engine.trades[-1] if getattr(engine, "trades", None) else None
+        if latest_trade is None:
+            return
+        if str(getattr(latest_trade, "regime_label", "") or "") in {"stable_reverse_short", "smc_short"}:
+            return
+        trade_key = self._overlay_trade_key(latest_trade)
+        state = self._load_overlay_formal_state(engine)
+        active_entry_idx = state.get("active_sota_entry_idx")
+        if active_entry_idx is None or int(active_entry_idx) != int(getattr(latest_trade, "entry_idx", -1) or -1):
+            return
+        if trade_key == str(state.get("last_trade_key") or ""):
+            return
+        fixed_state = FixedStructureState.from_dict(state.get("fixed"), float(getattr(engine, "capital", 0.0) or 0.0))
+        formal_trade = self._overlay_enriched_trade_for_formal_step(engine, latest_trade)
+        next_fixed_state, formal_event, _decision = fixed_structure_step(formal_trade, fixed_state, FIXED_STRUCTURE_PARAMS)
+        state["fixed"] = next_fixed_state.to_dict()
+        state["last_trade_key"] = trade_key
+        state["active_sota_entry_idx"] = None
+        state["active_sota_entry_time"] = None
+        state["last_formal_event"] = formal_event
+        if formal_event is not None:
+            shadow_event = self._overlay_shadow_accept_event(state, formal_event)
+            state["last_shadow_event"] = shadow_event
+        else:
+            state["last_shadow_event"] = None
+        self._save_overlay_formal_state(state)
+
+    def _overlay_mark_formal_close_action(self, engine: Any, action: StrategyAction) -> StrategyAction:
+        if not self._overlay_formal_fixed_shadow_enabled() or action.type != ActionType.CLOSE_POSITION:
+            return action
+        latest_trade = engine.trades[-1] if getattr(engine, "trades", None) else None
+        if latest_trade is None:
+            return action
+        state = self._load_overlay_formal_state(engine)
+        active_entry_idx = state.get("active_sota_entry_idx")
+        if active_entry_idx is None or int(active_entry_idx) != int(getattr(latest_trade, "entry_idx", -1) or -1):
+            return action
+        metadata = dict(action.metadata or {})
+        metadata["overlay_formal_fixed"] = True
+        metadata["overlay_event_type"] = "sota_long"
+        return StrategyAction(
+            type=action.type,
+            timestamp=action.timestamp,
+            direction=action.direction,
+            entry_price=action.entry_price,
+            exit_price=action.exit_price,
+            stop_price=action.stop_price,
+            target_price=action.target_price,
+            reason=action.reason,
+            metadata=metadata,
+        )
+
+    def _overlay_enriched_trade_for_formal_step(self, engine: Any, trade: Any) -> pd.Series:
+        entry_idx = int(getattr(trade, "entry_idx", -1) or -1)
+        features: dict[str, Any] = {}
+        if entry_idx >= 0 and hasattr(engine, "_regime_features_for_idx"):
+            try:
+                features = engine._regime_features_for_idx(entry_idx) or {}
+            except Exception:
+                features = {}
+        return pd.Series(
+            {
+                "entry_time": getattr(trade, "entry_time", ""),
+                "exit_time": getattr(trade, "exit_time", ""),
+                "entry_idx": getattr(trade, "entry_idx", None),
+                "exit_idx": getattr(trade, "exit_idx", None),
+                "exit_reason": getattr(trade, "exit_reason", ""),
+                "rr_ratio": getattr(trade, "rr_ratio", 0.0),
+                "pnl": getattr(trade, "pnl", 0.0),
+                "notional": getattr(trade, "notional", 0.0),
+                "quantity": getattr(trade, "quantity", 0.0),
+                "direction": getattr(trade, "direction", ""),
+                "entry_price": getattr(trade, "entry_price", 0.0),
+                "exit_price": getattr(trade, "exit_price", 0.0),
+                "initial_stop_price": getattr(trade, "initial_stop_price", 0.0),
+                "regime_label": getattr(trade, "regime_label", "") or "",
+                "trail_style": getattr(trade, "trail_style", "") or "",
+                "pressure_target_applied": getattr(trade, "pressure_target_applied", False),
+                "pressure_target_source": getattr(trade, "pressure_target_source", None),
+                "pressure_target_level": getattr(trade, "pressure_target_level", None),
+                "pressure_target_rr": getattr(trade, "pressure_target_rr", None),
+                "pressure_target_min_rr": getattr(trade, "pressure_target_min_rr", None),
+                "pressure_target_dynamic_reason": getattr(trade, "pressure_target_dynamic_reason", None),
+                "pressure_target_update_idx": getattr(trade, "pressure_target_update_idx", None),
+                "pressure_touch_lock_applied": getattr(trade, "pressure_touch_lock_applied", False),
+                "pressure_touch_lock_source": getattr(trade, "pressure_touch_lock_source", None),
+                "pressure_touch_lock_level": getattr(trade, "pressure_touch_lock_level", None),
+                "pressure_touch_lock_rr": getattr(trade, "pressure_touch_lock_rr", None),
+                "pressure_touch_lock_update_idx": getattr(trade, "pressure_touch_lock_update_idx", None),
+                "feature_adx": float(features.get("adx", 0.0) or 0.0),
+                "feature_momentum": float(features.get("momentum", 0.0) or 0.0),
+                "feature_ema_gap": float(features.get("ema_gap", 0.0) or 0.0),
+                "feature_bullish_structure": bool(features.get("bullish_structure", False)),
+                "feature_bearish_structure": bool(features.get("bearish_structure", False)),
+            }
+        )
+
+    def _overlay_runtime_state_default(self) -> dict[str, Any]:
+        return {
+            "position": None,
+            "last_managed_idx": None,
+        }
+
+    def _load_overlay_runtime_state(self) -> dict[str, Any]:
+        raw = self.store.get_value("live_overlay_runtime_state")
+        if not raw:
+            return self._overlay_runtime_state_default()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._overlay_runtime_state_default()
+        default = self._overlay_runtime_state_default()
+        if isinstance(payload, dict):
+            default.update(payload)
+        return default
+
+    def _save_overlay_runtime_state(self, state: dict[str, Any]) -> None:
+        self.store.set_value("live_overlay_runtime_state", json.dumps(state, ensure_ascii=False))
+
+    def _load_overlay_runtime_position(self) -> OverlayRuntimePosition | None:
+        state = self._load_overlay_runtime_state()
+        payload = state.get("position")
+        if not isinstance(payload, dict):
+            return None
+        try:
+            return OverlayRuntimePosition(**payload)
+        except TypeError:
+            return None
+
+    def _save_overlay_runtime_position(self, position: OverlayRuntimePosition | None, *, last_managed_idx: int | None = None) -> None:
+        state = self._load_overlay_runtime_state()
+        state["position"] = asdict(position) if position is not None else None
+        if last_managed_idx is not None:
+            state["last_managed_idx"] = int(last_managed_idx)
+        self._save_overlay_runtime_state(state)
+
+    def _clear_overlay_runtime_position(self, *, last_managed_idx: int | None = None) -> None:
+        self._save_overlay_runtime_position(None, last_managed_idx=last_managed_idx)
+
+    def _managed_local_position(self, engine: Any) -> Any | None:
+        local_position = getattr(engine, "position", None)
+        if local_position is not None:
+            return local_position
+        overlay_position = self._load_overlay_runtime_position()
+        if overlay_position is None:
+            return None
+        return SimpleNamespace(
+            direction=overlay_position.direction,
+            entry_time=overlay_position.entry_time,
+            quantity=overlay_position.quantity,
+            sl_price=overlay_position.sl_price,
+            target_price=overlay_position.target_price,
+            entry_price=overlay_position.entry_price,
+            initial_sl_price=overlay_position.initial_sl_price,
+            event_type=overlay_position.event_type,
+            entry_idx=overlay_position.entry_idx,
+            risk_regime="overlay",
+            regime_label=overlay_position.event_type,
+            time_based_trailing_enabled=False,
+            auto_tit_reason=None,
+        )
+
+    def _action_configured_leverage(self, action: StrategyAction | None = None) -> float:
+        metadata = (action.metadata or {}) if action is not None else {}
+        return float(
+            (
+                metadata.get("candidate_leverage")
+                or metadata.get("overlay_leverage")
+                or metadata.get("leverage")
+                or self.config.leverage
+            )
+            or self.config.leverage
+        )
+
+    def _action_maintenance_margin_pct(self, action: StrategyAction | None = None) -> float:
+        metadata = (action.metadata or {}) if action is not None else {}
+        return float(
+            (
+                metadata.get("overlay_maintenance_margin_pct")
+                or metadata.get("maintenance_margin_pct")
+                or self.config.high_leverage_maintenance_margin_pct
+            )
+            or self.config.high_leverage_maintenance_margin_pct
+        )
+
+    def _overlay_should_skip_dynamic_high_leverage(self, action: StrategyAction | None = None) -> bool:
+        if not bool(getattr(self.config, "overlay_skip_dynamic_high_leverage", False)):
+            return False
+        if action is None:
+            return False
+        event_type = str(((action.metadata or {}).get("overlay_event_type") or "")).lower()
+        return event_type in {"stable", "stable_reverse_short", "smc", "smc_short"}
+
+    def _overlay_action_timestamp(self, engine: Any, idx: int) -> str:
+        return engine._timestamp_for_idx(int(idx))
+
+    def _overlay_capital(self, engine: Any) -> float:
+        return float(getattr(engine, "capital", 0.0) or 0.0)
+
+    def _overlay_rr_observation_price(self, candle: Any, direction: str, mode: str) -> float:
+        normalized_mode = str(mode or "close").strip().lower()
+        if normalized_mode == "close":
+            return float(candle.c)
+        if normalized_mode == "extreme":
+            return float(candle.h) if direction == Direction.BULL else float(candle.l)
+        raise ValueError(f"Unsupported overlay RR observation mode: {mode}")
+
+    def _overlay_realized_action_return(
+        self,
+        *,
+        signal_return_pct: float,
+        leverage: float,
+        allocation: float,
+    ) -> dict[str, float]:
+        return leveraged_net_return(
+            signal_return_pct=float(signal_return_pct),
+            leverage=float(leverage),
+            position_size_pct=1.0,
+            allocation=float(allocation),
+            taker_fee_rate=float(self.config.taker_fee_rate),
+            slippage_bps=float(self.config.slippage_bps),
+        )
+
+    def _overlay_build_open_short_action(
+        self,
+        *,
+        engine: Any,
+        idx: int,
+        event_type: str,
+        signal_entry_price: float | None = None,
+        stop_price: float,
+        target_price: float,
+        target_rr: float | None,
+        max_hold_bars: int | None,
+        allocation: float,
+        leverage: float,
+        stop_reason: str | None = None,
+        target_reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[StrategyAction, OverlayRuntimePosition]:
+        candle = engine.c15m[idx]
+        entry_price = float(signal_entry_price if signal_entry_price is not None else candle.c)
+        capital = self._overlay_capital(engine)
+        notional = capital * float(leverage) * float(allocation)
+        quantity = notional / entry_price if entry_price > 0 else 0.0
+        entry_fee = notional * float(self.config.taker_fee_rate)
+        slippage_rate = float(self.config.slippage_bps) / 10_000.0
+        filled_entry_price = entry_price * (1.0 - slippage_rate)
+        entry_slippage_cost = quantity * abs(filled_entry_price - entry_price)
+        risk_points = float(stop_price) - float(entry_price)
+        runtime_position = OverlayRuntimePosition(
+            event_type=str(event_type),
+            direction=Direction.BEAR,
+            entry_idx=int(idx),
+            entry_time=self._overlay_action_timestamp(engine, idx),
+            exit_idx=None,
+            target_rr=float(target_rr) if target_rr is not None else None,
+            max_hold_bars=int(max_hold_bars) if max_hold_bars is not None else None,
+            allocation=float(allocation),
+            leverage=float(leverage),
+            capital_at_entry=capital,
+            signal_entry_price=entry_price,
+            entry_price=filled_entry_price,
+            sl_price=float(stop_price),
+            initial_sl_price=float(stop_price),
+            target_price=float(target_price),
+            risk_points=float(risk_points),
+            quantity=float(quantity),
+            notional=float(notional),
+            entry_fee=float(entry_fee),
+            entry_slippage_cost=float(entry_slippage_cost),
+            stop_reason=stop_reason,
+            target_reason=target_reason,
+            metadata=dict(metadata or {}),
+        )
+        action = StrategyAction(
+            type=ActionType.OPEN_SHORT,
+            timestamp=runtime_position.entry_time,
+            direction=Direction.BEAR,
+            entry_price=runtime_position.entry_price,
+            stop_price=runtime_position.sl_price,
+            target_price=runtime_position.target_price,
+            metadata={
+                "index": int(idx),
+                "entry_idx": int(idx),
+                "overlay_event_type": runtime_position.event_type,
+                "exit_idx": runtime_position.exit_idx,
+                "position_size_pct": float(allocation),
+                "capital_at_entry": capital,
+                "notional": runtime_position.notional,
+                "max_notional": runtime_position.notional,
+                "risk_based_notional": runtime_position.notional,
+                "margin_usdt": runtime_position.notional / max(float(leverage), 1.0),
+                "quantity": runtime_position.quantity,
+                "signal_entry_price": runtime_position.signal_entry_price,
+                "target_rr": runtime_position.target_rr,
+                "max_hold_bars": runtime_position.max_hold_bars,
+                "trail_style": "overlay",
+                "risk_regime": "overlay",
+                "regime_label": runtime_position.event_type,
+                "leverage": float(leverage),
+                "overlay_leverage": float(leverage),
+                "candidate_leverage": float(leverage),
+                "entry_fee": runtime_position.entry_fee,
+                "entry_slippage_cost": runtime_position.entry_slippage_cost,
+                **(dict(metadata or {})),
+            },
+        )
+        return action, runtime_position
+
+    def _overlay_runtime_position_from_action(self, action: StrategyAction) -> OverlayRuntimePosition | None:
+        metadata = action.metadata or {}
+        event_type = str(metadata.get("overlay_event_type") or "")
+        if event_type not in {"stable_reverse_short", "smc_short"}:
+            return None
+        try:
+            return OverlayRuntimePosition(
+                event_type=event_type,
+                direction=str(action.direction or Direction.BEAR),
+                entry_idx=int(metadata.get("entry_idx", metadata.get("index", 0)) or 0),
+                entry_time=str(action.timestamp),
+                exit_idx=metadata.get("exit_idx"),
+                target_rr=float(metadata["target_rr"]) if metadata.get("target_rr") is not None else None,
+                max_hold_bars=int(metadata["max_hold_bars"]) if metadata.get("max_hold_bars") is not None else None,
+                allocation=float(metadata.get("position_size_pct", 1.0) or 1.0),
+                leverage=float((metadata.get("leverage") or metadata.get("overlay_leverage") or self.config.leverage) or self.config.leverage),
+                capital_at_entry=float(metadata.get("capital_at_entry", 0.0) or 0.0),
+                signal_entry_price=float(metadata.get("signal_entry_price", action.entry_price or 0.0) or 0.0),
+                entry_price=float(action.entry_price or 0.0),
+                sl_price=float(action.stop_price or 0.0),
+                initial_sl_price=float(action.stop_price or 0.0),
+                target_price=float(action.target_price or 0.0),
+                risk_points=max(0.0, float(action.stop_price or 0.0) - float(metadata.get("signal_entry_price", action.entry_price or 0.0) or 0.0)),
+                quantity=float(metadata.get("quantity", 0.0) or 0.0),
+                notional=float(metadata.get("notional", 0.0) or 0.0),
+                entry_fee=float(metadata.get("entry_fee", 0.0) or 0.0),
+                entry_slippage_cost=float(metadata.get("entry_slippage_cost", 0.0) or 0.0),
+                stop_reason="stop_loss",
+                target_reason="target_rr" if event_type == "stable_reverse_short" else str(metadata.get("smc_target_reason") or "target_2.0r"),
+                smc_case=str(metadata.get("smc_case") or "") or None,
+                metadata=dict(metadata),
+            )
+        except (TypeError, ValueError):
+            return None
+
+    def _overlay_build_close_action(
+        self,
+        *,
+        engine: Any,
+        position: OverlayRuntimePosition,
+        idx: int,
+        exit_price: float,
+        reason: str,
+    ) -> StrategyAction:
+        filled_exit_price = float(exit_price) * (1.0 + float(self.config.slippage_bps) / 10_000.0)
+        gross_pnl = position.quantity * (position.entry_price - filled_exit_price)
+        exit_fee = position.quantity * filled_exit_price * float(self.config.taker_fee_rate)
+        fees = position.entry_fee + exit_fee
+        slippage_cost = position.entry_slippage_cost + position.quantity * abs(filled_exit_price - float(exit_price))
+        pnl = gross_pnl - fees
+        if position.capital_at_entry > 0:
+            pnl_pct = pnl / position.capital_at_entry
+        else:
+            pnl_pct = 0.0
+        rr_ratio = pnl / (position.risk_points * position.quantity) if position.risk_points > 0 and position.quantity > 0 else 0.0
+        return StrategyAction(
+            type=ActionType.CLOSE_POSITION,
+            timestamp=self._overlay_action_timestamp(engine, idx),
+            direction=Direction.BEAR,
+            exit_price=filled_exit_price,
+            reason=reason,
+            metadata={
+                "index": int(idx),
+                "overlay_event_type": position.event_type,
+                "entry_idx": position.entry_idx,
+                "gross_pnl": gross_pnl,
+                "fees": fees,
+                "slippage_cost": slippage_cost,
+                "net_pnl": pnl,
+                "signal_exit_price": float(exit_price),
+                "capital_at_entry": position.capital_at_entry,
+                "rr_ratio": rr_ratio,
+                "pnl_pct": pnl_pct,
+            },
+        )
+
+    def _overlay_append_trade(self, engine: Any, position: OverlayRuntimePosition, action: StrategyAction) -> None:
+        metadata = action.metadata or {}
+        trade = Trade(
+            entry_time=position.entry_time,
+            exit_time=action.timestamp,
+            direction=Direction.BEAR,
+            signal_entry_price=position.signal_entry_price,
+            entry_price=position.entry_price,
+            signal_exit_price=float(metadata.get("signal_exit_price", action.exit_price or 0.0) or 0.0),
+            exit_price=float(action.exit_price or 0.0),
+            gross_pnl=float(metadata.get("gross_pnl", 0.0) or 0.0),
+            fees=float(metadata.get("fees", 0.0) or 0.0),
+            slippage_cost=float(metadata.get("slippage_cost", 0.0) or 0.0),
+            pnl=float(metadata.get("net_pnl", 0.0) or 0.0),
+            pnl_pct=float(metadata.get("pnl_pct", 0.0) or 0.0),
+            rr_ratio=float(metadata.get("rr_ratio", 0.0) or 0.0),
+            exit_reason=str(action.reason or "overlay_exit"),
+            capital_at_entry=position.capital_at_entry,
+            notional=position.notional,
+            quantity=position.quantity,
+            entry_idx=position.entry_idx,
+            initial_stop_price=position.initial_sl_price,
+            trail_style="overlay",
+            risk_regime="overlay",
+            regime_label=position.event_type,
+            time_based_trailing_enabled=False,
+            auto_tit_reason=None,
+            exit_idx=int(metadata.get("index", position.entry_idx) or position.entry_idx),
+        )
+        engine.trades.append(trade)
+        engine.exit_reasons[str(action.reason or "overlay_exit")] = int(engine.exit_reasons.get(str(action.reason or "overlay_exit"), 0) or 0) + 1
+        engine.capital = max(0.0, float(getattr(engine, "capital", 0.0) or 0.0) + float(metadata.get("net_pnl", 0.0) or 0.0))
+
+    def _overlay_formal_trade_stub_from_action(self, engine: Any, action: StrategyAction) -> pd.Series:
+        metadata = action.metadata or {}
+        entry_price = float(action.entry_price or 0.0)
+        quantity = float(metadata.get("quantity", 0.0) or 0.0)
+        notional = float(metadata.get("notional", 0.0) or 0.0)
+        return pd.Series(
+            {
+                "entry_time": action.timestamp,
+                "direction": str(action.direction or ""),
+                "entry_price": entry_price,
+                "initial_stop_price": float(action.stop_price or 0.0),
+                "notional": notional,
+                "quantity": quantity,
+                "regime_label": str(metadata.get("regime_label") or ""),
+                "trail_style": str(metadata.get("trail_style") or ""),
+                "feature_adx": float(metadata.get("feature_adx", 0.0) or 0.0),
+                "feature_momentum": float(metadata.get("feature_momentum", 0.0) or 0.0),
+                "feature_ema_gap": float(metadata.get("feature_ema_gap", 0.0) or 0.0),
+                "feature_bullish_structure": bool(metadata.get("feature_bullish_structure", False)),
+                "feature_bearish_structure": bool(metadata.get("feature_bearish_structure", False)),
+            }
+        )
+
+    def _overlay_formal_sota_action(self, engine: Any, action: StrategyAction) -> StrategyAction | None:
+        if not self._overlay_formal_fixed_shadow_enabled():
+            return action
+        if action.type != ActionType.OPEN_LONG:
+            return None
+        shadow = self._load_overlay_formal_state(engine).get("shadow")
+        pause_until_ts = float(shadow.get("pause_until_ts", 0.0) or 0.0) if isinstance(shadow, dict) else 0.0
+        if pause_until_ts > 0:
+            try:
+                if self._action_timestamp(action).timestamp() < pause_until_ts:
+                    return None
+            except ValueError:
+                pass
+        trade_stub = self._overlay_formal_trade_stub_from_action(engine, action)
+        state = self._load_overlay_formal_state(engine)
+        fixed_state = FixedStructureState.from_dict(state.get("fixed"), float(getattr(engine, "capital", 0.0) or 0.0))
+        decision = fixed_structure_entry_decision(trade_stub, fixed_state, FIXED_STRUCTURE_PARAMS)
+        if not bool(decision.get("accepted")):
+            return None
+        metadata = dict(action.metadata or {})
+        metadata["overlay_event_type"] = "sota_long"
+        metadata["overlay_formal_fixed"] = True
+        metadata["overlay_formal_effective_leverage"] = float(decision.get("effective_leverage", 0.0) or 0.0)
+        metadata["overlay_formal_risk_mode"] = decision.get("risk_mode")
+        metadata["overlay_formal_leverage_reasons"] = list(decision.get("leverage_reasons") or [])
+        metadata["overlay_formal_guard_diagnostics"] = dict(decision.get("failed_breakout_guard_diagnostics") or {})
+        effective_leverage = float(decision.get("effective_leverage", 0.0) or 0.0)
+        if effective_leverage > 0 and action.entry_price:
+            capital_at_entry = float(metadata.get("capital_at_entry", getattr(engine, "capital", 0.0)) or 0.0)
+            notional = capital_at_entry * effective_leverage
+            quantity = notional / float(action.entry_price)
+            metadata["notional"] = notional
+            metadata["max_notional"] = notional
+            metadata["risk_based_notional"] = notional
+            metadata["quantity"] = quantity
+            metadata["margin_usdt"] = notional / max(float(self.config.leverage), 1.0)
+        return StrategyAction(
+            type=action.type,
+            timestamp=action.timestamp,
+            direction=action.direction,
+            entry_price=action.entry_price,
+            exit_price=action.exit_price,
+            stop_price=action.stop_price,
+            target_price=action.target_price,
+            reason=action.reason,
+            metadata=metadata,
+        )
+
+    def _overlay_maybe_build_formal_stable_candidate(self, engine: Any, idx: int) -> StrategyAction | None:
+        state = self._load_overlay_formal_state(engine)
+        event = state.get("last_shadow_event")
+        if not isinstance(event, dict):
+            return None
+        if int(event.get("exit_idx", -1) or -1) != idx:
+            return None
+        if not selected_by(event, "guarded_weak_loss", 1):
+            return None
+        entry_price = float(event.get("exit_price", 0.0) or 0.0)
+        if entry_price <= 0:
+            return None
+        stop_pct = float(event.get("stop_distance_pct", 0.0) or 0.0) / 100.0
+        stop_pct *= float(self.config.live_overlay_stable_stop_multiplier)
+        if stop_pct <= 0 or stop_pct * 100.0 > float(self.config.live_overlay_stable_max_short_stop_pct):
+            return None
+        stop_price = entry_price * (1.0 + stop_pct)
+        target_price = entry_price * (1.0 - stop_pct * float(self.config.live_overlay_stable_target_rr))
+        action, _ = self._overlay_build_open_short_action(
+            engine=engine,
+            idx=idx,
+            event_type="stable_reverse_short",
+            signal_entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            target_rr=float(self.config.live_overlay_stable_target_rr),
+            max_hold_bars=int(self.config.live_overlay_stable_max_hold_bars),
+            allocation=float(self.config.live_overlay_stable_allocation),
+            leverage=float(self.config.live_overlay_stable_leverage),
+            stop_reason="stop_loss",
+            target_reason="target_rr",
+            metadata={
+                "source_trade_exit_reason": event.get("exit_reason"),
+                "source_trade_entry_idx": event.get("entry_idx"),
+                "source_trade_exit_idx": event.get("exit_idx"),
+                "source_quality_score": quality_snapshot(event)["quality_score"],
+                "source_effective_leverage": event.get("effective_leverage"),
+                "source_failed_breakout_guard_applied": bool(event.get("failed_breakout_guard_applied")),
+                "overlay_formal_fixed": True,
+            },
+        )
+        return action
+
+    def _overlay_should_open_stable_from_trade(self, trade: Trade) -> bool:
+        event = {
+            "direction": trade.direction,
+            "regime_label": trade.regime_label,
+            "risk_mode": getattr(trade, "execution_risk_mode", None),
+            "exit_reason": trade.exit_reason,
+            "return": trade.pnl_pct,
+            "failed_breakout_guard_applied": any(
+                str(reason).startswith("failed_breakout_guard")
+                for reason in (getattr(trade, "execution_leverage_reasons", None) or [])
+            ),
+            "feature_adx": None,
+            "feature_momentum": None,
+            "feature_ema_gap": None,
+            "feature_bullish_structure": None,
+            "feature_bearish_structure": None,
+        }
+        diagnostics = getattr(trade, "execution_guard_diagnostics", None)
+        if isinstance(diagnostics, dict):
+            event["feature_adx"] = diagnostics.get("feature_adx", 0.0)
+            event["feature_momentum"] = diagnostics.get("feature_momentum", 0.0)
+            event["feature_ema_gap"] = diagnostics.get("feature_ema_gap", 0.0)
+            event["feature_bullish_structure"] = diagnostics.get("feature_bullish_structure", False)
+            event["feature_bearish_structure"] = diagnostics.get("feature_bearish_structure", False)
+        return selected_by(event, "guarded_weak_loss", 1)
+
+    def _overlay_maybe_build_stable_candidate(self, engine: Any, idx: int) -> StrategyAction | None:
+        if not self._stable_live_enabled():
+            return None
+        if self._overlay_formal_fixed_shadow_enabled():
+            return self._overlay_maybe_build_formal_stable_candidate(engine, idx)
+        if not getattr(engine, "trades", None):
+            return None
+        latest_trade = engine.trades[-1]
+        if latest_trade.exit_idx != idx:
+            return None
+        if not self._overlay_should_open_stable_from_trade(latest_trade):
+            return None
+        entry_price = float(latest_trade.exit_price or 0.0)
+        if entry_price <= 0:
+            return None
+        source_stop_pct = abs(float(latest_trade.initial_stop_price or 0.0) - float(latest_trade.signal_entry_price or 0.0))
+        signal_entry = float(latest_trade.signal_entry_price or 0.0)
+        if signal_entry <= 0:
+            return None
+        stop_pct = (source_stop_pct / signal_entry) * float(self.config.live_overlay_stable_stop_multiplier)
+        if stop_pct <= 0 or stop_pct * 100.0 > float(self.config.live_overlay_stable_max_short_stop_pct):
+            return None
+        stop_price = entry_price * (1.0 + stop_pct)
+        target_price = entry_price * (1.0 - stop_pct * float(self.config.live_overlay_stable_target_rr))
+        action, _ = self._overlay_build_open_short_action(
+            engine=engine,
+            idx=idx,
+            event_type="stable_reverse_short",
+            signal_entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            target_rr=float(self.config.live_overlay_stable_target_rr),
+            max_hold_bars=int(self.config.live_overlay_stable_max_hold_bars),
+            allocation=float(self.config.live_overlay_stable_allocation),
+            leverage=float(self.config.live_overlay_stable_leverage),
+            stop_reason="stop_loss",
+            target_reason="target_rr",
+            metadata={
+                "source_trade_exit_reason": latest_trade.exit_reason,
+                "source_trade_entry_idx": latest_trade.entry_idx,
+                "source_trade_exit_idx": latest_trade.exit_idx,
+                "source_quality_score": quality_snapshot(
+                    {
+                        "direction": latest_trade.direction,
+                        "feature_adx": (getattr(latest_trade, "execution_guard_diagnostics", None) or {}).get("feature_adx", 0.0),
+                        "feature_momentum": (getattr(latest_trade, "execution_guard_diagnostics", None) or {}).get("feature_momentum", 0.0),
+                        "feature_ema_gap": (getattr(latest_trade, "execution_guard_diagnostics", None) or {}).get("feature_ema_gap", 0.0),
+                        "feature_bullish_structure": (getattr(latest_trade, "execution_guard_diagnostics", None) or {}).get("feature_bullish_structure", False),
+                        "feature_bearish_structure": (getattr(latest_trade, "execution_guard_diagnostics", None) or {}).get("feature_bearish_structure", False),
+                    }
+                )["quality_score"],
+            },
+        )
+        return action
+
+    def _overlay_smc_case_args(self) -> Any:
+        case_name = str(self.config.live_overlay_smc_case or FORMAL_SMC_CASE_NAMES[0])
+        case_params = SMC_CASES[case_name]
+        defaults = {
+            "swing_n": 3,
+            "target_rr": 2.0,
+            "allowed_time_buckets": "other",
+            "min_body_atr": 0.7,
+            "min_range_atr": 1.1,
+            "entry_lookahead_bars": 40,
+            "min_displacement_body_atr": 0.0,
+            "min_displacement_range_atr": 0.0,
+            "max_mss_lag_bars": 15,
+            "max_open_positions": 1,
+            "initial_capital": 1000.0,
+        }
+        merged_case = defaults | case_params
+        base_args = smc_strategy_args(
+            SimpleNamespace(
+                data_15m="",
+                data_4h="",
+                start_date="",
+                swing_n=merged_case["swing_n"],
+                entry_lookahead_bars=merged_case["entry_lookahead_bars"],
+                min_body_atr=merged_case["min_body_atr"],
+                min_range_atr=merged_case["min_range_atr"],
+                target_rr=merged_case["target_rr"],
+                allowed_time_buckets=merged_case["allowed_time_buckets"],
+                min_displacement_body_atr=merged_case["min_displacement_body_atr"],
+                min_displacement_range_atr=merged_case["min_displacement_range_atr"],
+                max_mss_lag_bars=merged_case["max_mss_lag_bars"],
+                max_open_positions=merged_case["max_open_positions"],
+                initial_capital=merged_case["initial_capital"],
+            )
+        )
+        config_ns = SimpleNamespace(
+            data_15m="",
+            data_4h="",
+            start_date="",
+        )
+        merged = vars(base_args) | vars(smc_case_namespace(config_ns, case_params))
+        return SimpleNamespace(**merged)
+
+    def _overlay_maybe_build_smc_candidate(self, engine: Any, idx: int) -> StrategyAction | None:
+        if not self._smc_live_enabled():
+            return None
+        case_name = str(self.config.live_overlay_smc_case or "")
+        if case_name not in SMC_CASES:
+            return None
+        case_args = self._overlay_smc_case_args()
+        smc_args = case_args
+        c15m = list(engine.c15m[: idx + 1])
+        if len(c15m) < max(int(getattr(smc_args, "swing_lookback", 80)), int(getattr(smc_args, "liquidity_lookback_bars", 192))) + 5:
+            return None
+        c4h_idx = int(engine.mapping[idx]) if idx < len(engine.mapping) else -1
+        if c4h_idx <= 2:
+            return None
+        c4h = list(engine.c4h[: c4h_idx + 1])
+        daily = daily_candles_from_4h(c4h)
+        h4_highs, h4_lows = precompute_swings(c4h, n=2, lookback=80)
+        d1_highs, d1_lows = precompute_swings(daily, n=2, lookback=20)
+        candidate = self._overlay_live_smc_candidate(
+            c15m=c15m,
+            idx=idx,
+            c4h=c4h,
+            daily=daily,
+            h4_highs=h4_highs,
+            h4_lows=h4_lows,
+            d1_highs=d1_highs,
+            d1_lows=d1_lows,
+            case_args=case_args,
+            smc_args=smc_args,
+        )
+        if candidate is None:
+            return None
+        entry_price = float(candidate["entry_price"])
+        stop_price = float(candidate["stop_price"])
+        target_price = float(candidate["target_price"])
+        risk_points = stop_price - entry_price
+        if risk_points <= 0:
+            return None
+        target_rr = float(getattr(case_args, "target_rr", 2.0) or 2.0)
+        trade_stub = pd.Series(
+            {
+                "entry_time": candidate["entry_time"],
+                "direction": "BEAR",
+                "entry_price": entry_price,
+                "initial_stop_price": stop_price,
+                "notional": self._overlay_capital(engine) * float(getattr(case_args, "leverage", 10.0)) * float(getattr(case_args, "position_size_pct", 1.0)),
+            }
+        )
+        diagnostics = high_leverage_trade_diagnostics(
+            trade_stub,
+            capital=self._overlay_capital(engine),
+            leverage=float(getattr(case_args, "leverage", 10.0)),
+            maintenance_margin_pct=float(getattr(case_args, "maintenance_margin_pct", 0.5)),
+        )
+        if float(diagnostics["liquidation_buffer_pct"]) < float(getattr(case_args, "min_liq_buffer_pct", 1.2)):
+            return None
+        action, _ = self._overlay_build_open_short_action(
+            engine=engine,
+            idx=idx,
+            event_type="smc_short",
+            signal_entry_price=entry_price,
+            stop_price=stop_price,
+            target_price=target_price,
+            target_rr=target_rr,
+            max_hold_bars=int(getattr(smc_args, "outcome_lookahead_bars", 96)),
+            allocation=float(self.config.live_overlay_smc_allocation),
+            leverage=float(getattr(case_args, "leverage", 10.0)),
+            stop_reason="stop_loss",
+            target_reason=f"target_{target_rr:.1f}r",
+            metadata={
+                "smc_case": case_name,
+                "smc_time_bucket": candidate.get("time_bucket"),
+                "smc_ny_time": candidate.get("ny_time"),
+                "smc_mss_lag_bars": candidate.get("mss_lag_bars"),
+                "smc_h4_bias": candidate.get("h4_bias"),
+                "smc_d1_bias": candidate.get("d1_bias"),
+                "smc_fvg_touched": bool(candidate.get("fvg_touched", False)),
+                "smc_ote_touched": bool(candidate.get("ote_touched", False)),
+                "smc_stop_buffer_atr": float(getattr(smc_args, "stop_buffer_atr", 0.05)),
+                "smc_live_safe": True,
+            },
+        )
+        return action
+
+    def _overlay_live_smc_candidate(
+        self,
+        *,
+        c15m: list[Any],
+        idx: int,
+        c4h: list[Any],
+        daily: list[Any],
+        h4_highs: list[int],
+        h4_lows: list[int],
+        d1_highs: list[int],
+        d1_lows: list[int],
+        case_args: Any,
+        smc_args: Any,
+    ) -> dict[str, Any] | None:
+        scan_args = build_event_scan_args(smc_args)
+        scan_args.allow_incomplete_tail = True
+        curr = c15m[idx]
+        atr_values = atr_series(c15m, int(getattr(smc_args, "atr_period", 14)))
+        recent_window = max(
+            int(getattr(smc_args, "liquidity_lookback_bars", 192))
+            + int(getattr(smc_args, "mss_lookahead_bars", 24))
+            + int(getattr(smc_args, "entry_lookahead_bars", 40))
+            + int(getattr(smc_args, "fvg_lookback_bars", 8))
+            + 16,
+            int(getattr(smc_args, "swing_lookback", 80)) + 64,
+        )
+        window_start = max(0, len(c15m) - recent_window)
+        scan_c15m = c15m[window_start:]
+        events = scan_events(scan_c15m, scan_args)
+        matching_events = [
+            event
+            for event in events
+            if event.direction == "BEAR"
+            and event.retest is not None
+            and int(event.retest.idx) + window_start == idx
+        ]
+        if not matching_events:
+            return None
+        bucket, ny_time = time_bucket(curr.ts)
+        h4_idx = max(0, len(c4h) - 2)
+        h4_bias = htf_structure_bias(c4h, h4_highs, h4_lows, h4_idx) if len(c4h) >= 3 else "NONE"
+        daily_ts = [candle.ts for candle in daily]
+        d1_idx = bisect.bisect_left(daily_ts, pd.Timestamp(curr.ts, unit="s", tz="UTC").normalize().timestamp()) - 1
+        d1_bias = htf_structure_bias(daily, d1_highs, d1_lows, d1_idx) if d1_idx >= 0 else "NONE"
+
+        matching_event = None
+        matching_mss_lag_bars = None
+        for event in matching_events:
+            if bool(getattr(smc_args, "require_confirmed_retest", False)) and not bool(event.retest.confirmed):
+                continue
+            if bool(getattr(smc_args, "require_fvg_touch", False)) and not bool(event.retest.fvg_touched):
+                continue
+            if not bool(getattr(smc_args, "allow_ote_only", True)) and not bool(event.retest.fvg_touched):
+                continue
+            if bool(getattr(smc_args, "require_ote_touch", False)) and not bool(event.retest.ote_touched):
+                continue
+            if not allowed_bucket(bucket, str(getattr(smc_args, "allowed_time_buckets", "all"))):
+                continue
+            if not allowed_direction("BEAR", str(getattr(smc_args, "allowed_directions", "all"))):
+                continue
+            if bool(getattr(case_args, "drop_asia_session", False)) and bucket == "asia_evening_ny":
+                continue
+            mss_lag_bars = (int(event.mss_idx) - int(event.sweep_idx)) if event.mss_idx is not None else None
+            if int(getattr(smc_args, "max_mss_lag_bars", 0)) > 0 and mss_lag_bars is not None and mss_lag_bars > int(smc_args.max_mss_lag_bars):
+                continue
+            if int(getattr(case_args, "global_min_mss_lag_bars", 0)) > 0 and mss_lag_bars is not None and mss_lag_bars < int(case_args.global_min_mss_lag_bars):
+                continue
+            if int(getattr(case_args, "global_max_mss_lag_bars", 0)) > 0 and mss_lag_bars is not None and mss_lag_bars > int(case_args.global_max_mss_lag_bars):
+                continue
+            if bucket == "ny_am_killzone" and int(getattr(case_args, "ny_max_mss_lag_bars", 0)) > 0 and mss_lag_bars is not None and mss_lag_bars > int(case_args.ny_max_mss_lag_bars):
+                continue
+            if bucket == "other" and int(getattr(case_args, "other_min_mss_lag_bars", 0)) > 0 and mss_lag_bars is not None and mss_lag_bars < int(case_args.other_min_mss_lag_bars):
+                continue
+            if float(event.displacement_body_atr or 0.0) < float(getattr(smc_args, "min_displacement_body_atr", 0.0) or 0.0):
+                continue
+            if float(event.displacement_range_atr or 0.0) < float(getattr(smc_args, "min_displacement_range_atr", 0.0) or 0.0):
+                continue
+            if float(getattr(smc_args, "bear_min_sweep_distance_pct", 0.0) or 0.0) > 0.0 and float(event.sweep_distance_pct or 0.0) < float(getattr(smc_args, "bear_min_sweep_distance_pct", 0.0) or 0.0):
+                continue
+            if bool(getattr(smc_args, "require_h4_bias_align", False)) and bool(getattr(smc_args, "require_htf_bias_align", False)) and h4_bias != "BEAR":
+                continue
+            if bool(getattr(smc_args, "require_h4_bias_align", False)) and not bool(getattr(smc_args, "require_htf_bias_align", False)) and h4_bias not in {"BEAR", "NONE"}:
+                continue
+            if bool(getattr(smc_args, "require_d1_bias_align", False)) and bool(getattr(smc_args, "require_htf_bias_align", False)) and d1_bias != "BEAR":
+                continue
+            if bool(getattr(smc_args, "require_d1_bias_align", False)) and not bool(getattr(smc_args, "require_htf_bias_align", False)) and d1_bias not in {"BEAR", "NONE"}:
+                continue
+            matching_event = event
+            matching_mss_lag_bars = mss_lag_bars
+            break
+        if matching_event is None:
+            return None
+
+        stop_buffer = atr_values[idx] * float(getattr(smc_args, "stop_buffer_atr", 0.05)) if idx < len(atr_values) else 0.0
+        stop_price = float(matching_event.sweep_extreme) + stop_buffer
+        entry_price = float(matching_event.retest.close)
+        risk_points = stop_price - entry_price
+        if risk_points <= 0:
+            return None
+        target_price = entry_price - risk_points * float(getattr(case_args, "target_rr", 2.0) or 2.0)
+        return {
+            "entry_idx": idx,
+            "entry_time": matching_event.retest.timestamp,
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "time_bucket": bucket,
+            "ny_time": ny_time,
+            "mss_lag_bars": matching_mss_lag_bars,
+            "h4_bias": h4_bias,
+            "d1_bias": d1_bias,
+            "fvg_touched": bool(matching_event.retest.fvg_touched),
+            "ote_touched": bool(matching_event.retest.ote_touched),
+        }
+
+    def _overlay_manage_runtime_position(self, engine: Any, idx: int) -> list[StrategyAction]:
+        position = self._load_overlay_runtime_position()
+        if position is None:
+            return []
+        if self.config.mode == "live" and self.config.enable_exchange_brackets:
+            return []
+        candle = engine.c15m[idx]
+        actions: list[StrategyAction] = []
+        if position.max_hold_bars is not None and idx - position.entry_idx >= position.max_hold_bars:
+            close_action = self._overlay_build_close_action(
+                engine=engine,
+                position=position,
+                idx=idx,
+                exit_price=float(candle.c),
+                reason="time_exit",
+            )
+            actions.append(close_action)
+            return actions
+        if float(candle.h) >= float(position.sl_price):
+            close_action = self._overlay_build_close_action(
+                engine=engine,
+                position=position,
+                idx=idx,
+                exit_price=float(position.sl_price),
+                reason=str(position.stop_reason or "stop_loss"),
+            )
+            actions.append(close_action)
+            return actions
+        if float(candle.l) <= float(position.target_price):
+            close_action = self._overlay_build_close_action(
+                engine=engine,
+                position=position,
+                idx=idx,
+                exit_price=float(position.target_price),
+                reason=str(position.target_reason or "target_rr"),
+            )
+            actions.append(close_action)
+            return actions
+        return actions
+
+    def _overlay_post_execute_runtime_update(self, engine: Any, action: StrategyAction, idx: int) -> None:
+        if not self._live_overlay_enabled():
+            return
+        metadata = action.metadata or {}
+        event_type = str(metadata.get("overlay_event_type") or "")
+        if action.type == ActionType.OPEN_SHORT and event_type in {"stable_reverse_short", "smc_short"}:
+            position = self._load_overlay_runtime_position()
+            if position is not None:
+                self._save_overlay_runtime_position(position, last_managed_idx=idx)
+            return
+        if action.type == ActionType.CLOSE_POSITION:
+            position = self._load_overlay_runtime_position()
+            if position is None:
+                return
+            if event_type and event_type != position.event_type:
+                return
+            self._overlay_append_trade(engine, position, action)
+            self._clear_overlay_runtime_position(last_managed_idx=idx)
+
+    def _overlay_bind_runtime_position(self, runtime_position: OverlayRuntimePosition) -> None:
+        self._save_overlay_runtime_position(runtime_position)
+
+    def _overlay_base_actions_for_idx(self, engine: Any, idx: int) -> tuple[StrategyAction | None, list[StrategyAction]]:
+        if not hasattr(engine, "_apply_regime_switch_for_idx"):
+            candle_actions = engine.evaluate_range(idx, idx + 1)
+            base_open_action: StrategyAction | None = None
+            non_open_actions: list[StrategyAction] = []
+            for action in candle_actions:
+                if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+                    base_open_action = action
+                else:
+                    non_open_actions.append(action)
+            return base_open_action, non_open_actions
+        engine._apply_regime_switch_for_idx(idx)
+        non_open_actions: list[StrategyAction] = []
+        if getattr(engine, "position", None):
+            position_actions = engine.manage_position(idx)
+            for action in position_actions:
+                if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+                    raise ValueError("Unexpected open action during base position management")
+                non_open_actions.append(action)
+            return None, non_open_actions
+
+        base_open_action = self._overlay_maybe_build_base_open_candidate(engine, idx)
+        return base_open_action, non_open_actions
+
+    def _overlay_commit_base_open_action(self, engine: Any, action: StrategyAction) -> None:
+        if not hasattr(engine, "_open_action_from_pending"):
+            return
+        idx = int((action.metadata or {}).get("index", 0) or 0)
+        committed = self._overlay_maybe_commit_base_open_candidate(engine, idx, action.direction)
+        if committed is None:
+            raise ValueError("Base overlay open candidate could not be replayed deterministically for live commit")
+        position = getattr(engine, "position", None)
+        if position is None:
+            raise ValueError("Base overlay open candidate replay did not create local engine position")
+        metadata = action.metadata or {}
+        if bool(metadata.get("overlay_formal_fixed")):
+            effective_leverage = float(metadata.get("overlay_formal_effective_leverage", 0.0) or 0.0)
+            capital_at_entry = float(getattr(position, "capital_at_entry", 0.0) or 0.0)
+            entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
+            if effective_leverage > 0 and capital_at_entry > 0 and entry_price > 0:
+                notional = capital_at_entry * effective_leverage
+                quantity = notional / entry_price
+                entry_fee = notional * float(self.config.taker_fee_rate)
+                signal_entry_price = float(getattr(position, "signal_entry_price", entry_price) or entry_price)
+                entry_slippage_cost = quantity * abs(entry_price - signal_entry_price)
+                setattr(position, "notional", notional)
+                setattr(position, "quantity", quantity)
+                setattr(position, "entry_fee", entry_fee)
+                setattr(position, "entry_slippage_cost", entry_slippage_cost)
+            setattr(position, "execution_effective_leverage", effective_leverage)
+            setattr(position, "execution_risk_mode", metadata.get("overlay_formal_risk_mode"))
+            setattr(position, "execution_leverage_reasons", list(metadata.get("overlay_formal_leverage_reasons") or []))
+            setattr(position, "execution_guard_diagnostics", dict(metadata.get("overlay_formal_guard_diagnostics") or {}))
+            setattr(position, "execution_requested_notional", float(getattr(position, "notional", 0.0) or 0.0))
+            setattr(position, "execution_target_notional", float(getattr(position, "notional", 0.0) or 0.0))
+            state = self._load_overlay_formal_state(engine)
+            state["active_sota_entry_idx"] = int(getattr(position, "entry_idx", idx) or idx)
+            state["active_sota_entry_time"] = str(getattr(position, "entry_time", action.timestamp) or action.timestamp)
+            self._save_overlay_formal_state(state)
+
+    def _overlay_capture_base_open_from_pending(self, engine: Any, idx: int, pending: Any) -> StrategyAction | None:
+        original_position = getattr(engine, "position", None)
+        try:
+            return engine._open_action_from_pending(idx, pending)
+        finally:
+            engine.position = original_position
+
+    def _overlay_maybe_build_base_open_candidate(self, engine: Any, idx: int) -> StrategyAction | None:
+        bias = engine.precomputed.bias_4h[engine.mapping[idx]]
+        active_pending = bool(engine.waiting_for_pullback or any(engine.pending_by_direction.values()))
+        if engine.config.use_hfvf_filter and bias == Direction.NONE and not active_pending:
+            return None
+
+        if engine.config.enable_dual_pending_state:
+            for direction in (Direction.BULL, Direction.BEAR):
+                pending = engine.pending_by_direction[direction]
+                if pending is None:
+                    continue
+                action = self._overlay_capture_base_open_from_pending(engine, idx, pending)
+                if action is not None:
+                    return action
+                if engine._pending_expired(idx, pending):
+                    engine.pending_by_direction[direction] = None
+            if idx in (engine.precomputed.highs_set | engine.precomputed.lows_set):
+                pending = engine._build_pending_pullback(idx, bias)
+                if pending and engine.pending_by_direction[pending.direction] is None:
+                    engine.pending_by_direction[pending.direction] = pending
+            return None
+
+        if engine.waiting_for_pullback and engine.ob_zone and engine.waiting_direction:
+            pending = PendingPullback(
+                direction=engine.waiting_direction,
+                bos_idx=engine.bos_idx,
+                ob_zone=engine.ob_zone,
+                pullback_window=engine.waiting_pullback_window,
+            )
+            action = self._overlay_capture_base_open_from_pending(engine, idx, pending)
+            if action is not None:
+                return action
+            if engine._pending_expired(idx, pending):
+                engine.waiting_for_pullback = False
+                engine.ob_zone = None
+                engine.waiting_direction = None
+                return None
+
+        if not getattr(engine, "position", None) and not engine.waiting_for_pullback and idx in (engine.precomputed.highs_set | engine.precomputed.lows_set):
+            pending = engine._build_pending_pullback(idx, bias)
+            if pending:
+                engine.waiting_for_pullback = True
+                engine.bos_idx = pending.bos_idx
+                engine.ob_zone = pending.ob_zone
+                engine.waiting_direction = pending.direction
+                engine.waiting_pullback_window = pending.pullback_window
+        if not getattr(engine, "position", None) and not engine.waiting_for_pullback:
+            for pending, detail in self._active_ob_candidates(engine, idx):
+                if not detail.get("ready"):
+                    continue
+                action = self._overlay_capture_base_open_from_pending(engine, idx, pending)
+                if action is not None:
+                    return action
+        return None
+
+    def _overlay_maybe_commit_base_open_candidate(self, engine: Any, idx: int, direction: Any) -> StrategyAction | None:
+        if engine.config.enable_dual_pending_state:
+            pending = engine.pending_by_direction.get(str(direction))
+            if pending is None:
+                return None
+            action = engine._open_action_from_pending(idx, pending)
+            if action is None:
+                return None
+            engine.pending_by_direction[Direction.BULL] = None
+            engine.pending_by_direction[Direction.BEAR] = None
+            return action
+
+        if not (engine.waiting_for_pullback and engine.ob_zone and engine.waiting_direction == direction):
+            return None
+        pending = PendingPullback(
+            direction=engine.waiting_direction,
+            bos_idx=engine.bos_idx,
+            ob_zone=engine.ob_zone,
+            pullback_window=engine.waiting_pullback_window,
+        )
+        action = engine._open_action_from_pending(idx, pending)
+        if action is None:
+            return None
+        engine.waiting_for_pullback = False
+        engine.ob_zone = None
+        engine.waiting_direction = None
+        return action
+
+    def _overlay_discard_base_open_candidate(self, engine: Any, action: StrategyAction) -> None:
+        if getattr(getattr(engine, "config", None), "enable_dual_pending_state", False):
+            engine.pending_by_direction[Direction.BULL] = None
+            engine.pending_by_direction[Direction.BEAR] = None
+            return
+        if not getattr(engine, "waiting_for_pullback", False):
+            return
+        engine.waiting_for_pullback = False
+        engine.ob_zone = None
+        engine.waiting_direction = None
 
     def _shadow_gate_enabled(self) -> bool:
         return (
@@ -2153,6 +3738,8 @@ class OkxExecutionEngine:
     def _shadow_gate_pre_execute(self, action: StrategyAction, engine: Any) -> dict[str, Any] | None:
         if not self._shadow_gate_enabled():
             return None
+        if self._overlay_formal_fixed_shadow_enabled() and bool((action.metadata or {}).get("overlay_formal_fixed")):
+            return None
 
         state = self._load_shadow_gate_state(engine)
         if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
@@ -2205,14 +3792,14 @@ class OkxExecutionEngine:
 
         return None
 
-    def _high_leverage_guard_enabled(self) -> bool:
+    def _high_leverage_guard_enabled(self, action: StrategyAction | None = None) -> bool:
         return (
             bool(self.config.enable_high_leverage_guard)
-            and float(self.config.leverage) >= float(self.config.high_leverage_guard_min_leverage)
+            and self._action_configured_leverage(action) >= float(self.config.high_leverage_guard_min_leverage)
         )
 
     def _high_leverage_guard_pre_open(self, action: StrategyAction, sizing: dict[str, Any]) -> dict[str, Any] | None:
-        if not self._high_leverage_guard_enabled():
+        if not self._high_leverage_guard_enabled(action):
             return None
         if action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
             return None
@@ -2258,8 +3845,8 @@ class OkxExecutionEngine:
     def _high_leverage_open_diagnostics(self, action: StrategyAction, sizing: dict[str, Any]) -> dict[str, Any]:
         entry_price = float(action.entry_price or 0.0)
         stop_price = float(action.stop_price or 0.0)
-        leverage = float(self.config.leverage)
-        maintenance_margin_pct = max(float(self.config.high_leverage_maintenance_margin_pct), 0.0) / 100.0
+        leverage = self._action_configured_leverage(action)
+        maintenance_margin_pct = max(self._action_maintenance_margin_pct(action), 0.0) / 100.0
         stop_distance_pct = (
             abs(entry_price - stop_price) / entry_price * 100.0
             if entry_price > 0 and stop_price > 0
@@ -2300,7 +3887,7 @@ class OkxExecutionEngine:
             "min_liquidation_buffer_pct": round(float(self.config.high_leverage_min_liquidation_buffer_pct), 6),
             "max_stop_distance_pct": round(float(self.config.high_leverage_max_stop_distance_pct), 6),
             "max_account_effective_leverage": round(float(self.config.high_leverage_max_account_effective_leverage), 6),
-            "maintenance_margin_pct": round(float(self.config.high_leverage_maintenance_margin_pct), 6),
+            "maintenance_margin_pct": round(self._action_maintenance_margin_pct(action), 6),
         }
 
     def _high_leverage_guard_failures(self, diagnostics: dict[str, Any]) -> list[str]:
@@ -2444,6 +4031,8 @@ class OkxExecutionEngine:
         reference_price = action.entry_price or action.exit_price or (candles[-1].c if candles else 0.0)
         if reference_price <= 0:
             return {"status": "error", "reason": "invalid_reference_price"}
+        if self.config.mode == "paper":
+            return self._resolve_paper_order_sizing(action, engine, float(reference_price))
 
         if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
             metadata = action.metadata or {}
@@ -2459,10 +4048,11 @@ class OkxExecutionEngine:
                     or 0.0
                 )
                 balance_source = str(metadata.get("balance_source", "action_metadata"))
+                leverage = self._action_configured_leverage(action)
                 margin_usdt = float(
                     metadata.get(
                         "margin_usdt",
-                        notional / self.config.leverage if self.config.leverage > 0 else notional,
+                        notional / leverage if leverage > 0 else notional,
                     )
                 )
             else:
@@ -2518,6 +4108,63 @@ class OkxExecutionEngine:
                 "expected_notional_usdt": position_state["notional_usdt"],
                 "base_amount_btc": position_state["base_amount_btc"],
                 "contracts": position_state["contracts"],
+            }
+
+        return {"status": "ok", "amount": 0.0}
+
+    def _resolve_paper_order_sizing(self, action: StrategyAction, engine: Any, reference_price: float) -> dict[str, Any]:
+        metadata = action.metadata or {}
+        if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+            quantity = float(metadata.get("quantity", 0.0) or 0.0)
+            notional = float(
+                metadata.get("notional", 0.0)
+                or metadata.get("expected_notional_usdt", 0.0)
+                or (quantity * reference_price)
+                or 0.0
+            )
+            max_notional = float(metadata.get("max_notional", notional) or notional)
+            risk_based_notional = float(metadata.get("risk_based_notional", notional) or notional)
+            capital_at_entry = float(metadata.get("capital_at_entry", getattr(engine, "capital", 0.0)) or 0.0)
+            leverage = float(
+                metadata.get("leverage", 0.0)
+                or metadata.get("overlay_leverage", 0.0)
+                or getattr(self.config, "leverage", 0.0)
+                or 0.0
+            )
+            margin_usdt = float(
+                metadata.get("margin_usdt", 0.0)
+                or (notional / leverage if leverage > 0 else notional)
+                or 0.0
+            )
+            return {
+                "status": "ok",
+                "amount": quantity,
+                "order_unit": "BTC",
+                "requested_base_amount_btc": round(quantity, 8),
+                "base_amount_btc": round(quantity, 8),
+                "contract_size": 0.0,
+                "expected_notional_usdt": round(notional, 6),
+                "requested_notional_usdt": round(notional, 6),
+                "notional_usdt": round(notional, 6),
+                "max_notional_usdt": round(max_notional, 6),
+                "risk_based_notional_usdt": round(risk_based_notional, 6),
+                "margin_usdt": round(margin_usdt, 6),
+                "available_usdt": round(capital_at_entry, 6),
+                "balance_source": "paper_action_metadata",
+            }
+
+        if action.type == ActionType.CLOSE_POSITION:
+            position = self._managed_local_position(engine)
+            quantity = float(getattr(position, "quantity", 0.0) or 0.0) if position is not None else 0.0
+            notional = quantity * reference_price if quantity > 0 and reference_price > 0 else 0.0
+            return {
+                "status": "ok",
+                "amount": quantity,
+                "order_unit": "BTC",
+                "close_source": "paper_local_position",
+                "expected_notional_usdt": round(notional, 6),
+                "base_amount_btc": round(quantity, 8),
+                "contracts": 0.0,
             }
 
         return {"status": "ok", "amount": 0.0}
@@ -2770,6 +4417,10 @@ class OkxExecutionEngine:
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         if not self._dynamic_high_leverage_enabled() or action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
             return sizing, None
+        if bool((action.metadata or {}).get("overlay_formal_fixed")):
+            return sizing, None
+        if self._overlay_should_skip_dynamic_high_leverage(action):
+            return sizing, None
 
         state = self._load_dynamic_high_leverage_state(engine)
         diagnostics = self._dynamic_action_diagnostics(action, sizing, engine)
@@ -2863,7 +4514,19 @@ class OkxExecutionEngine:
             setattr(position, "execution_requested_notional", requested_notional)
             setattr(position, "execution_target_notional", round(target_notional, 6))
             setattr(position, "execution_guard_diagnostics", diagnostics)
-        adjusted = self._build_order_sizing(target_notional / reference_price, target_notional, reference_price)
+        if self.config.mode == "paper":
+            quantity = target_notional / reference_price
+            adjusted = {
+                "amount": round(quantity, 8),
+                "order_unit": "BTC",
+                "requested_base_amount_btc": round(quantity, 8),
+                "base_amount_btc": round(quantity, 8),
+                "contract_size": 0.0,
+                "expected_notional_usdt": round(target_notional, 6),
+                "requested_notional_usdt": round(target_notional, 6),
+            }
+        else:
+            adjusted = self._build_order_sizing(target_notional / reference_price, target_notional, reference_price)
         adjusted.update(
             {
                 "status": "ok",
@@ -3359,6 +5022,7 @@ class OkxExecutionEngine:
         *,
         context: str,
         timestamp: str,
+        exit_idx: int | None = None,
     ) -> StrategyAction | None:
         quantity = abs(float(getattr(position, "quantity", 0.0) or 0.0))
         capital_at_entry = float(getattr(position, "capital_at_entry", 0.0) or 0.0)
@@ -3397,7 +5061,7 @@ class OkxExecutionEngine:
             regime_label=getattr(position, "regime_label", None),
             time_based_trailing_enabled=bool(getattr(position, "time_based_trailing_enabled", False)),
             auto_tit_reason=getattr(position, "auto_tit_reason", None),
-            exit_idx=None,
+            exit_idx=exit_idx,
             pressure_target_applied=bool(getattr(position, "pressure_target_applied", False)),
             pressure_target_source=getattr(position, "pressure_target_source", None),
             pressure_target_level=self._safe_float(getattr(position, "pressure_target_level", None)),
@@ -3433,6 +5097,15 @@ class OkxExecutionEngine:
                 "live_total_usdt": live_total,
                 "rr_ratio": rr_ratio,
                 "pnl_pct": pnl_pct,
+                "index": exit_idx,
+                "exit_idx": exit_idx,
+                "candidate_event_type": getattr(position, "candidate_event_type", None),
+                "execution_effective_leverage": getattr(position, "execution_effective_leverage", None),
+                "execution_risk_mode": getattr(position, "execution_risk_mode", None),
+                "execution_leverage_reasons": getattr(position, "execution_leverage_reasons", None),
+                "execution_requested_notional": getattr(position, "execution_requested_notional", None),
+                "execution_target_notional": getattr(position, "execution_target_notional", None),
+                "execution_guard_diagnostics": getattr(position, "execution_guard_diagnostics", None),
             },
         )
         self.record_action(action)
@@ -3440,17 +5113,19 @@ class OkxExecutionEngine:
         self._dynamic_high_leverage_after_close(action, engine)
         return action
 
-    def _sync_manual_flat_position(self, engine: Any, *, context: str) -> None:
+    def _sync_manual_flat_position(self, engine: Any, *, context: str, timestamp: str | None = None, exit_idx: int | None = None) -> None:
         position = getattr(engine, "position", None)
         if position is None:
             return
         direction = getattr(position, "direction", None)
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         synthetic_action = self._record_external_flat_close(
             engine,
             position,
             context=context,
             timestamp=timestamp,
+            exit_idx=exit_idx,
         )
         payload = {
             "context": context,
@@ -3479,6 +5154,8 @@ class OkxExecutionEngine:
                 )
             self._save_shadow_gate_state(gate_state)
             payload["shadow_gate_state"] = gate_state
+        self._clear_sota_overlay_open_candidate()
+        self._clear_overlay_runtime_position(last_managed_idx=exit_idx)
         self.store.append_action(timestamp, "MANUAL_POSITION_SYNC", payload)
         direction_label = "做多" if direction == "BULL" else "做空" if direction == "BEAR" else "-"
         pnl_line = ""
@@ -3494,6 +5171,140 @@ class OkxExecutionEngine:
                     f"方向: {direction_label}",
                     f"来源: {context}",
                     "检测到交易所仓位已被手动平掉，本地状态已清空",
+                    *([pnl_line] if pnl_line else []),
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                ]
+            )
+        )
+
+    def _record_external_overlay_flat_close(
+        self,
+        engine: Any,
+        position: OverlayRuntimePosition,
+        *,
+        context: str,
+        timestamp: str,
+        exit_idx: int | None = None,
+    ) -> StrategyAction | None:
+        quantity = abs(float(position.quantity or 0.0))
+        capital_at_entry = float(position.capital_at_entry or 0.0)
+        if quantity <= 0 or capital_at_entry <= 0:
+            return None
+        live_total = self._current_live_total_usdt(float(getattr(engine, "capital", 0.0) or capital_at_entry))
+        net_pnl = live_total - capital_at_entry
+        exit_price, gross_pnl, fees = self._estimate_external_exit_price(position, net_pnl)
+        slippage_cost = float(position.entry_slippage_cost or 0.0)
+        risk_amount = quantity * abs(float(position.risk_points or 0.0))
+        rr_ratio = net_pnl / risk_amount if risk_amount > 0 else 0.0
+        pnl_pct = net_pnl / capital_at_entry if capital_at_entry > 0 else 0.0
+        reason = self._external_flat_exit_reason(position, exit_price)
+        trade = Trade(
+            entry_time=str(position.entry_time),
+            exit_time=timestamp,
+            direction=str(position.direction),
+            signal_entry_price=float(position.signal_entry_price or 0.0),
+            entry_price=float(position.entry_price or 0.0),
+            signal_exit_price=exit_price,
+            exit_price=exit_price,
+            gross_pnl=gross_pnl,
+            fees=fees,
+            slippage_cost=slippage_cost,
+            pnl=net_pnl,
+            pnl_pct=pnl_pct,
+            rr_ratio=rr_ratio,
+            exit_reason=reason,
+            capital_at_entry=capital_at_entry,
+            notional=float(position.notional or 0.0),
+            quantity=quantity,
+            entry_idx=int(position.entry_idx),
+            initial_stop_price=float(position.initial_sl_price or 0.0),
+            trail_style="overlay",
+            risk_regime="overlay",
+            regime_label=str(position.event_type),
+            time_based_trailing_enabled=False,
+            auto_tit_reason=None,
+            exit_idx=exit_idx,
+        )
+        engine.trades.append(trade)
+        engine.exit_reasons[reason] = int(engine.exit_reasons.get(reason, 0) or 0) + 1
+        engine.capital = live_total
+        action = StrategyAction(
+            type=ActionType.CLOSE_POSITION,
+            timestamp=timestamp,
+            direction=str(position.direction),
+            exit_price=exit_price,
+            reason=reason,
+            metadata={
+                "synthetic": True,
+                "source": "external_flat_sync",
+                "context": context,
+                "overlay_event_type": position.event_type,
+                "entry_idx": int(position.entry_idx),
+                "index": exit_idx,
+                "exit_idx": exit_idx,
+                "gross_pnl": gross_pnl,
+                "fees": fees,
+                "slippage_cost": slippage_cost,
+                "net_pnl": net_pnl,
+                "signal_exit_price": exit_price,
+                "capital_at_entry": capital_at_entry,
+                "live_total_usdt": live_total,
+                "rr_ratio": rr_ratio,
+                "pnl_pct": pnl_pct,
+            },
+        )
+        self.record_action(action)
+        self._shadow_gate_after_close(action, engine)
+        if not self._overlay_should_skip_dynamic_high_leverage(action):
+            self._dynamic_high_leverage_after_close(action, engine)
+        return action
+
+    def _sync_overlay_flat_position(
+        self,
+        engine: Any,
+        overlay_position: OverlayRuntimePosition,
+        *,
+        context: str,
+        timestamp: str | None = None,
+        exit_idx: int | None = None,
+    ) -> None:
+        if timestamp is None:
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        synthetic_action = self._record_external_overlay_flat_close(
+            engine,
+            overlay_position,
+            context=context,
+            timestamp=timestamp,
+            exit_idx=exit_idx,
+        )
+        payload = {
+            "context": context,
+            "direction": overlay_position.direction,
+            "previous_quantity": float(overlay_position.quantity or 0.0),
+            "overlay_event_type": overlay_position.event_type,
+            "message": "Exchange overlay position no longer exists; cleared local runtime state.",
+        }
+        self._clear_overlay_runtime_position(last_managed_idx=exit_idx)
+        self._clear_sota_overlay_open_candidate()
+        snapshot = self._save_engine_snapshot(engine)
+        payload["snapshot"] = snapshot
+        if synthetic_action is not None:
+            payload["synthetic_close_action"] = asdict(synthetic_action)
+        self.store.append_action(timestamp, "MANUAL_POSITION_SYNC", payload)
+        direction_label = "做多" if overlay_position.direction == "BULL" else "做空" if overlay_position.direction == "BEAR" else "-"
+        pnl_line = ""
+        if synthetic_action is not None and isinstance(synthetic_action.metadata, dict):
+            pnl = self._safe_float(synthetic_action.metadata.get("net_pnl"))
+            reason = synthetic_action.reason or "-"
+            pnl_line = f"估算PnL: {pnl:.2f}U / {reason}" if pnl is not None else ""
+        self._send_telegram(
+            "\n".join(
+                [
+                    "[Overlay平仓已同步]",
+                    f"标的: {self.config.symbol}",
+                    f"方向: {direction_label}",
+                    f"来源: {context}",
+                    "检测到交易所 overlay 仓位已被平掉，本地 runtime 状态已清空",
                     *([pnl_line] if pnl_line else []),
                     f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 ]
@@ -3865,10 +5676,19 @@ class OkxExecutionEngine:
         self.store.append_action(last_timestamp, "INITIALIZE", status)
         return status
 
-    def _assert_live_state_synced(self, engine: Any, *, context: str) -> None:
+    def _assert_live_state_synced(
+        self,
+        engine: Any,
+        *,
+        context: str,
+        timestamp: str | None = None,
+        exit_idx: int | None = None,
+    ) -> None:
         if self.config.mode != "live":
             return
-        local_position = getattr(engine, "position", None)
+        base_position = getattr(engine, "position", None)
+        overlay_position = self._load_overlay_runtime_position() if self._live_overlay_enabled() else None
+        local_position = base_position if base_position is not None else overlay_position
         local_has_position = local_position is not None
         long_state = self._fetch_position_state("long")
         short_state = self._fetch_position_state("short")
@@ -3890,7 +5710,16 @@ class OkxExecutionEngine:
                 )
         if local_has_position != exchange_has_position:
             if self.config.enable_manual_position_sync and local_has_position and not exchange_has_position:
-                self._sync_manual_flat_position(engine, context=context)
+                if overlay_position is not None and base_position is None:
+                    self._sync_overlay_flat_position(
+                        engine,
+                        overlay_position,
+                        context=context,
+                        timestamp=timestamp,
+                        exit_idx=exit_idx,
+                    )
+                else:
+                    self._sync_manual_flat_position(engine, context=context, timestamp=timestamp, exit_idx=exit_idx)
                 return
             raise ValueError(
                 f"Live state mismatch ({context}): local_position={local_has_position}, "
@@ -3905,20 +5734,21 @@ class OkxExecutionEngine:
             raise ValueError(
                 f"Live direction mismatch ({context}): local={expected_pos_side}, exchange={actual_pos_side}"
             )
-        pending_algo = self._select_pending_algo_order(expected_pos_side, local_position)
-        if self.config.enable_manual_position_sync and self._position_requires_manual_sync(
-            local_position,
-            exchange_state,
-            pending_algo,
-        ):
-            self._reconcile_manual_position(
-                engine,
-                exchange_state=exchange_state,
-                pos_side=expected_pos_side,
-                context=context,
-                pending_algo=pending_algo,
-            )
-            return
+        if overlay_position is None:
+            pending_algo = self._select_pending_algo_order(expected_pos_side, local_position)
+            if self.config.enable_manual_position_sync and self._position_requires_manual_sync(
+                local_position,
+                exchange_state,
+                pending_algo,
+            ):
+                self._reconcile_manual_position(
+                    engine,
+                    exchange_state=exchange_state,
+                    pos_side=expected_pos_side,
+                    context=context,
+                    pending_algo=pending_algo,
+                )
+                return
         local_base_amount = abs(float(getattr(local_position, "quantity", 0.0) or 0.0))
         exchange_base_amount = abs(float(exchange_state["base_amount_btc"] or 0.0))
         if local_base_amount > 0:

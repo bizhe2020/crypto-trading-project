@@ -17,7 +17,8 @@ from scripts.backtest_config_report import DEFAULT_DATA_15M, DEFAULT_DATA_4H, lo
 from scripts.high_leverage_repro_params import DEFAULT_PRESSURE_PARAMS_PATH, apply_pressure_params  # noqa: E402
 from scripts.live_readiness_report import load_prepared_data, max_drawdown_from_capitals, run_engine, trade_dataframe, trade_return_sharpe  # noqa: E402
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay  # noqa: E402
-from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS, replay_shadow_events  # noqa: E402
+from scripts.scan_shadow_on_fixed_high_leverage import replay_shadow_events  # noqa: E402
+from strategy.live_overlay_shared import FIXED_STRUCTURE_PARAMS, quality_snapshot, selected_by  # noqa: E402
 from strategy.sota_overlay_state import OverlayCandidate, replay_single_position_events  # noqa: E402
 
 
@@ -58,48 +59,6 @@ def event_timestamp(event: dict[str, Any], key: str) -> pd.Timestamp:
 
 def pct(value: float) -> float:
     return round(value * 100.0, 4)
-
-
-def quality_snapshot(event: dict[str, Any]) -> dict[str, Any]:
-    direction = str(event.get("direction") or "")
-    sign = 1.0 if direction == "BULL" else -1.0
-    momentum_pct = float(event.get("feature_momentum", 0.0) or 0.0) * 100.0 * sign
-    ema_gap_pct = float(event.get("feature_ema_gap", 0.0) or 0.0) * 100.0 * sign
-    adx = float(event.get("feature_adx", 0.0) or 0.0)
-    structure_ok = (
-        bool(event.get("feature_bullish_structure"))
-        if direction == "BULL"
-        else bool(event.get("feature_bearish_structure"))
-    )
-    checks = {
-        "momentum": momentum_pct >= float(FIXED_STRUCTURE_PARAMS["failed_breakout_guard_min_momentum_pct"]),
-        "ema_gap": ema_gap_pct >= float(FIXED_STRUCTURE_PARAMS["failed_breakout_guard_min_ema_gap_pct"]),
-        "adx": adx >= float(FIXED_STRUCTURE_PARAMS["failed_breakout_guard_min_adx"]),
-        "structure": structure_ok,
-    }
-    return {
-        "quality_score": sum(1 for passed in checks.values() if passed),
-        "directional_momentum_pct": round(momentum_pct, 6),
-        "directional_ema_gap_pct": round(ema_gap_pct, 6),
-        "adx": round(adx, 6),
-        "checks": checks,
-    }
-
-
-def selected_by(event: dict[str, Any], selector: str, max_quality_score: int) -> bool:
-    direction = str(event.get("direction") or "")
-    exit_reason = str(event.get("exit_reason") or "")
-    if selector != "guarded_weak_loss":
-        raise ValueError(f"Unsupported selector: {selector}")
-    return (
-        direction == "BULL"
-        and str(event.get("regime_label") or "") == "high_growth"
-        and str(event.get("risk_mode") or "") == "offense"
-        and exit_reason == "stop_loss"
-        and float(event.get("return", 0.0) or 0.0) < 0.0
-        and bool(event.get("failed_breakout_guard_applied"))
-        and int(quality_snapshot(event)["quality_score"]) <= max_quality_score
-    )
 
 
 def short_entry_for_event(event: dict[str, Any], candles: list[Any]) -> tuple[int, float, str] | None:
@@ -406,7 +365,7 @@ def add_combo_deltas(result: dict[str, Any], baseline: dict[str, Any]) -> dict[s
 
 
 def compact_combo_result(result: dict[str, Any], sample_trades: int) -> dict[str, Any]:
-    payload = {key: value for key, value in result.items() if key != "events"}
+    payload = dict(result)
     payload["sample_events"] = result.get("events", [])[:sample_trades]
     return payload
 
