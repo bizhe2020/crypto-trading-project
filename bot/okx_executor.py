@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import random
 import time
@@ -74,13 +75,16 @@ class ExecutorConfig:
     bull_weak_long_trail_style_override: str | None = None
     bear_weak_short_rr_ratio_override: float | None = None
     bear_weak_short_trail_style_override: str | None = None
+    enable_stage_trailing: bool = True
     enable_atr_trailing: bool = False
     atr_period: int = 14
     atr_activation_rr: float = 2.0
+    atr_activation_rr_mode: str = "close"
     atr_loose_multiplier: float = 2.7
     atr_normal_multiplier: float = 2.25
     atr_tight_multiplier: float = 1.8
     enable_time_based_trailing: bool = False
+    time_trailing_rr_mode: str = "close"
     T1: int = 15
     T2: int = 40
     T_max: int = 96
@@ -88,6 +92,7 @@ class ExecutorConfig:
     S1_trigger_rr: float = 1.0
     S3_trigger_rr: float = 3.0
     S4_close_rr: float = 0.5
+    stage_trigger_rr_mode: str = "close"
     enable_auto_time_based_trailing: bool = False
     auto_tit_mode: str = "health"
     auto_tit_drawdown_pct: float = 12.0
@@ -203,6 +208,7 @@ class ExecutorConfig:
     regime_switcher_flat_overrides: dict[str, Any] | None = None
     taker_fee_rate: float = 0.0005
     slippage_bps: float = 2.0
+    replay_sync_entry_to_signal_price: bool = False
     enable_exchange_brackets: bool = False
     exchange_trigger_price_type: str = "mark"
     enable_manual_position_sync: bool = True
@@ -220,6 +226,28 @@ class ExecutorConfig:
     telegram_drift_window_days: int = 30
     telegram_drift_recent_trades: int = 20
     telegram_drift_baseline_path: str = "config/live_drift_baseline.high_leverage.json"
+    enable_live_candidate_arbitration: bool = False
+    live_candidate_priority: list[str] | None = None
+    enable_stable_reverse_short_live: bool = False
+    stable_selector: str = "guarded_weak_loss"
+    stable_max_quality_score: int = 1
+    stable_target_rr: float = 2.75
+    stable_max_hold_bars: int = 40
+    stable_leverage: float = 5.0
+    stable_position_size_pct: float = 1.0
+    stable_stop_multiplier: float = 1.0
+    stable_max_short_stop_pct: float = 1.75
+    stable_trail_style: str = "tight"
+    enable_smc_short_live: bool = False
+    smc_case: str = "v2_medium_dispbody05_otherlag4_10x"
+    smc_target_rr: float = 2.0
+    smc_max_hold_bars: int = 40
+    smc_trail_style: str = "tight"
+    smc_leverage: float = 10.0
+    smc_position_size_pct: float = 1.0
+    smc_min_liq_buffer_pct: float = 1.2
+    smc_maintenance_margin_pct: float = 0.5
+    overlay_skip_dynamic_high_leverage: bool = True
     proxy: str | None = None
     api_key: str | None = None
     api_secret: str | None = None
@@ -274,13 +302,16 @@ class ExecutorConfig:
             bull_weak_long_trail_style_override=self.bull_weak_long_trail_style_override,
             bear_weak_short_rr_ratio_override=self.bear_weak_short_rr_ratio_override,
             bear_weak_short_trail_style_override=self.bear_weak_short_trail_style_override,
+            enable_stage_trailing=self.enable_stage_trailing,
             enable_atr_trailing=self.enable_atr_trailing,
             atr_period=self.atr_period,
             atr_activation_rr=self.atr_activation_rr,
+            atr_activation_rr_mode=self.atr_activation_rr_mode,
             atr_loose_multiplier=self.atr_loose_multiplier,
             atr_normal_multiplier=self.atr_normal_multiplier,
             atr_tight_multiplier=self.atr_tight_multiplier,
             enable_time_based_trailing=self.enable_time_based_trailing,
+            time_trailing_rr_mode=self.time_trailing_rr_mode,
             T1=self.T1,
             T2=self.T2,
             T_max=self.T_max,
@@ -288,6 +319,7 @@ class ExecutorConfig:
             S1_trigger_rr=self.S1_trigger_rr,
             S3_trigger_rr=self.S3_trigger_rr,
             S4_close_rr=self.S4_close_rr,
+            stage_trigger_rr_mode=self.stage_trigger_rr_mode,
             enable_auto_time_based_trailing=self.enable_auto_time_based_trailing,
             auto_tit_mode=self.auto_tit_mode,
             auto_tit_drawdown_pct=self.auto_tit_drawdown_pct,
@@ -352,6 +384,7 @@ class ExecutorConfig:
             regime_switcher_flat_overrides=self.regime_switcher_flat_overrides,
             taker_fee_rate=self.taker_fee_rate,
             slippage_bps=self.slippage_bps,
+            replay_sync_entry_to_signal_price=self.replay_sync_entry_to_signal_price,
         )
 
 class OkxExecutionEngine:
@@ -1576,7 +1609,12 @@ class OkxExecutionEngine:
             }
         if not self.store.get_value("last_processed_candle_time"):
             return self._initialize_without_replay(engine, latest_closed_idx)
-        self._assert_live_state_synced(engine, context="before_evaluate")
+        self._assert_live_state_synced(
+            engine,
+            context="before_evaluate",
+            timestamp=engine._timestamp_for_idx(latest_closed_idx),
+            exit_idx=latest_closed_idx,
+        )
         if latest_closed_idx < start_idx:
             snapshot = engine.snapshot()
             self.store.save_snapshot(snapshot)
@@ -1593,11 +1631,19 @@ class OkxExecutionEngine:
         # evaluate_range uses a right-open end index. Include latest_closed_idx;
         # otherwise live can mark a candle processed without evaluating it.
         actions = engine.evaluate_range(start_idx, latest_closed_idx + 1)
+        arbitration = None
+        if self._live_candidate_arbitration_enabled():
+            actions, arbitration = self._apply_live_candidate_arbitration(engine, actions, latest_closed_idx)
         execution_results = []
         for action in actions:
             result = self.execute_action(action, engine)
             execution_results.append({"action": asdict(action), "result": result})
-        self._assert_live_state_synced(engine, context="after_execute")
+        self._assert_live_state_synced(
+            engine,
+            context="after_execute",
+            timestamp=engine._timestamp_for_idx(latest_closed_idx),
+            exit_idx=latest_closed_idx,
+        )
 
         last_timestamp = engine._timestamp_for_idx(latest_closed_idx)
         snapshot = engine.snapshot()
@@ -1610,6 +1656,7 @@ class OkxExecutionEngine:
             "processed_candle_time": last_timestamp,
             "actions": [asdict(action) for action in actions],
             "execution_results": execution_results,
+            "live_candidate_arbitration": arbitration,
             "trade_count": snapshot.trade_count,
             "position_open": engine.position is not None,
             "snapshot": asdict(snapshot),
@@ -1617,6 +1664,613 @@ class OkxExecutionEngine:
         }
         self.store.append_action(last_timestamp, "EVALUATE", status)
         return status
+
+    def _live_candidate_arbitration_enabled(self) -> bool:
+        return bool(self.config.enable_live_candidate_arbitration)
+
+    def _live_candidate_priority(self) -> list[str]:
+        configured = self.config.live_candidate_priority
+        if configured is None:
+            return ["sota_long", "stable_reverse_short", "smc_short"]
+        if isinstance(configured, str):
+            return [item.strip() for item in configured.split(",") if item.strip()]
+        return [str(item) for item in configured if str(item)]
+
+    def _live_candidate_priority_value(self, event_type: str) -> int:
+        priority = {name: idx for idx, name in enumerate(self._live_candidate_priority())}
+        return priority.get(str(event_type), 99)
+
+    def _candidate_seen_state(self) -> dict[str, Any]:
+        raw = self.store.get_value("live_candidate_seen")
+        if not raw:
+            return {"keys": []}
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"keys": []}
+        keys = state.get("keys") if isinstance(state, dict) else []
+        return {"keys": [str(item) for item in keys[-500:]] if isinstance(keys, list) else []}
+
+    def _candidate_seen(self, key: str) -> bool:
+        return key in set(self._candidate_seen_state()["keys"])
+
+    def _mark_candidate_seen(self, key: str) -> None:
+        state = self._candidate_seen_state()
+        keys = [item for item in state["keys"] if item != key]
+        keys.append(key)
+        self.store.set_value("live_candidate_seen", json.dumps({"keys": keys[-500:]}, ensure_ascii=False))
+
+    def _open_action_event_type(self, action: StrategyAction) -> str:
+        metadata = action.metadata or {}
+        return str(metadata.get("candidate_event_type") or "sota_long")
+
+    def _is_overlay_open_action(self, action: StrategyAction) -> bool:
+        return self._open_action_event_type(action) in {"stable_reverse_short", "smc_short"}
+
+    def _is_stop_loss_reason(self, reason: str | None) -> bool:
+        return str(reason or "") in {"stop_loss", "external_stop_loss"}
+
+    def _action_candidate_summary(self, action: StrategyAction, event_type: str | None = None) -> dict[str, Any]:
+        metadata = action.metadata or {}
+        return {
+            "event_type": event_type or self._open_action_event_type(action),
+            "timestamp": action.timestamp,
+            "direction": action.direction,
+            "entry_price": action.entry_price,
+            "stop_price": action.stop_price,
+            "target_price": action.target_price,
+            "source": metadata.get("source"),
+            "source_key": metadata.get("source_key"),
+            "entry_idx": metadata.get("index"),
+        }
+
+    def _stable_quality_thresholds(self) -> dict[str, float]:
+        try:
+            from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS
+
+            return {
+                "momentum": float(FIXED_STRUCTURE_PARAMS["failed_breakout_guard_min_momentum_pct"]),
+                "ema_gap": float(FIXED_STRUCTURE_PARAMS["failed_breakout_guard_min_ema_gap_pct"]),
+                "adx": float(FIXED_STRUCTURE_PARAMS["failed_breakout_guard_min_adx"]),
+                "min_quality_score": float(FIXED_STRUCTURE_PARAMS["failed_breakout_guard_min_quality_score"]),
+            }
+        except Exception:
+            return {
+                "momentum": 6.0,
+                "ema_gap": 2.0,
+                "adx": 38.0,
+                "min_quality_score": 2.0,
+            }
+
+    def _quality_snapshot_from_features(self, direction: str, features: dict[str, Any]) -> dict[str, Any]:
+        sign = 1.0 if direction == Direction.BULL else -1.0
+        momentum_pct = float(features.get("feature_momentum", 0.0) or 0.0) * 100.0 * sign
+        ema_gap_pct = float(features.get("feature_ema_gap", 0.0) or 0.0) * 100.0 * sign
+        adx = float(features.get("feature_adx", 0.0) or 0.0)
+        thresholds = self._stable_quality_thresholds()
+        structure_ok = (
+            bool(features.get("feature_bullish_structure"))
+            if direction == Direction.BULL
+            else bool(features.get("feature_bearish_structure"))
+        )
+        checks = {
+            "momentum": momentum_pct >= thresholds["momentum"],
+            "ema_gap": ema_gap_pct >= thresholds["ema_gap"],
+            "adx": adx >= thresholds["adx"],
+            "structure": structure_ok,
+        }
+        return {
+            "quality_score": sum(1 for passed in checks.values() if passed),
+            "checks": checks,
+            "thresholds": thresholds,
+        }
+
+    def _stable_guard_would_apply(self, source: dict[str, Any]) -> bool:
+        if str(source.get("direction") or "") != Direction.BULL:
+            return False
+        if str(source.get("regime_label") or "") != "high_growth":
+            return False
+        if str(source.get("risk_mode") or "") != "offense":
+            return False
+        effective_leverage = self._safe_float(source.get("effective_leverage"))
+        if effective_leverage is None or effective_leverage < 7.5:
+            return False
+        quality = self._quality_snapshot_from_features(Direction.BULL, source)
+        return int(quality["quality_score"]) < int(quality["thresholds"]["min_quality_score"])
+
+    def _stable_source_event_from_trade(self, trade: Trade, close_action: StrategyAction | None = None) -> dict[str, Any]:
+        diagnostics = trade.execution_guard_diagnostics if isinstance(trade.execution_guard_diagnostics, dict) else {}
+        leverage_reasons = trade.execution_leverage_reasons if isinstance(trade.execution_leverage_reasons, list) else []
+        features = {
+            "feature_momentum": diagnostics.get("feature_momentum", 0.0),
+            "feature_ema_gap": diagnostics.get("feature_ema_gap", 0.0),
+            "feature_adx": diagnostics.get("feature_adx", 0.0),
+            "feature_bullish_structure": diagnostics.get("feature_bullish_structure", False),
+            "feature_bearish_structure": diagnostics.get("feature_bearish_structure", False),
+        }
+        return {
+            "direction": trade.direction,
+            "entry_time": trade.entry_time,
+            "exit_time": trade.exit_time,
+            "entry_idx": trade.entry_idx,
+            "exit_idx": (close_action.metadata or {}).get("index") if close_action is not None and close_action.metadata else trade.exit_idx,
+            "entry_price": trade.entry_price,
+            "exit_price": close_action.exit_price if close_action is not None and close_action.exit_price else trade.exit_price,
+            "initial_stop_price": trade.initial_stop_price,
+            "exit_reason": "stop_loss" if self._is_stop_loss_reason(trade.exit_reason) else trade.exit_reason,
+            "return": trade.pnl_pct,
+            "regime_label": trade.regime_label,
+            "risk_mode": trade.execution_risk_mode or trade.risk_regime,
+            "effective_leverage": trade.execution_effective_leverage or (
+                (float(trade.notional) / float(trade.capital_at_entry))
+                if trade.notional is not None and trade.capital_at_entry > 0
+                else None
+            ),
+            "failed_breakout_guard_applied": any(str(item).startswith("failed_breakout_guard") for item in leverage_reasons),
+            "time_based_trailing_enabled": bool(trade.time_based_trailing_enabled),
+            "auto_tit_reason": trade.auto_tit_reason,
+            "pressure_target_applied": bool(trade.pressure_target_applied),
+            "pressure_touch_lock_applied": bool(trade.pressure_touch_lock_applied),
+            "last_stop_update_reason": trade.last_stop_update_reason,
+            "last_stop_update_idx": trade.last_stop_update_idx,
+            "final_stop_price": trade.final_stop_price,
+            **features,
+        }
+
+    def _stable_selector_allows(self, source: dict[str, Any]) -> bool:
+        selector = str(self.config.stable_selector or "guarded_weak_loss")
+        direction = str(source.get("direction") or "")
+        exit_reason = str(source.get("exit_reason") or "")
+        return_value = float(source.get("return", 0.0) or 0.0)
+        stop_update_reason = str(source.get("last_stop_update_reason") or "")
+        time_based_trailing_enabled = bool(source.get("time_based_trailing_enabled"))
+        pressure_target_applied = bool(source.get("pressure_target_applied"))
+        pressure_touch_lock_applied = bool(source.get("pressure_touch_lock_applied"))
+        if selector in {"all_long_stop_loss_loss", "bull_stop_loss_loss"}:
+            return direction == Direction.BULL and exit_reason == "stop_loss" and return_value < 0.0
+        if selector in {
+            "trailing_stop_profit_reverse",
+            "trailing_stage_profit_reverse",
+            "trailing_atr_profit_reverse",
+            "trailing_pressure_profit_reverse",
+            "trailing_pressure_touch_lock_profit_reverse",
+            "trailing_time_enabled_profit_reverse",
+            "plain_stop_profit_reverse",
+        }:
+            base = (
+                direction == Direction.BULL
+                and exit_reason == "stop_loss"
+                and return_value > 0.0
+                and str(source.get("regime_label") or "") == "high_growth"
+                and str(source.get("risk_mode") or "") == "offense"
+            )
+            if not base:
+                return False
+            if selector == "trailing_stop_profit_reverse":
+                return True
+            if selector == "trailing_stage_profit_reverse":
+                return stop_update_reason.startswith("trail_stage_")
+            if selector == "trailing_atr_profit_reverse":
+                return stop_update_reason == "atr_trail"
+            if selector == "trailing_pressure_profit_reverse":
+                return stop_update_reason == "pressure_level_trail" or pressure_target_applied or pressure_touch_lock_applied
+            if selector == "trailing_pressure_touch_lock_profit_reverse":
+                return pressure_touch_lock_applied
+            if selector == "trailing_time_enabled_profit_reverse":
+                return time_based_trailing_enabled
+            if selector == "plain_stop_profit_reverse":
+                return not stop_update_reason
+        if selector == "bull_high_growth_offense_loss":
+            return (
+                direction == Direction.BULL
+                and str(source.get("regime_label") or "") == "high_growth"
+                and str(source.get("risk_mode") or "") == "offense"
+                and exit_reason == "stop_loss"
+                and return_value < 0.0
+            )
+        if not (
+            direction == Direction.BULL
+            and str(source.get("regime_label") or "") == "high_growth"
+            and str(source.get("risk_mode") or "") == "offense"
+        ):
+            return False
+        quality = self._quality_snapshot_from_features(direction, source)
+        guarded = bool(source.get("failed_breakout_guard_applied")) or self._stable_guard_would_apply(source)
+        weak_quality = int(quality["quality_score"]) <= int(self.config.stable_max_quality_score)
+        if selector == "guarded_weak":
+            return guarded
+        if selector == "guarded_weak_loss":
+            return guarded and return_value < 0.0
+        if selector == "weak_quality":
+            return weak_quality
+        if selector == "weak_quality_loss":
+            return weak_quality and return_value < 0.0
+        if selector == "weak_or_guarded":
+            return weak_quality or guarded
+        if selector == "weak_or_guarded_loss":
+            return (weak_quality or guarded) and return_value < 0.0
+        if selector == "all_high_growth_offense":
+            return True
+        if selector == "actual_loss_oracle":
+            return return_value < 0.0
+        return False
+
+    def _stable_reverse_short_candidate(
+        self,
+        engine: Any,
+        close_action: StrategyAction | None,
+        latest_closed_idx: int,
+    ) -> dict[str, Any] | None:
+        if not bool(self.config.enable_stable_reverse_short_live):
+            return None
+        if not getattr(engine, "trades", None):
+            return None
+        trade = engine.trades[-1]
+        if trade.direction != Direction.BULL or not self._is_stop_loss_reason(trade.exit_reason):
+            return None
+        source = self._stable_source_event_from_trade(trade, close_action)
+        source_key = "|".join(
+            [
+                "stable",
+                str(source.get("entry_time") or ""),
+                str(source.get("exit_time") or ""),
+                str(source.get("exit_price") or ""),
+            ]
+        )
+        if self._candidate_seen(source_key):
+            return None
+        if not self._stable_selector_allows(source):
+            self._mark_candidate_seen(source_key)
+            return None
+        entry_price = float(source.get("exit_price", 0.0) or 0.0)
+        source_entry = float(source.get("entry_price", 0.0) or 0.0)
+        source_stop = float(source.get("initial_stop_price", 0.0) or 0.0)
+        if entry_price <= 0 or source_entry <= 0 or source_stop <= 0:
+            self._mark_candidate_seen(source_key)
+            return None
+        source_stop_pct = abs(source_entry - source_stop) / source_entry
+        stop_pct = source_stop_pct * float(self.config.stable_stop_multiplier)
+        if stop_pct <= 0 or stop_pct * 100.0 > float(self.config.stable_max_short_stop_pct):
+            self._mark_candidate_seen(source_key)
+            return None
+        stop_price = entry_price * (1.0 + stop_pct)
+        target_price = entry_price * (1.0 - stop_pct * float(self.config.stable_target_rr))
+        if target_price <= 0 or stop_price <= entry_price:
+            self._mark_candidate_seen(source_key)
+            return None
+        leverage = float(self.config.stable_leverage)
+        position_size_pct = float(self.config.stable_position_size_pct)
+        notional = max(float(getattr(engine, "capital", 0.0) or 0.0), 0.0) * leverage * position_size_pct
+        return {
+            "event_type": "stable_reverse_short",
+            "source_key": source_key,
+            "entry_idx": latest_closed_idx,
+            "direction": Direction.BEAR,
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "target_rr": float(self.config.stable_target_rr),
+            "max_hold_bars": int(self.config.stable_max_hold_bars),
+            "trail_style": str(self.config.stable_trail_style or "tight"),
+            "leverage": leverage,
+            "position_size_pct": position_size_pct,
+            "maintenance_margin_pct": float(self.config.high_leverage_maintenance_margin_pct),
+            "requested_notional": notional,
+            "source": source,
+        }
+
+    def _smc_case_params(self) -> dict[str, Any]:
+        try:
+            from scripts.research_stable_reverse_short_plus_smc_short import SMC_CASES
+
+            if str(self.config.smc_case) in SMC_CASES:
+                return dict(SMC_CASES[str(self.config.smc_case)])
+        except Exception:
+            pass
+        return {
+            "target_rr": float(self.config.smc_target_rr),
+            "allowed_time_buckets": "other+asia_evening_ny+ny_am_killzone",
+            "swing_n": 2,
+            "min_body_atr": 0.7,
+            "min_range_atr": 1.1,
+            "entry_lookahead_bars": 40,
+            "max_open_positions": 1,
+            "max_mss_lag_bars": 15,
+            "min_displacement_body_atr": 0.5,
+            "other_min_mss_lag_bars": 4,
+        }
+
+    def _smc_strategy_args(self) -> argparse.Namespace:
+        defaults = {
+            "data_15m": "",
+            "data_4h": "",
+            "start_date": "1970-01-01",
+            "target_rr": float(self.config.smc_target_rr),
+            "allowed_time_buckets": "other",
+            "swing_n": 3,
+            "min_body_atr": 0.7,
+            "min_range_atr": 1.1,
+            "entry_lookahead_bars": 40,
+            "max_open_positions": 1,
+            "min_displacement_body_atr": 0.0,
+            "min_displacement_range_atr": 0.0,
+            "max_mss_lag_bars": 15,
+        }
+        merged = defaults | self._smc_case_params()
+        merged["target_rr"] = float(self.config.smc_target_rr)
+        try:
+            from scripts.reproduce_smc_short_only_v1_10x import strategy_args as smc_short_v1_strategy_args
+
+            return smc_short_v1_strategy_args(argparse.Namespace(**merged))
+        except Exception:
+            merged.update(
+                {
+                    "swing_lookback": 80,
+                    "liquidity_lookback_bars": 192,
+                    "mss_lookahead_bars": 24,
+                    "fvg_lookback_bars": 8,
+                    "outcome_lookahead_bars": 0,
+                    "atr_period": 14,
+                    "stop_buffer_atr": 0.05,
+                    "require_confirmed_retest": True,
+                    "require_fvg_touch": False,
+                    "allow_ote_only": True,
+                    "require_htf_bias_align": True,
+                    "require_h4_bias_align": True,
+                    "require_d1_bias_align": False,
+                    "allowed_directions": "BEAR",
+                    "require_ote_touch": False,
+                    "bull_min_displacement_body_atr": 0.0,
+                    "bull_max_displacement_body_atr": 0.0,
+                    "bull_min_displacement_range_atr": 0.0,
+                    "bull_max_displacement_range_atr": 0.0,
+                    "min_fvg_size_pct": 0.0,
+                    "max_fvg_fill_pct": 0.0,
+                    "bear_min_sweep_distance_pct": 0.0,
+                    "bear_require_fvg_touch": False,
+                    "bear_min_fvg_size_pct": 0.0,
+                }
+            )
+            return argparse.Namespace(**merged)
+
+    def _smc_event_allowed(self, engine: Any, event: Any, latest_closed_idx: int, smc_args: argparse.Namespace) -> bool:
+        retest = getattr(event, "retest", None)
+        if retest is None or int(getattr(retest, "idx", -1)) != int(latest_closed_idx):
+            return False
+        if str(getattr(event, "direction", "")) != Direction.BEAR:
+            return False
+        if bool(getattr(smc_args, "require_confirmed_retest", True)) and not bool(getattr(retest, "confirmed", False)):
+            return False
+        if bool(getattr(smc_args, "require_fvg_touch", False)) and not bool(getattr(retest, "fvg_touched", False)):
+            return False
+        if not bool(getattr(smc_args, "allow_ote_only", True)) and not bool(getattr(retest, "fvg_touched", False)):
+            return False
+        try:
+            from scripts.research_smc_standalone_v1 import allowed_bucket, allowed_direction, htf_structure_bias
+            from scripts.report_pa_ict_liquidity_features import time_bucket
+            from scripts.report_smc_trade_context import completed_4h_idx_for_entry, completed_d1_idx_for_entry, daily_candles_from_4h
+            from strategy.scalp_robust_v2_core import precompute_swings
+        except Exception:
+            return False
+
+        bucket, _ = time_bucket(engine.c15m[latest_closed_idx].ts)
+        if not allowed_bucket(bucket, str(getattr(smc_args, "allowed_time_buckets", "all"))):
+            return False
+        if not allowed_direction(Direction.BEAR, str(getattr(smc_args, "allowed_directions", "all"))):
+            return False
+        daily = daily_candles_from_4h(engine.c4h)
+        daily_ts = [candle.ts for candle in daily]
+        h4_highs, h4_lows = precompute_swings(engine.c4h, n=2, lookback=80)
+        d1_highs, d1_lows = precompute_swings(daily, n=2, lookback=20)
+        h4_idx = completed_4h_idx_for_entry(engine.mapping, latest_closed_idx)
+        d1_idx = completed_d1_idx_for_entry(daily_ts, engine.c15m[latest_closed_idx].ts)
+        h4_bias = htf_structure_bias(engine.c4h, h4_highs, h4_lows, h4_idx) if h4_idx >= 0 else Direction.NONE
+        d1_bias = htf_structure_bias(daily, d1_highs, d1_lows, d1_idx) if d1_idx >= 0 else Direction.NONE
+        if bool(getattr(smc_args, "require_h4_bias_align", True)) and bool(getattr(smc_args, "require_htf_bias_align", True)) and h4_bias != Direction.BEAR:
+            return False
+        if bool(getattr(smc_args, "require_d1_bias_align", False)) and bool(getattr(smc_args, "require_htf_bias_align", True)) and d1_bias != Direction.BEAR:
+            return False
+        if bool(getattr(smc_args, "require_ote_touch", False)) and not bool(getattr(retest, "ote_touched", False)):
+            return False
+        if float(getattr(event, "displacement_body_atr", 0.0) or 0.0) < float(getattr(smc_args, "min_displacement_body_atr", 0.0)):
+            return False
+        if float(getattr(event, "displacement_range_atr", 0.0) or 0.0) < float(getattr(smc_args, "min_displacement_range_atr", 0.0)):
+            return False
+        lag = (int(event.mss_idx) - int(event.sweep_idx)) if getattr(event, "mss_idx", None) is not None else None
+        max_lag = int(getattr(smc_args, "max_mss_lag_bars", 0) or 0)
+        if max_lag > 0 and lag is not None and lag > max_lag:
+            return False
+        other_floor = int(self._smc_case_params().get("other_min_mss_lag_bars", 0) or 0)
+        if other_floor > 0 and bucket == "other" and lag is not None and lag < other_floor:
+            return False
+        if float(getattr(smc_args, "bear_min_sweep_distance_pct", 0.0) or 0.0) > 0.0:
+            if float(getattr(event, "sweep_distance_pct", 0.0) or 0.0) < float(getattr(smc_args, "bear_min_sweep_distance_pct", 0.0)):
+                return False
+        return True
+
+    def _smc_short_candidate(self, engine: Any, latest_closed_idx: int) -> dict[str, Any] | None:
+        if not bool(self.config.enable_smc_short_live):
+            return None
+        try:
+            from scripts.report_pa_ict_liquidity_features import atr_series, scan_events
+            from scripts.research_smc_standalone_v1 import build_event_scan_args
+        except Exception:
+            return None
+        smc_args = self._smc_strategy_args()
+        scan_args = build_event_scan_args(smc_args)
+        scan_args.allow_incomplete_tail = True
+        scan_args.outcome_lookahead_bars = 0
+        events = scan_events(engine.c15m[: latest_closed_idx + 1], scan_args)
+        matches = [event for event in events if self._smc_event_allowed(engine, event, latest_closed_idx, smc_args)]
+        if not matches:
+            return None
+        event = sorted(matches, key=lambda item: int(item.sweep_idx), reverse=True)[0]
+        retest = event.retest
+        if retest is None:
+            return None
+        source_key = f"smc|{self.config.smc_case}|{retest.timestamp}|{event.sweep_idx}|{event.mss_idx}"
+        if self._candidate_seen(source_key):
+            return None
+        atr = atr_series(engine.c15m[: latest_closed_idx + 1], int(getattr(smc_args, "atr_period", 14)))
+        entry_price = float(retest.close)
+        stop_buffer = atr[latest_closed_idx] * float(getattr(smc_args, "stop_buffer_atr", 0.05)) if latest_closed_idx < len(atr) else 0.0
+        stop_price = float(event.sweep_extreme) + stop_buffer
+        risk = stop_price - entry_price
+        if entry_price <= 0 or risk <= 0:
+            self._mark_candidate_seen(source_key)
+            return None
+        target_rr = float(self.config.smc_target_rr)
+        target_price = entry_price - risk * target_rr
+        if target_price <= 0:
+            self._mark_candidate_seen(source_key)
+            return None
+        leverage = float(self.config.smc_leverage)
+        position_size_pct = float(self.config.smc_position_size_pct)
+        notional = max(float(getattr(engine, "capital", 0.0) or 0.0), 0.0) * leverage * position_size_pct
+        maintenance = max(float(self.config.smc_maintenance_margin_pct), 0.0) / 100.0
+        liquidation_price = entry_price * (1.0 + (1.0 / max(leverage, 1e-9)) - maintenance)
+        liquidation_buffer_pct = (liquidation_price - stop_price) / entry_price * 100.0
+        if liquidation_buffer_pct < float(self.config.smc_min_liq_buffer_pct):
+            self._mark_candidate_seen(source_key)
+            return None
+        return {
+            "event_type": "smc_short",
+            "source_key": source_key,
+            "entry_idx": latest_closed_idx,
+            "direction": Direction.BEAR,
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "target_rr": target_rr,
+            "max_hold_bars": int(self.config.smc_max_hold_bars),
+            "trail_style": str(self.config.smc_trail_style or "tight"),
+            "leverage": leverage,
+            "position_size_pct": position_size_pct,
+            "maintenance_margin_pct": float(self.config.smc_maintenance_margin_pct),
+            "requested_notional": notional,
+            "source": {
+                "smc_case": self.config.smc_case,
+                "sweep_idx": event.sweep_idx,
+                "sweep_time": event.sweep_time,
+                "mss_idx": event.mss_idx,
+                "mss_time": event.mss_time,
+                "time_bucket": event.time_bucket,
+                "mss_lag_bars": (int(event.mss_idx) - int(event.sweep_idx)) if event.mss_idx is not None else None,
+                "liquidation_buffer_pct": liquidation_buffer_pct,
+            },
+        }
+
+    def _open_overlay_candidate(self, engine: Any, candidate: dict[str, Any]) -> StrategyAction:
+        action = engine.open_position(
+            int(candidate["entry_idx"]),
+            str(candidate["direction"]),
+            float(candidate["entry_price"]),
+            float(candidate["stop_price"]),
+            float(candidate["target_price"]),
+            target_rr_override=float(candidate["target_rr"]),
+            max_hold_bars_override=int(candidate["max_hold_bars"]),
+            trail_style_override=str(candidate["trail_style"]),
+            candidate_event_type=str(candidate["event_type"]),
+            requested_notional_override=float(candidate.get("requested_notional", 0.0) or 0.0),
+        )
+        metadata = dict(action.metadata or {})
+        metadata.update(
+            {
+                "candidate_event_type": candidate["event_type"],
+                "source": "live_candidate_arbitration",
+                "source_key": candidate.get("source_key"),
+                "candidate_source": candidate.get("source"),
+                "candidate_leverage": candidate.get("leverage"),
+                "candidate_position_size_pct": candidate.get("position_size_pct"),
+                "candidate_maintenance_margin_pct": candidate.get("maintenance_margin_pct"),
+            }
+        )
+        action.metadata = metadata
+        return action
+
+    def _apply_live_candidate_arbitration(
+        self,
+        engine: Any,
+        actions: list[StrategyAction],
+        latest_closed_idx: int,
+    ) -> tuple[list[StrategyAction], dict[str, Any]]:
+        open_actions = [action for action in actions if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}]
+        close_actions = [action for action in actions if action.type == ActionType.CLOSE_POSITION]
+        candidates: list[dict[str, Any]] = []
+        for action in open_actions:
+            event_type = self._open_action_event_type(action)
+            metadata = dict(action.metadata or {})
+            metadata.setdefault("candidate_event_type", event_type)
+            action.metadata = metadata
+            candidates.append(
+                {
+                    "event_type": event_type,
+                    "source_key": f"{event_type}|{action.timestamp}|{action.direction}|{action.entry_price}",
+                    "entry_idx": int(metadata.get("index", latest_closed_idx) or latest_closed_idx),
+                    "action": action,
+                }
+            )
+
+        stop_close = next((action for action in reversed(close_actions) if self._is_stop_loss_reason(action.reason)), None)
+        stable_candidate = self._stable_reverse_short_candidate(engine, stop_close, latest_closed_idx)
+        if stable_candidate is not None:
+            candidates.append(stable_candidate)
+        smc_candidate = self._smc_short_candidate(engine, latest_closed_idx)
+        if smc_candidate is not None:
+            candidates.append(smc_candidate)
+
+        if not candidates:
+            return actions, {"enabled": True, "decision": "no_candidates", "candidates": []}
+
+        candidates.sort(
+            key=lambda item: (
+                int(item.get("entry_idx", latest_closed_idx) or latest_closed_idx),
+                self._live_candidate_priority_value(str(item["event_type"])),
+            )
+        )
+        selected = candidates[0]
+        selected_event_type = str(selected["event_type"])
+        rejected = [item for item in candidates[1:]]
+        for item in candidates:
+            source_key = item.get("source_key")
+            if source_key:
+                self._mark_candidate_seen(str(source_key))
+
+        output_actions = [action for action in actions if action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}]
+        if "action" in selected:
+            selected_action = selected["action"]
+        else:
+            if getattr(engine, "position", None) is not None and open_actions:
+                local_entry_times = {action.timestamp for action in open_actions}
+                if getattr(engine.position, "entry_time", None) in local_entry_times:
+                    engine.position = None
+            selected_action = self._open_overlay_candidate(engine, selected)
+        output_actions.append(selected_action)
+
+        decision = {
+            "enabled": True,
+            "decision": "accepted",
+            "selected": self._action_candidate_summary(selected_action, selected_event_type),
+            "rejected": [
+                self._action_candidate_summary(item["action"], str(item["event_type"]))
+                if "action" in item
+                else {
+                    "event_type": item.get("event_type"),
+                    "source_key": item.get("source_key"),
+                    "entry_idx": item.get("entry_idx"),
+                    "direction": item.get("direction"),
+                    "entry_price": item.get("entry_price"),
+                    "stop_price": item.get("stop_price"),
+                    "target_price": item.get("target_price"),
+                }
+                for item in rejected
+            ],
+            "priority": self._live_candidate_priority(),
+        }
+        if any(item.get("event_type") == "sota_long" for item in rejected) and selected_event_type == "stable_reverse_short":
+            decision["paper_tag"] = "stable_preempted_sota"
+        self.store.append_action(selected_action.timestamp, "LIVE_CANDIDATE_ARBITRATION", decision)
+        return output_actions, decision
 
     def run_loop(self, poll_interval_seconds: int = 5, close_buffer_seconds: int = 5) -> None:
         bootstrap_status = self.bootstrap()
@@ -1704,9 +2358,14 @@ class OkxExecutionEngine:
         sizing = self._resolve_order_sizing(action, engine)
         if sizing.get("status") != "ok":
             return sizing
-        sizing, dynamic_decision = self._dynamic_high_leverage_pre_open(action, sizing, engine)
-        if dynamic_decision is not None:
-            return dynamic_decision
+        overlay_skipped_dynamic = False
+        if not (self._is_overlay_open_action(action) and bool(self.config.overlay_skip_dynamic_high_leverage)):
+            sizing, dynamic_decision = self._dynamic_high_leverage_pre_open(action, sizing, engine)
+            if dynamic_decision is not None:
+                return dynamic_decision
+        else:
+            overlay_skipped_dynamic = True
+            self._apply_overlay_execution_metadata(engine, action, sizing)
         high_leverage_decision = self._high_leverage_guard_pre_open(action, sizing)
         if high_leverage_decision is not None:
             return high_leverage_decision
@@ -1727,6 +2386,7 @@ class OkxExecutionEngine:
                 "balance_source": sizing.get("balance_source"),
                 "position_size_pct": self.config.position_size_pct,
                 "dynamic_high_leverage": sizing.get("dynamic_high_leverage"),
+                "overlay_skipped_dynamic_high_leverage": overlay_skipped_dynamic,
             }
 
         if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
@@ -2046,8 +2706,12 @@ class OkxExecutionEngine:
     def _high_leverage_open_diagnostics(self, action: StrategyAction, sizing: dict[str, Any]) -> dict[str, Any]:
         entry_price = float(action.entry_price or 0.0)
         stop_price = float(action.stop_price or 0.0)
-        leverage = float(self.config.leverage)
-        maintenance_margin_pct = max(float(self.config.high_leverage_maintenance_margin_pct), 0.0) / 100.0
+        metadata = action.metadata or {}
+        leverage = self._safe_float(metadata.get("candidate_leverage")) or float(self.config.leverage)
+        maintenance_margin_pct_raw = self._safe_float(metadata.get("candidate_maintenance_margin_pct"))
+        if maintenance_margin_pct_raw is None:
+            maintenance_margin_pct_raw = float(self.config.high_leverage_maintenance_margin_pct)
+        maintenance_margin_pct = max(maintenance_margin_pct_raw, 0.0) / 100.0
         stop_distance_pct = (
             abs(entry_price - stop_price) / entry_price * 100.0
             if entry_price > 0 and stop_price > 0
@@ -2062,7 +2726,6 @@ class OkxExecutionEngine:
             else:
                 liquidation_price = entry_price * (1.0 + (1.0 / leverage) - maintenance_margin_pct)
                 liquidation_buffer_pct = (liquidation_price - stop_price) / entry_price * 100.0
-        metadata = action.metadata or {}
         available_usdt = float(
             sizing.get("available_usdt", 0.0)
             or metadata.get("available_usdt", 0.0)
@@ -2088,7 +2751,7 @@ class OkxExecutionEngine:
             "min_liquidation_buffer_pct": round(float(self.config.high_leverage_min_liquidation_buffer_pct), 6),
             "max_stop_distance_pct": round(float(self.config.high_leverage_max_stop_distance_pct), 6),
             "max_account_effective_leverage": round(float(self.config.high_leverage_max_account_effective_leverage), 6),
-            "maintenance_margin_pct": round(float(self.config.high_leverage_maintenance_margin_pct), 6),
+            "maintenance_margin_pct": round(maintenance_margin_pct_raw, 6),
         }
 
     def _high_leverage_guard_failures(self, diagnostics: dict[str, Any]) -> list[str]:
@@ -2666,6 +3329,37 @@ class OkxExecutionEngine:
         )
         return adjusted, None
 
+    def _apply_overlay_execution_metadata(
+        self,
+        engine: Any,
+        action: StrategyAction,
+        sizing: dict[str, Any],
+    ) -> None:
+        position = getattr(engine, "position", None)
+        if position is None:
+            return
+        metadata = action.metadata or {}
+        requested_notional = (
+            self._safe_float(sizing.get("notional_usdt"))
+            or self._safe_float(metadata.get("notional"))
+            or self._safe_float(metadata.get("requested_notional_override"))
+        )
+        leverage = self._safe_float(metadata.get("candidate_leverage"))
+        if leverage is None:
+            capital_at_entry = self._safe_float(metadata.get("capital_at_entry")) or self._safe_float(getattr(position, "capital_at_entry", None))
+            leverage = (
+                requested_notional / capital_at_entry
+                if requested_notional is not None and capital_at_entry and capital_at_entry > 0
+                else None
+            )
+        diagnostics = self._high_leverage_open_diagnostics(action, sizing)
+        setattr(position, "execution_effective_leverage", round(leverage, 6) if leverage is not None else None)
+        setattr(position, "execution_risk_mode", "overlay_fixed")
+        setattr(position, "execution_leverage_reasons", [f"overlay_fixed:{self._open_action_event_type(action)}"])
+        setattr(position, "execution_requested_notional", requested_notional)
+        setattr(position, "execution_target_notional", requested_notional)
+        setattr(position, "execution_guard_diagnostics", diagnostics)
+
     def _dynamic_high_leverage_after_close(self, action: StrategyAction, engine: Any) -> None:
         if not self._dynamic_high_leverage_enabled() or action.type != ActionType.CLOSE_POSITION:
             return
@@ -3147,6 +3841,7 @@ class OkxExecutionEngine:
         *,
         context: str,
         timestamp: str,
+        exit_idx: int | None = None,
     ) -> StrategyAction | None:
         quantity = abs(float(getattr(position, "quantity", 0.0) or 0.0))
         capital_at_entry = float(getattr(position, "capital_at_entry", 0.0) or 0.0)
@@ -3183,9 +3878,16 @@ class OkxExecutionEngine:
             trail_style=getattr(position, "trail_style", None),
             risk_regime=getattr(position, "risk_regime", None),
             regime_label=getattr(position, "regime_label", None),
+            candidate_event_type=getattr(position, "candidate_event_type", None),
+            execution_effective_leverage=self._safe_float(getattr(position, "execution_effective_leverage", None)),
+            execution_risk_mode=getattr(position, "execution_risk_mode", None),
+            execution_leverage_reasons=getattr(position, "execution_leverage_reasons", None),
+            execution_requested_notional=self._safe_float(getattr(position, "execution_requested_notional", None)),
+            execution_target_notional=self._safe_float(getattr(position, "execution_target_notional", None)),
+            execution_guard_diagnostics=getattr(position, "execution_guard_diagnostics", None),
             time_based_trailing_enabled=bool(getattr(position, "time_based_trailing_enabled", False)),
             auto_tit_reason=getattr(position, "auto_tit_reason", None),
-            exit_idx=None,
+            exit_idx=exit_idx,
             pressure_target_applied=bool(getattr(position, "pressure_target_applied", False)),
             pressure_target_source=getattr(position, "pressure_target_source", None),
             pressure_target_level=self._safe_float(getattr(position, "pressure_target_level", None)),
@@ -3198,6 +3900,9 @@ class OkxExecutionEngine:
             pressure_touch_lock_level=self._safe_float(getattr(position, "pressure_touch_lock_level", None)),
             pressure_touch_lock_rr=self._safe_float(getattr(position, "pressure_touch_lock_rr", None)),
             pressure_touch_lock_update_idx=getattr(position, "pressure_touch_lock_update_idx", None),
+            last_stop_update_reason=getattr(position, "last_stop_update_reason", None),
+            last_stop_update_idx=getattr(position, "last_stop_update_idx", None),
+            final_stop_price=self._safe_float(getattr(position, "sl_price", None)),
         )
         engine.trades.append(trade)
         engine.exit_reasons[reason] = int(engine.exit_reasons.get(reason, 0) or 0) + 1
@@ -3221,6 +3926,11 @@ class OkxExecutionEngine:
                 "live_total_usdt": live_total,
                 "rr_ratio": rr_ratio,
                 "pnl_pct": pnl_pct,
+                "index": exit_idx,
+                "candidate_event_type": getattr(position, "candidate_event_type", None),
+                "execution_effective_leverage": self._safe_float(getattr(position, "execution_effective_leverage", None)),
+                "execution_risk_mode": getattr(position, "execution_risk_mode", None),
+                "execution_leverage_reasons": getattr(position, "execution_leverage_reasons", None),
             },
         )
         self.record_action(action)
@@ -3228,17 +3938,25 @@ class OkxExecutionEngine:
         self._dynamic_high_leverage_after_close(action, engine)
         return action
 
-    def _sync_manual_flat_position(self, engine: Any, *, context: str) -> None:
+    def _sync_manual_flat_position(
+        self,
+        engine: Any,
+        *,
+        context: str,
+        timestamp: str | None = None,
+        exit_idx: int | None = None,
+    ) -> None:
         position = getattr(engine, "position", None)
         if position is None:
             return
         direction = getattr(position, "direction", None)
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         synthetic_action = self._record_external_flat_close(
             engine,
             position,
             context=context,
             timestamp=timestamp,
+            exit_idx=exit_idx,
         )
         payload = {
             "context": context,
@@ -3653,7 +4371,14 @@ class OkxExecutionEngine:
         self.store.append_action(last_timestamp, "INITIALIZE", status)
         return status
 
-    def _assert_live_state_synced(self, engine: Any, *, context: str) -> None:
+    def _assert_live_state_synced(
+        self,
+        engine: Any,
+        *,
+        context: str,
+        timestamp: str | None = None,
+        exit_idx: int | None = None,
+    ) -> None:
         if self.config.mode != "live":
             return
         local_position = getattr(engine, "position", None)
@@ -3678,7 +4403,12 @@ class OkxExecutionEngine:
                 )
         if local_has_position != exchange_has_position:
             if self.config.enable_manual_position_sync and local_has_position and not exchange_has_position:
-                self._sync_manual_flat_position(engine, context=context)
+                self._sync_manual_flat_position(
+                    engine,
+                    context=context,
+                    timestamp=timestamp,
+                    exit_idx=exit_idx,
+                )
                 return
             raise ValueError(
                 f"Live state mismatch ({context}): local_position={local_has_position}, "
@@ -3727,7 +4457,7 @@ class OkxExecutionEngine:
         for idx, candle in enumerate(candles):
             candle_time = self._timestamp_from_ts(candle.ts)
             if candle_time > last_processed:
-                return max(min_start, idx - 1)
+                return max(min_start, idx)
         return max(min_start, len(candles) - 1)
 
     def _latest_closed_index(self, engine: Any, close_buffer_seconds: int = 5) -> int | None:

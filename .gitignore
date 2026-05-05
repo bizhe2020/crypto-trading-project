@@ -17,6 +17,8 @@ var/run/
 var/live_readiness/
 var/high_leverage_expansion/
 var/high_leverage_scan/
+var/pa_ict_liquidity/
+var/tokyo_audit/
 
 # Local live trading configs with real exchange credentials
 freqtrade_data/config-live-*-final.json

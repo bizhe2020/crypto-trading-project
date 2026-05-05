@@ -2,7 +2,7 @@
 set -euo pipefail
 
 current_branch="$(git branch --show-current)"
-if [[ "$current_branch" != "high_leverage_10x_research" ]]; then
+if [[ ! "$current_branch" =~ ^(high_leverage_10x_research|new_strategy_research)$ ]]; then
   echo "research_safety_check=skipped branch=$current_branch"
   exit 0
 fi

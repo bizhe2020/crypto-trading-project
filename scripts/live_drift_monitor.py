@@ -49,6 +49,8 @@ class LiveTrade:
     entry_slippage_bps: float | None
     exit_slippage_bps: float | None
     stop_target_deviation_bps: float | None
+    entry_execution_time: datetime | None = None
+    exit_execution_time: datetime | None = None
 
     @property
     def pnl_pct(self) -> float | None:
@@ -102,6 +104,14 @@ def parse_timestamp(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def coalesce_timestamp(*values: Any) -> datetime | None:
+    for value in values:
+        parsed = parse_timestamp(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -167,6 +177,57 @@ def reference_price_for_close(reason: str, open_trade: dict[str, Any]) -> float 
     return None
 
 
+def apply_manual_position_sync(open_trade: dict[str, Any], payload: dict[str, Any], row: ActionLogRow) -> None:
+    snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
+    position = snapshot.get("position") if isinstance(snapshot, dict) and isinstance(snapshot.get("position"), dict) else None
+
+    fallback_values = {
+        "direction": payload.get("direction"),
+        "entry_price": payload.get("new_entry_price"),
+        "stop_price": payload.get("new_stop_price"),
+        "target_price": payload.get("new_target_price"),
+    }
+    if isinstance(position, dict):
+        fallback_values.update(
+            {
+                "direction": position.get("direction"),
+                "entry_price": position.get("entry_price"),
+                "stop_price": position.get("sl_price"),
+                "target_price": position.get("target_price"),
+                "capital_at_entry": position.get("capital_at_entry"),
+                "notional": position.get("notional"),
+                "risk_amount": position.get("risk_amount"),
+                "signal_entry_price": position.get("signal_entry_price"),
+            }
+        )
+        entry_time = parse_timestamp(position.get("entry_time"))
+        if entry_time is not None:
+            open_trade["entry_time"] = entry_time
+
+    direction = fallback_values.get("direction")
+    if direction:
+        open_trade["direction"] = direction
+
+    execution_time = coalesce_timestamp(row.timestamp, row.created_at)
+    if execution_time is not None:
+        current_execution_time = open_trade.get("entry_execution_time")
+        if current_execution_time is None or execution_time < current_execution_time:
+            open_trade["entry_execution_time"] = execution_time
+
+    for key in (
+        "entry_price",
+        "stop_price",
+        "target_price",
+        "capital_at_entry",
+        "notional",
+        "risk_amount",
+        "signal_entry_price",
+    ):
+        numeric = safe_float(fallback_values.get(key))
+        if numeric is not None:
+            open_trade[key] = numeric
+
+
 def build_live_trades(actions: list[ActionLogRow]) -> tuple[list[LiveTrade], dict[str, int]]:
     open_trade: dict[str, Any] | None = None
     trades: list[LiveTrade] = []
@@ -183,6 +244,7 @@ def build_live_trades(actions: list[ActionLogRow]) -> tuple[list[LiveTrade], dic
                 diagnostics["overwritten_opens"] += 1
             open_trade = {
                 "entry_time": action_time,
+                "entry_execution_time": coalesce_timestamp(row.created_at),
                 "direction": payload.get("direction"),
                 "entry_price": safe_float(payload.get("entry_price")),
                 "signal_entry_price": safe_float(metadata.get("signal_entry_price")),
@@ -198,6 +260,10 @@ def build_live_trades(actions: list[ActionLogRow]) -> tuple[list[LiveTrade], dic
             stop_price = safe_float(payload.get("stop_price"))
             if stop_price is not None:
                 open_trade["stop_price"] = stop_price
+            continue
+
+        if action_type == "MANUAL_POSITION_SYNC" and open_trade is not None:
+            apply_manual_position_sync(open_trade, payload, row)
             continue
 
         if action_type != "CLOSE_POSITION":
@@ -239,6 +305,8 @@ def build_live_trades(actions: list[ActionLogRow]) -> tuple[list[LiveTrade], dic
             ),
             exit_slippage_bps=price_diff_bps(exit_price, signal_exit_price),
             stop_target_deviation_bps=price_diff_bps(exit_price, reference),
+            entry_execution_time=open_trade.get("entry_execution_time"),
+            exit_execution_time=coalesce_timestamp(row.created_at, row.timestamp),
         )
         trades.append(trade)
         open_trade = None
