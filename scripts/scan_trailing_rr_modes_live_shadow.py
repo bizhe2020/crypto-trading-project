@@ -23,8 +23,8 @@ def parse_mode_list(value: str) -> list[str]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Scan trailing RR observation modes under Stable+SMC live-shadow replay.")
-    parser.add_argument("--replay-script", default=str(ROOT / "scripts" / "replay_stable_smc_live_shadow.py"))
+    parser = argparse.ArgumentParser(description="Scan trailing RR observation modes under SOTA+SMC live-shadow replay.")
+    parser.add_argument("--replay-script", default=str(ROOT / "scripts" / "replay_sota_smc_live_shadow.py"))
     parser.add_argument("--stage-trigger-rr-modes", default="close,extreme")
     parser.add_argument("--time-trailing-rr-modes", default="close,extreme")
     parser.add_argument("--atr-activation-rr-modes", default="close,extreme")
@@ -50,7 +50,6 @@ def compact_result(report: dict[str, Any]) -> dict[str, Any]:
         "trade_count": live.get("trade_count"),
         "decision_counts": decisions,
         "reference_gap": report.get("reference_gap", {}),
-        "stable_preempted_sota": report.get("stable_preempted_sota", {}),
     }
 
 

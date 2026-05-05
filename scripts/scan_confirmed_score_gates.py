@@ -14,9 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.replay_stable_smc_live_shadow import replay_live_shadow  # noqa: E402
-from scripts.reproduce_reverse_short_overlay_candidates import clean_for_json  # noqa: E402
-from scripts.research_reverse_short_from_failed_longs import event_stream_summary  # noqa: E402
+from scripts.replay_sota_smc_live_shadow import replay_live_shadow  # noqa: E402
+from scripts.live_shadow_utils import clean_for_json, event_stream_summary  # noqa: E402
 
 
 DEFAULT_INPUT = ROOT / "var" / "high_leverage_expansion" / "confirmed_multiframe_scores_full_execsync_on_20260505.json"
@@ -89,7 +88,6 @@ def score_scan(
 ) -> dict[str, Any]:
     baseline_events = [event for event in scored_events if str(event.get("event_type")) == "sota_long"]
     baseline = event_stream_summary(baseline_events, initial_capital, data_end)
-    stable_events = [event for event in scored_events if str(event.get("event_type")) == "stable_reverse_short"]
     smc_events = [event for event in scored_events if str(event.get("event_type")) == "smc_short"]
 
     sota_rules: list[dict[str, Any]] = []
@@ -106,7 +104,7 @@ def score_scan(
         ]
         if len(filtered_base) < 12:
             continue
-        live, _decisions = replay_live_shadow(filtered_base + stable_events + smc_events, initial_capital, data_end, baseline)
+        live, _decisions = replay_live_shadow(filtered_base + smc_events, initial_capital, data_end, baseline)
         sota_rules.append(
             {
                 "rule": {
@@ -117,7 +115,6 @@ def score_scan(
                 },
                 "candidate_counts": {
                     "sota_long": len(filtered_base),
-                    "stable_reverse_short": len(stable_events),
                     "smc_short": len(smc_events),
                 },
                 "live_shadow": compact_summary(live),
@@ -138,7 +135,7 @@ def score_scan(
         ]
         if len(filtered_smc) < 5:
             continue
-        live, _decisions = replay_live_shadow(baseline_events + stable_events + filtered_smc, initial_capital, data_end, baseline)
+        live, _decisions = replay_live_shadow(baseline_events + filtered_smc, initial_capital, data_end, baseline)
         smc_rules.append(
             {
                 "rule": {
@@ -149,7 +146,6 @@ def score_scan(
                 },
                 "candidate_counts": {
                     "sota_long": len(baseline_events),
-                    "stable_reverse_short": len(stable_events),
                     "smc_short": len(filtered_smc),
                 },
                 "live_shadow": compact_summary(live),
@@ -185,14 +181,13 @@ def score_scan(
                 event for event in smc_events
                 if passes_gate(event, **smc_rule["rule"])
             ]
-            live, _decisions = replay_live_shadow(filtered_base + stable_events + filtered_smc, initial_capital, data_end, baseline)
+            live, _decisions = replay_live_shadow(filtered_base + filtered_smc, initial_capital, data_end, baseline)
             combo_rules.append(
                 {
                     "sota_rule": sota_rule["rule"],
                     "smc_rule": smc_rule["rule"],
                     "candidate_counts": {
                         "sota_long": len(filtered_base),
-                        "stable_reverse_short": len(stable_events),
                         "smc_short": len(filtered_smc),
                     },
                     "live_shadow": compact_summary(live),

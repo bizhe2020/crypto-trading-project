@@ -19,7 +19,7 @@ from scripts.backtest_config_report import load_config_payload  # noqa: E402
 from scripts.high_leverage_repro_params import DEFAULT_PRESSURE_PARAMS_PATH, apply_pressure_params  # noqa: E402
 from bot.okx_executor import ExecutorConfig  # noqa: E402
 from scripts.live_readiness_report import load_prepared_data, run_engine  # noqa: E402
-from scripts.replay_stable_smc_live_shadow import apply_trailing_rr_modes  # noqa: E402
+from scripts.replay_sota_smc_live_shadow import apply_trailing_rr_modes  # noqa: E402
 from strategy.scalp_robust_v2_core import ActionType, Direction, PositionState, ScalpRobustEngine  # noqa: E402
 
 

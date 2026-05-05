@@ -18,27 +18,24 @@ from scripts.backtest_config_report import load_config_payload  # noqa: E402
 from scripts.high_leverage_repro_params import DEFAULT_PRESSURE_PARAMS_PATH, apply_pressure_params  # noqa: E402
 from scripts.live_readiness_report import load_prepared_data, run_engine, trade_dataframe  # noqa: E402
 from scripts.report_smc_trade_context import daily_candles_from_4h  # noqa: E402
-from scripts.replay_stable_smc_live_shadow import (  # noqa: E402
+from scripts.replay_sota_smc_live_shadow import (  # noqa: E402
     apply_trailing_rr_modes,
-    build_stable_events_for_params,
     compact_combo_with_events,
     compact_live_result,
     decision_counts,
     replay_live_shadow,
-    stable_preempted_sota_summary,
 )
-from scripts.reproduce_reverse_short_overlay_candidates import clean_for_json  # noqa: E402
-from scripts.research_reverse_short_from_failed_longs import (  # noqa: E402
-    add_standard_windows,
+from scripts.live_shadow_utils import (  # noqa: E402
     compact_result,
+    clean_for_json,
     event_stream_summary,
     standard_sota_event,
 )
-from scripts.research_stable_reverse_short_plus_smc_short import (  # noqa: E402
+from scripts.smc_live_utils import (  # noqa: E402
     SMC_CASES,
     build_smc_events,
     live_feasibility_audit,
-    replay_base_priority_stable_first,
+    replay_base_priority_sota_first,
 )
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay  # noqa: E402
 from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS, replay_shadow_events  # noqa: E402
@@ -51,7 +48,7 @@ RR_MODE_CHOICES = ("close", "extreme")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare replay with current Japan-style trailing enabled vs disabled under the same Stable/SMC/live-shadow pipeline."
+        description="Compare replay with current Japan-style trailing enabled vs disabled under the same SOTA/SMC live-shadow pipeline."
     )
     parser.add_argument("--config", default=str(ROOT / "config" / "config.live.5x-3pct.json"))
     parser.add_argument("--pressure-params", default=str(DEFAULT_PRESSURE_PARAMS_PATH))
@@ -70,13 +67,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--smc-case", default="v2_medium_dispbody05_otherlag4_10x", choices=sorted(SMC_CASES))
     parser.add_argument("--smc-allocation", type=float, default=1.0)
-    parser.add_argument("--stable-allocation", type=float, default=1.0)
-    parser.add_argument("--stable-selector", default="guarded_weak_loss")
-    parser.add_argument("--stable-target-rr", type=float, default=2.75)
-    parser.add_argument("--stable-max-hold-bars", type=int, default=40)
-    parser.add_argument("--stable-leverage", type=float, default=5.0)
-    parser.add_argument("--stable-stop-multiplier", type=float, default=1.0)
-    parser.add_argument("--stable-max-short-stop-pct", type=float, default=1.75)
     parser.add_argument("--stage-trigger-rr-mode", default="close", choices=RR_MODE_CHOICES)
     parser.add_argument("--time-trailing-rr-mode", default="close", choices=RR_MODE_CHOICES)
     parser.add_argument("--atr-activation-rr-mode", default="close", choices=RR_MODE_CHOICES)
@@ -241,31 +231,17 @@ def variant_report(
     base_shadow_summary = event_stream_summary(shadow_events, initial_capital, prepared.end)
     base_events = [standard_sota_event(event) for event in shadow_events]
 
-    stable_events, stable_summary = build_stable_events_for_params(
-        payload,
-        prepared,
-        shadow_events,
-        float(args.stable_allocation),
-        float(args.stable_target_rr),
-        int(args.stable_max_hold_bars),
-        float(args.stable_leverage),
-        float(args.stable_stop_multiplier),
-        float(args.stable_max_short_stop_pct),
-        selector=str(args.stable_selector),
-    )
-
     smc_events, smc_summary = smc_bundle
 
-    reference = replay_base_priority_stable_first(
+    reference = replay_base_priority_sota_first(
         base_events,
-        stable_events,
         smc_events,
         initial_capital,
         prepared.end,
         base_shadow_summary,
     )
     live, decisions = replay_live_shadow(
-        base_events + stable_events + smc_events,
+        base_events + smc_events,
         initial_capital,
         prepared.end,
         base_shadow_summary,
@@ -292,14 +268,11 @@ def variant_report(
         "baseline_shadow_sota": base_shadow_compact,
         "candidate_generation": {
             "sota_candidates": len(base_events),
-            "stable_candidates": len(stable_events),
             "smc_candidates": len(smc_events),
-            "stable_summary": stable_summary,
             "smc_summary": smc_summary,
         },
-        "reference_base_priority_stable_first": reference_compact,
+        "reference_base_priority_sota_first": reference_compact,
         "live_shadow": live_compact,
-        "stable_preempted_sota": stable_preempted_sota_summary(decisions),
         "decision_counts": decision_counts(decisions),
         "live_feasibility_audit": live_feasibility_audit(live, initial_capital),
     }
@@ -342,9 +315,9 @@ def main() -> None:
             trailing_on["baseline_shadow_sota"],
             trailing_off["baseline_shadow_sota"],
         ),
-        "reference_base_priority_stable_first": compare_blocks(
-            trailing_on["reference_base_priority_stable_first"],
-            trailing_off["reference_base_priority_stable_first"],
+        "reference_base_priority_sota_first": compare_blocks(
+            trailing_on["reference_base_priority_sota_first"],
+            trailing_off["reference_base_priority_sota_first"],
         ),
         "live_shadow": compare_blocks(
             trailing_on["live_shadow"],
@@ -413,15 +386,6 @@ def main() -> None:
             "informative_asof_from_15m": bool(args.informative_asof_from_15m),
             "replay_sync_entry_to_signal_price": bool(args.replay_sync_entry_to_signal_price),
             "smc_case": args.smc_case,
-            "stable_params": {
-                "selector": args.stable_selector,
-                "target_rr": args.stable_target_rr,
-                "max_hold_bars": args.stable_max_hold_bars,
-                "leverage": args.stable_leverage,
-                "stop_multiplier": args.stable_stop_multiplier,
-                "max_short_stop_pct": args.stable_max_short_stop_pct,
-                "allocation": args.stable_allocation,
-            },
             "shadow_gate": {
                 "daily_loss_stop_pct": args.daily_loss_stop_pct,
                 "equity_drawdown_stop_pct": args.equity_drawdown_stop_pct,

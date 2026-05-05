@@ -20,7 +20,7 @@ Canonical command wrappers live under `scripts/workflows/`.
 ## Current Rules
 
 - Deploy Tokyo only from `main`.
-- Use `scripts/replay_stable_smc_live_shadow.py` as the canonical strategy replay entry.
+- Use `scripts/replay_sota_smc_live_shadow.py` as the canonical strategy replay entry.
 - Use `scripts/audit_live_replay_trade_convergence.py` and `scripts/replay_tokyo_full_snapshot_anchor.py` for replay/live convergence work.
 - Treat root-level historical research notes as archived; current operator docs live under `docs/workflows/`.
 
@@ -28,6 +28,6 @@ Canonical command wrappers live under `scripts/workflows/`.
 
 - Live/Tokyo: `bash scripts/workflows/live/deploy_tokyo.sh`
 - Replay/Audit: `bash scripts/workflows/replay/run_live_shadow.sh`
-- Research/Optimization: `bash scripts/workflows/research/run_stable_reverse_short_scan.sh`
+- Research/Optimization: `bash scripts/workflows/research/run_confirmed_score_gate.sh`
 
 Use the workflow docs for the exact command set and current expectations.

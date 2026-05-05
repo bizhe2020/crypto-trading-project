@@ -16,7 +16,7 @@ Canonical entrypoints:
 
 Primary scripts:
 
-- `scripts/replay_stable_smc_live_shadow.py`
+- `scripts/replay_sota_smc_live_shadow.py`
 - `scripts/live_readiness_report.py`
 - `scripts/audit_live_replay_trade_convergence.py`
 - `scripts/replay_tokyo_full_snapshot_anchor.py`

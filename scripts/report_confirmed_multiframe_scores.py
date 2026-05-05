@@ -22,13 +22,11 @@ from scripts.confirmed_multiframe_score_utils import (  # noqa: E402
 )
 from scripts.high_leverage_repro_params import DEFAULT_PRESSURE_PARAMS_PATH, apply_pressure_params  # noqa: E402
 from scripts.live_readiness_report import load_prepared_data, run_engine, trade_dataframe  # noqa: E402
-from scripts.replay_stable_smc_live_shadow import build_stable_events_for_params  # noqa: E402
+from scripts.live_shadow_utils import clean_for_json, standard_sota_event  # noqa: E402
 from scripts.report_smc_trade_context import daily_candles_from_4h  # noqa: E402
-from scripts.reproduce_reverse_short_overlay_candidates import clean_for_json  # noqa: E402
-from scripts.research_reverse_short_from_failed_longs import standard_sota_event  # noqa: E402
-from scripts.research_stable_reverse_short_plus_smc_short import SMC_CASES, build_smc_events  # noqa: E402
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay  # noqa: E402
 from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS, replay_shadow_events  # noqa: E402
+from scripts.smc_live_utils import SMC_CASES, build_smc_events  # noqa: E402
 from strategy.scalp_robust_v2_core import precompute_swings  # noqa: E402
 
 
@@ -43,13 +41,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-4h", default=str(ROOT / "data" / "okx" / "futures" / "BTC_USDT_USDT-4h-futures.feather"))
     parser.add_argument("--start-date", default="2022-01-01")
     parser.add_argument("--replay-sync-entry-to-signal-price", action="store_true")
-    parser.add_argument("--stable-selector", default="guarded_weak_loss")
-    parser.add_argument("--stable-target-rr", type=float, default=2.75)
-    parser.add_argument("--stable-max-hold-bars", type=int, default=40)
-    parser.add_argument("--stable-leverage", type=float, default=5.0)
-    parser.add_argument("--stable-stop-multiplier", type=float, default=1.0)
-    parser.add_argument("--stable-max-short-stop-pct", type=float, default=1.75)
-    parser.add_argument("--stable-allocation", type=float, default=1.0)
     parser.add_argument("--smc-case", default="v2_medium_dispbody05_otherlag4_10x", choices=sorted(SMC_CASES))
     parser.add_argument("--smc-allocation", type=float, default=1.0)
     parser.add_argument("--top-n", type=int, default=20)
@@ -121,18 +112,6 @@ def main() -> None:
     )
     shadow_events = shadow["events"]
     base_events = [standard_sota_event(event) for event in shadow_events]
-    stable_events, stable_summary = build_stable_events_for_params(
-        payload,
-        prepared,
-        shadow_events,
-        float(args.stable_allocation),
-        float(args.stable_target_rr),
-        int(args.stable_max_hold_bars),
-        float(args.stable_leverage),
-        float(args.stable_stop_multiplier),
-        float(args.stable_max_short_stop_pct),
-        selector=str(args.stable_selector),
-    )
     daily = daily_candles_from_4h(prepared.c4h)
     h4_highs, h4_lows = precompute_swings(prepared.c4h, n=2, lookback=80)
     d1_highs, d1_lows = precompute_swings(daily, n=2, lookback=20)
@@ -153,7 +132,7 @@ def main() -> None:
 
     c1h = resample_confirmed_1h(prepared.c15m)
     mapping_1h = align_confirmed_mapping(c1h, prepared.c15m)
-    all_events = base_events + stable_events + smc_events
+    all_events = base_events + smc_events
     scored_events: list[dict[str, Any]] = []
     for event in all_events:
         entry_idx = int(event.get("entry_idx", 0) or 0)
@@ -183,9 +162,7 @@ def main() -> None:
         },
         "candidate_generation": {
             "sota_candidates": len(base_events),
-            "stable_candidates": len(stable_events),
             "smc_candidates": len(smc_events),
-            "stable_summary": stable_summary,
             "smc_summary": smc_summary,
         },
         "overall": summarize_bucket(scored_events),

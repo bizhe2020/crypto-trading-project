@@ -6,7 +6,7 @@ from pathlib import Path
 
 from bot.okx_executor import ExecutorConfig, OkxExecutionEngine
 from bot.state_store import StateStore
-from strategy.scalp_robust_v2_core import ActionType, Candle, Direction, ScalpRobustEngine, StrategyAction, StrategyConfig, Trade
+from strategy.scalp_robust_v2_core import ActionType, Candle, Direction, ScalpRobustEngine, StrategyAction, StrategyConfig
 
 
 class DummyExchange:
@@ -57,214 +57,6 @@ def make_engine() -> ScalpRobustEngine:
 
 
 class LiveCandidateArbitrationTest(unittest.TestCase):
-    def test_guarded_weak_loss_selector_uses_research_thresholds(self) -> None:
-        executor = make_executor(
-            ExecutorConfig(
-                mode="paper",
-                symbol="BTC/USDT:USDT",
-                timeframe="15m",
-                informative_timeframe="4h",
-                leverage=10,
-                margin_mode="cross",
-                max_open_positions=1,
-                risk_per_trade=0.01,
-                state_db_path=":memory:",
-                stable_selector="guarded_weak_loss",
-            )
-        )
-
-        source = {
-            "direction": Direction.BULL,
-            "exit_reason": "stop_loss",
-            "return": -0.02,
-            "regime_label": "high_growth",
-            "risk_mode": "offense",
-            "effective_leverage": 7.5,
-            "failed_breakout_guard_applied": False,
-            "feature_momentum": 0.05,
-            "feature_ema_gap": 0.015,
-            "feature_adx": 37.0,
-            "feature_bullish_structure": False,
-        }
-
-        self.assertTrue(executor._stable_selector_allows(source))
-
-    def test_trailing_stop_profit_reverse_selector_accepts_profitable_stop_loss(self) -> None:
-        executor = make_executor(
-            ExecutorConfig(
-                mode="paper",
-                symbol="BTC/USDT:USDT",
-                timeframe="15m",
-                informative_timeframe="4h",
-                leverage=10,
-                margin_mode="cross",
-                max_open_positions=1,
-                risk_per_trade=0.01,
-                state_db_path=":memory:",
-                stable_selector="trailing_stop_profit_reverse",
-            )
-        )
-
-        source = {
-            "direction": Direction.BULL,
-            "exit_reason": "stop_loss",
-            "return": 0.0125,
-            "regime_label": "high_growth",
-            "risk_mode": "offense",
-            "effective_leverage": 7.5,
-            "failed_breakout_guard_applied": False,
-            "feature_momentum": 0.05,
-            "feature_ema_gap": 0.015,
-            "feature_adx": 37.0,
-            "feature_bullish_structure": False,
-        }
-
-        self.assertTrue(executor._stable_selector_allows(source))
-
-    def test_trailing_stage_profit_reverse_requires_stage_stop_update(self) -> None:
-        executor = make_executor(
-            ExecutorConfig(
-                mode="paper",
-                symbol="BTC/USDT:USDT",
-                timeframe="15m",
-                informative_timeframe="4h",
-                leverage=10,
-                margin_mode="cross",
-                max_open_positions=1,
-                risk_per_trade=0.01,
-                state_db_path=":memory:",
-                stable_selector="trailing_stage_profit_reverse",
-            )
-        )
-
-        source = {
-            "direction": Direction.BULL,
-            "exit_reason": "stop_loss",
-            "return": 0.0125,
-            "regime_label": "high_growth",
-            "risk_mode": "offense",
-            "last_stop_update_reason": "trail_stage_1",
-        }
-        self.assertTrue(executor._stable_selector_allows(source))
-        source["last_stop_update_reason"] = "atr_trail"
-        self.assertFalse(executor._stable_selector_allows(source))
-
-    def test_trailing_pressure_profit_reverse_accepts_pressure_touch_lock(self) -> None:
-        executor = make_executor(
-            ExecutorConfig(
-                mode="paper",
-                symbol="BTC/USDT:USDT",
-                timeframe="15m",
-                informative_timeframe="4h",
-                leverage=10,
-                margin_mode="cross",
-                max_open_positions=1,
-                risk_per_trade=0.01,
-                state_db_path=":memory:",
-                stable_selector="trailing_pressure_profit_reverse",
-            )
-        )
-
-        source = {
-            "direction": Direction.BULL,
-            "exit_reason": "stop_loss",
-            "return": 0.0125,
-            "regime_label": "high_growth",
-            "risk_mode": "offense",
-            "pressure_touch_lock_applied": True,
-        }
-        self.assertTrue(executor._stable_selector_allows(source))
-
-    def test_plain_stop_profit_reverse_rejects_trailing_updated_stops(self) -> None:
-        executor = make_executor(
-            ExecutorConfig(
-                mode="paper",
-                symbol="BTC/USDT:USDT",
-                timeframe="15m",
-                informative_timeframe="4h",
-                leverage=10,
-                margin_mode="cross",
-                max_open_positions=1,
-                risk_per_trade=0.01,
-                state_db_path=":memory:",
-                stable_selector="plain_stop_profit_reverse",
-            )
-        )
-
-        source = {
-            "direction": Direction.BULL,
-            "exit_reason": "stop_loss",
-            "return": 0.0125,
-            "regime_label": "high_growth",
-            "risk_mode": "offense",
-            "last_stop_update_reason": "",
-        }
-        self.assertTrue(executor._stable_selector_allows(source))
-        source["last_stop_update_reason"] = "trail_stage_0"
-        self.assertFalse(executor._stable_selector_allows(source))
-
-    def test_stable_candidate_uses_replay_sizing_defaults(self) -> None:
-        executor = make_executor(
-            ExecutorConfig(
-                mode="paper",
-                symbol="BTC/USDT:USDT",
-                timeframe="15m",
-                informative_timeframe="4h",
-                leverage=10,
-                margin_mode="cross",
-                max_open_positions=1,
-                risk_per_trade=0.01,
-                state_db_path=":memory:",
-                enable_stable_reverse_short_live=True,
-                stable_selector="guarded_weak_loss",
-            )
-        )
-        engine = make_engine()
-        engine.trades.append(
-            Trade(
-                entry_time="2023-11-14 22:13",
-                exit_time="2023-11-14 22:28",
-                direction=Direction.BULL,
-                signal_entry_price=1000.0,
-                entry_price=1000.0,
-                signal_exit_price=985.0,
-                exit_price=985.0,
-                gross_pnl=-15.0,
-                fees=0.0,
-                slippage_cost=0.0,
-                pnl=-15.0,
-                pnl_pct=-0.015,
-                rr_ratio=-1.0,
-                exit_reason="stop_loss",
-                capital_at_entry=1000.0,
-                notional=7500.0,
-                quantity=7.5,
-                entry_idx=0,
-                exit_idx=1,
-                initial_stop_price=985.0,
-                risk_regime="offense",
-                regime_label="high_growth",
-                execution_effective_leverage=7.5,
-                execution_risk_mode="offense",
-                execution_leverage_reasons=["base"],
-                execution_guard_diagnostics={
-                    "feature_momentum": 0.05,
-                    "feature_ema_gap": 0.015,
-                    "feature_adx": 37.0,
-                    "feature_bullish_structure": False,
-                },
-            )
-        )
-
-        candidate = executor._stable_reverse_short_candidate(engine, None, 1)
-
-        self.assertIsNotNone(candidate)
-        assert candidate is not None
-        self.assertEqual(candidate["event_type"], "stable_reverse_short")
-        self.assertAlmostEqual(candidate["requested_notional"], 5000.0)
-        self.assertAlmostEqual(candidate["leverage"], 5.0)
-        self.assertAlmostEqual(candidate["position_size_pct"], 1.0)
-
     def test_overlay_open_skips_dynamic_high_leverage_in_paper(self) -> None:
         config = ExecutorConfig(
             mode="paper",
@@ -290,7 +82,7 @@ class LiveCandidateArbitrationTest(unittest.TestCase):
             target_rr_override=2.5,
             max_hold_bars_override=40,
             trail_style_override="tight",
-            candidate_event_type="stable_reverse_short",
+            candidate_event_type="smc_short",
             requested_notional_override=5000.0,
         )
         metadata = dict(action.metadata or {})
@@ -304,7 +96,7 @@ class LiveCandidateArbitrationTest(unittest.TestCase):
         self.assertEqual(result.get("dynamic_high_leverage"), None)
         self.assertAlmostEqual(float(result["notional_usdt"]), 5000.0)
         self.assertEqual(engine.position.execution_risk_mode, "overlay_fixed")
-        self.assertEqual(engine.position.execution_leverage_reasons, ["overlay_fixed:stable_reverse_short"])
+        self.assertEqual(engine.position.execution_leverage_reasons, ["overlay_fixed:smc_short"])
 
     def test_high_leverage_guard_uses_candidate_leverage_for_overlay(self) -> None:
         config = ExecutorConfig(
@@ -330,7 +122,7 @@ class LiveCandidateArbitrationTest(unittest.TestCase):
             stop_price=1015.0,
             target_price=958.75,
             metadata={
-                "candidate_event_type": "stable_reverse_short",
+                "candidate_event_type": "smc_short",
                 "candidate_leverage": 5.0,
                 "candidate_maintenance_margin_pct": 0.5,
                 "capital_at_entry": 1000.0,

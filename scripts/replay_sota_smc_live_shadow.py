@@ -23,34 +23,30 @@ from scripts.confirmed_multiframe_score_utils import (  # noqa: E402
 )
 from scripts.high_leverage_repro_params import DEFAULT_PRESSURE_PARAMS_PATH, apply_pressure_params  # noqa: E402
 from scripts.live_readiness_report import load_prepared_data, run_engine, trade_dataframe  # noqa: E402
-from scripts.report_smc_trade_context import daily_candles_from_4h  # noqa: E402
-from scripts.reproduce_reverse_short_overlay_candidates import clean_for_json  # noqa: E402
-from scripts.research_reverse_short_from_failed_longs import (  # noqa: E402
+from scripts.live_shadow_utils import (  # noqa: E402
     add_combo_deltas,
     add_standard_windows,
+    clean_for_json,
     compact_combo_result,
     compact_result,
     event_stream_summary,
     standard_event_summary,
     standard_sota_event,
 )
-from scripts.research_stable_reverse_short_plus_smc_short import (  # noqa: E402
-    SMC_CASES,
-    build_smc_events,
-    live_feasibility_audit,
-    replay_base_priority_stable_first,
-)
+from scripts.report_smc_trade_context import daily_candles_from_4h  # noqa: E402
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay  # noqa: E402
 from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS, replay_shadow_events  # noqa: E402
+from scripts.smc_live_utils import SMC_CASES, build_smc_events, live_feasibility_audit, replay_base_priority_sota_first  # noqa: E402
 from strategy.scalp_robust_v2_core import precompute_swings  # noqa: E402
 
 
-DEFAULT_OUTPUT = ROOT / "var" / "high_leverage_expansion" / "stable_smc_live_shadow_replay.json"
+DEFAULT_OUTPUT = ROOT / "var" / "high_leverage_expansion" / "sota_smc_live_shadow_replay.json"
+DEFAULT_PAPER_LOG = ROOT / "var" / "high_leverage_expansion" / "sota_smc_live_shadow_paper_decisions.jsonl"
 RR_MODE_CHOICES = ("close", "extreme")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Live-shadow chronological replay for SOTA + Stable reverse short + SMC short.")
+    parser = argparse.ArgumentParser(description="Live-shadow chronological replay for SOTA long + SMC short.")
     parser.add_argument("--config", default=str(ROOT / "config" / "config.live.5x-3pct.json"))
     parser.add_argument("--pressure-params", default=str(DEFAULT_PRESSURE_PARAMS_PATH))
     parser.add_argument("--data-15m", default=str(ROOT / "data" / "okx" / "futures" / "BTC_USDT_USDT-15m-futures.feather"))
@@ -73,13 +69,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--smc-case", default="v2_medium_dispbody05_otherlag4_10x", choices=sorted(SMC_CASES))
     parser.add_argument("--smc-allocation", type=float, default=1.0)
-    parser.add_argument("--stable-allocation", type=float, default=1.0)
-    parser.add_argument("--stable-selector", default="guarded_weak_loss")
-    parser.add_argument("--stable-target-rr", type=float, default=2.75)
-    parser.add_argument("--stable-max-hold-bars", type=int, default=40)
-    parser.add_argument("--stable-leverage", type=float, default=5.0)
-    parser.add_argument("--stable-stop-multiplier", type=float, default=1.0)
-    parser.add_argument("--stable-max-short-stop-pct", type=float, default=1.75)
     parser.add_argument("--enable-sota-score-gate", action="store_true")
     parser.add_argument("--sota-score-net-min", type=int, default=2)
     parser.add_argument("--sota-score-bull-min", type=int, default=8)
@@ -94,10 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--consecutive-loss-stop", type=int, default=0)
     parser.add_argument("--sample-trades", type=int, default=40)
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
-    parser.add_argument(
-        "--paper-log-output",
-        default=str(ROOT / "var" / "high_leverage_expansion" / "stable_smc_live_shadow_paper_decisions.jsonl"),
-    )
+    parser.add_argument("--paper-log-output", default=str(DEFAULT_PAPER_LOG))
     return parser.parse_args()
 
 
@@ -126,10 +112,33 @@ def event_key(event: dict[str, Any]) -> str:
 def priority_value(event: dict[str, Any]) -> int:
     priority = {
         "sota_long": 0,
-        "stable_reverse_short": 1,
-        "smc_short": 2,
+        "smc_short": 1,
     }
     return priority.get(str(event.get("event_type") or ""), 9)
+
+
+def decision_counts(decisions: list[dict[str, Any]]) -> dict[str, Any]:
+    by_decision: dict[str, int] = {}
+    by_reject_reason: dict[str, int] = {}
+    by_event_type_decision: dict[str, dict[str, int]] = {}
+    by_paper_tag: dict[str, int] = {}
+    for decision in decisions:
+        action = str(decision.get("decision") or "unknown")
+        event_type = str(decision.get("event_type") or "unknown")
+        paper_tag = str(decision.get("paper_tag") or "untagged")
+        by_decision[action] = by_decision.get(action, 0) + 1
+        by_paper_tag[paper_tag] = by_paper_tag.get(paper_tag, 0) + 1
+        by_event_type_decision.setdefault(event_type, {})
+        by_event_type_decision[event_type][action] = by_event_type_decision[event_type].get(action, 0) + 1
+        if action == "rejected":
+            reason = str(decision.get("reason") or "unknown")
+            by_reject_reason[reason] = by_reject_reason.get(reason, 0) + 1
+    return {
+        "by_decision": by_decision,
+        "by_reject_reason": by_reject_reason,
+        "by_event_type_decision": by_event_type_decision,
+        "by_paper_tag": by_paper_tag,
+    }
 
 
 def replay_live_shadow(
@@ -172,8 +181,6 @@ def replay_live_shadow(
                 "blocking_exit_idx": int(active_event.get("exit_idx", active_until_idx) or active_until_idx),
                 "blocking_exit_time": active_event.get("exit_time"),
             }
-            if event.get("event_type") == "sota_long" and active_event.get("event_type") == "stable_reverse_short":
-                decision["paper_tag"] = "stable_preempted_sota"
             decisions.append(decision)
             continue
 
@@ -194,30 +201,6 @@ def replay_live_shadow(
     result["decision_counts"] = decision_counts(decisions)
     result["live_feasibility_audit"] = live_feasibility_audit(result, initial_capital)
     return result, decisions
-
-
-def decision_counts(decisions: list[dict[str, Any]]) -> dict[str, Any]:
-    by_decision: dict[str, int] = {}
-    by_reject_reason: dict[str, int] = {}
-    by_event_type_decision: dict[str, dict[str, int]] = {}
-    by_paper_tag: dict[str, int] = {}
-    for decision in decisions:
-        action = str(decision.get("decision") or "unknown")
-        event_type = str(decision.get("event_type") or "unknown")
-        paper_tag = str(decision.get("paper_tag") or "untagged")
-        by_decision[action] = by_decision.get(action, 0) + 1
-        by_paper_tag[paper_tag] = by_paper_tag.get(paper_tag, 0) + 1
-        by_event_type_decision.setdefault(event_type, {})
-        by_event_type_decision[event_type][action] = by_event_type_decision[event_type].get(action, 0) + 1
-        if action == "rejected":
-            reason = str(decision.get("reason") or "unknown")
-            by_reject_reason[reason] = by_reject_reason.get(reason, 0) + 1
-    return {
-        "by_decision": by_decision,
-        "by_reject_reason": by_reject_reason,
-        "by_event_type_decision": by_event_type_decision,
-        "by_paper_tag": by_paper_tag,
-    }
 
 
 def compact_live_result(result: dict[str, Any], sample_trades: int) -> dict[str, Any]:
@@ -249,88 +232,11 @@ def reference_gap(reference: dict[str, Any], live: dict[str, Any]) -> dict[str, 
     }
 
 
-def stable_preempted_sota_summary(decisions: list[dict[str, Any]]) -> dict[str, Any]:
-    items = [decision for decision in decisions if decision.get("paper_tag") == "stable_preempted_sota"]
-    return {
-        "count": len(items),
-        "sota_return_sum_pct": round(sum(float(item.get("return_pct", 0.0) or 0.0) for item in items), 4),
-        "positive_sota_blocked": sum(1 for item in items if float(item.get("return_pct", 0.0) or 0.0) > 0.0),
-        "negative_sota_blocked": sum(1 for item in items if float(item.get("return_pct", 0.0) or 0.0) <= 0.0),
-        "items": items,
-    }
-
-
 def write_paper_log(path: Path, decisions: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for decision in decisions:
             handle.write(json.dumps(clean_for_json(decision), ensure_ascii=False, allow_nan=False) + "\n")
-
-
-def build_stable_events_for_params(
-    payload: dict[str, Any],
-    prepared: Any,
-    shadow_events: list[dict[str, Any]],
-    allocation: float,
-    target_rr: float,
-    max_hold_bars: int,
-    leverage: float,
-    stop_multiplier: float,
-    max_short_stop_pct: float,
-    selector: str = "guarded_weak_loss",
-    max_quality_score: int = 1,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    from scripts.research_reverse_short_from_failed_longs import (  # local import keeps top-level imports focused
-        replay_non_overlapping,
-        selected_by,
-        simulate_short_trade,
-        standard_reverse_short_event,
-    )
-
-    reverse_candidates = []
-    selected_count = 0
-    for event in shadow_events:
-        if not selected_by(event, selector, max_quality_score):
-            continue
-        selected_count += 1
-        simulated = simulate_short_trade(
-            event=event,
-            candles=prepared.c15m,
-            trigger_mode="stop_loss_reversal",
-            target_rr=target_rr,
-            max_hold_bars=max_hold_bars,
-            leverage=leverage,
-            stop_multiplier=stop_multiplier,
-            max_short_stop_pct=max_short_stop_pct,
-            virtual_invalidation_rr=None,
-            virtual_invalidation_lookahead_bars=None,
-            taker_fee_rate=float(payload.get("taker_fee_rate", 0.0005) or 0.0),
-            slippage_bps=float(payload.get("slippage_bps", 0.0) or 0.0),
-        )
-        if simulated is not None:
-            reverse_candidates.append(simulated)
-    reverse_only = replay_non_overlapping(reverse_candidates, 1000.0)
-    events = []
-    for event in reverse_only["events"]:
-        converted = standard_reverse_short_event(event, allocation)
-        converted["event_type"] = "stable_reverse_short"
-        events.append(converted)
-    return events, {
-        "selector_matches": selected_count,
-        "simulated_candidates": len(reverse_candidates),
-        "accepted_trades": len(events),
-        "reverse_only_skipped_overlap": reverse_only.get("skipped_overlap", 0),
-        "params": {
-            "selector": selector,
-            "max_quality_score": max_quality_score,
-            "target_rr": target_rr,
-            "max_hold_bars": max_hold_bars,
-            "leverage": leverage,
-            "stop_multiplier": stop_multiplier,
-            "max_short_stop_pct": max_short_stop_pct,
-            "allocation": allocation,
-        },
-    }
 
 
 def apply_sota_score_gate(
@@ -435,18 +341,6 @@ def main() -> None:
         conflict_mode=str(args.sota_score_conflict_mode),
     )
     gated_shadow_summary = event_stream_summary(base_events, initial_capital, prepared.end)
-    stable_events, stable_summary = build_stable_events_for_params(
-        payload,
-        prepared,
-        shadow_events,
-        float(args.stable_allocation),
-        float(args.stable_target_rr),
-        int(args.stable_max_hold_bars),
-        float(args.stable_leverage),
-        float(args.stable_stop_multiplier),
-        float(args.stable_max_short_stop_pct),
-        selector=str(args.stable_selector),
-    )
 
     daily = daily_candles_from_4h(prepared.c4h)
     h4_highs, h4_lows = precompute_swings(prepared.c4h, n=2, lookback=80)
@@ -466,16 +360,15 @@ def main() -> None:
         slippage_bps=float(payload.get("slippage_bps", 0.0) or 0.0),
     )
 
-    reference = replay_base_priority_stable_first(
+    reference = replay_base_priority_sota_first(
         base_events,
-        stable_events,
         smc_events,
         initial_capital,
         prepared.end,
         gated_shadow_summary,
     )
     live, decisions = replay_live_shadow(
-        base_events + stable_events + smc_events,
+        base_events + smc_events,
         initial_capital,
         prepared.end,
         gated_shadow_summary,
@@ -497,8 +390,6 @@ def main() -> None:
             "replay_sync_entry_to_signal_price": bool(args.replay_sync_entry_to_signal_price),
             "smc_case": args.smc_case,
             "smc_allocation": args.smc_allocation,
-            "stable_allocation": args.stable_allocation,
-            "stable_params": stable_summary["params"],
             "sota_score_gate": sota_score_gate,
             "paper_log_output": str(Path(args.paper_log_output).resolve()),
         },
@@ -507,16 +398,13 @@ def main() -> None:
         "candidate_generation": {
             "raw_sota_candidates": len(raw_base_events),
             "sota_candidates": len(base_events),
-            "stable_candidates": len(stable_events),
             "smc_candidates": len(smc_events),
             "sota_score_gate": sota_score_gate,
-            "stable_summary": stable_summary,
             "smc_summary": smc_summary,
         },
-        "reference_base_priority_stable_first": compact_combo_with_events(reference, int(args.sample_trades)),
+        "reference_base_priority_sota_first": compact_combo_with_events(reference, int(args.sample_trades)),
         "live_shadow": compact_live_result(live, int(args.sample_trades)),
         "reference_gap": reference_gap(reference, live),
-        "stable_preempted_sota": stable_preempted_sota_summary(decisions),
         "decisions": decisions,
     }
 
@@ -527,7 +415,7 @@ def main() -> None:
 
     print(output)
     base = report["baseline_shadow_sota"]
-    ref = report["reference_base_priority_stable_first"]
+    ref = report["reference_base_priority_sota_first"]
     live_payload = report["live_shadow"]
     gap = report["reference_gap"]
     print(f"Baseline full={base['total_return_pct']:.2f}%/{base['max_drawdown_pct']:.2f}% 2026={base['windows']['current_year']['total_return_pct']:.2f}%")
@@ -535,12 +423,6 @@ def main() -> None:
     print(f"Live-shadow full={live_payload['total_return_pct']:.2f}%/{live_payload['max_drawdown_pct']:.2f}% 2026={live_payload['windows']['current_year']['total_return_pct']:.2f}%")
     print(f"Live gap vs reference: return={gap['return_gap_pct']:.2f}% dd={gap['dd_gap_pct']:+.2f}")
     print(f"Decisions={live_payload['decision_counts']}")
-    preempted = report["stable_preempted_sota"]
-    print(
-        f"Stable preempted SOTA: count={preempted['count']} "
-        f"sota_return_sum={preempted['sota_return_sum_pct']:.2f}% "
-        f"positive={preempted['positive_sota_blocked']} negative={preempted['negative_sota_blocked']}"
-    )
     print(f"Paper log={Path(args.paper_log_output)}")
 
 

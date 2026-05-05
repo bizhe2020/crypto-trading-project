@@ -18,7 +18,7 @@ from scripts.live_drift_monitor import build_live_trades, load_action_log  # noq
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Per-trade convergence audit for live DB trades vs replay event streams.")
     parser.add_argument("--live-db", required=True, help="Runtime sqlite DB copied from live/paper.")
-    parser.add_argument("--replay-json", required=True, help="Replay JSON from replay_stable_smc_live_shadow.py.")
+    parser.add_argument("--replay-json", required=True, help="Replay JSON from replay_sota_smc_live_shadow.py.")
     parser.add_argument("--stream", default="live_shadow", help="Replay stream key. Default: live_shadow.")
     parser.add_argument("--output", default=None, help="Optional JSON report path.")
     parser.add_argument("--start-time", default=None, help="Only include live trades with entry_time >= this UTC timestamp.")
