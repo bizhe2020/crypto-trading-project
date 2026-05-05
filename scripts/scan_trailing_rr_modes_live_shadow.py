@@ -30,8 +30,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--atr-activation-rr-modes", default="close,extreme")
     parser.add_argument("--sample-trades", type=int, default=20)
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
-    parser.add_argument("replay_args", nargs=argparse.REMAINDER)
-    return parser.parse_args()
+    args, replay_args = parser.parse_known_args()
+    if replay_args and replay_args[0] == "--":
+        replay_args = replay_args[1:]
+    args.replay_args = replay_args
+    return args
 
 
 def load_report(path: Path) -> dict[str, Any]:

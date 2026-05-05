@@ -31,6 +31,7 @@ from strategy.scalp_robust_v2_core import precompute_swings  # noqa: E402
 
 
 DEFAULT_OUTPUT = ROOT / "var" / "high_leverage_expansion" / "confirmed_multiframe_scores.json"
+RR_MODE_CHOICES = ("close", "extreme")
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,6 +44,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replay-sync-entry-to-signal-price", action="store_true")
     parser.add_argument("--smc-case", default="v2_medium_dispbody05_otherlag4_10x", choices=sorted(SMC_CASES))
     parser.add_argument("--smc-allocation", type=float, default=1.0)
+    parser.add_argument("--stage-trigger-rr-mode", default="close", choices=RR_MODE_CHOICES)
+    parser.add_argument("--time-trailing-rr-mode", default="close", choices=RR_MODE_CHOICES)
+    parser.add_argument("--atr-activation-rr-mode", default="close", choices=RR_MODE_CHOICES)
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     return parser.parse_args()
@@ -91,6 +95,9 @@ def main() -> None:
     base_payload = load_config_payload(Path(args.config))
     payload, _pressure_params = apply_pressure_params(base_payload, Path(args.pressure_params))
     payload["replay_sync_entry_to_signal_price"] = bool(args.replay_sync_entry_to_signal_price)
+    payload["stage_trigger_rr_mode"] = str(args.stage_trigger_rr_mode)
+    payload["time_trailing_rr_mode"] = str(args.time_trailing_rr_mode)
+    payload["atr_activation_rr_mode"] = str(args.atr_activation_rr_mode)
     prepared = load_prepared_data(
         data_15m_path=Path(args.data_15m),
         data_4h_path=Path(args.data_4h),
@@ -159,6 +166,11 @@ def main() -> None:
             "candles_1h": len(c1h),
             "confirmed_4h_only": True,
             "replay_sync_entry_to_signal_price": bool(args.replay_sync_entry_to_signal_price),
+            "trailing_rr_modes": {
+                "stage_trigger_rr_mode": str(args.stage_trigger_rr_mode),
+                "time_trailing_rr_mode": str(args.time_trailing_rr_mode),
+                "atr_activation_rr_mode": str(args.atr_activation_rr_mode),
+            },
         },
         "candidate_generation": {
             "sota_candidates": len(base_events),
