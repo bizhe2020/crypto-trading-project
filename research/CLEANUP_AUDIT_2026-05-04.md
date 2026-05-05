@@ -41,8 +41,8 @@ These are still part of the active research chain or directly referenced by curr
 - `scripts/scan_stable_smc_live_shadow_stable_params.py`
   - Still useful for Stable parameter sensitivity under the live-shadow chronology.
 - `scripts/research_reverse_short_from_failed_longs.py`
-  - Referenced by `HIGH_LEVERAGE_REVERSE_SHORT_OVERLAY.md`.
-- `HIGH_LEVERAGE_REVERSE_SHORT_OVERLAY.md`
+  - Referenced by `docs/archive/HIGH_LEVERAGE_REVERSE_SHORT_OVERLAY.md`.
+- `docs/archive/HIGH_LEVERAGE_REVERSE_SHORT_OVERLAY.md`
   - Active local research note with runnable references to the reverse-short chain.
 - `research/pa_ict_liquidity/README.md`
   - Large but clearly still serves as the control-plane note for PA/ICT research.
@@ -120,7 +120,7 @@ The following were initially flagged as drop candidates, but they are still refe
 
 Rationale:
 
-- still referenced by `HIGH_LEVERAGE_REVERSE_SHORT_OVERLAY.md` or `research/pa_ict_liquidity/README.md`
+- still referenced by `docs/archive/HIGH_LEVERAGE_REVERSE_SHORT_OVERLAY.md` or `research/pa_ict_liquidity/README.md`
 - likely better moved under a research archive namespace later
 - deleting them now would break local reproducibility notes
 
