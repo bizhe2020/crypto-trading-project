@@ -69,8 +69,6 @@
   "atr_regime_filter": "all",
   "atr_period": 14,
   "atr_activation_rr": 2.0,
-  "long_atr_activation_rr": null,
-  "short_atr_activation_rr": null,
   "atr_loose_multiplier": 2.7,
   "atr_normal_multiplier": 2.25,
   "atr_tight_multiplier": 1.8,
@@ -110,12 +108,6 @@
   "shadow_equity_drawdown_stop_pct": 21.0,
   "shadow_equity_drawdown_cooldown_days": 6,
   "shadow_consecutive_loss_stop": 4,
-  "long_atr_loose_multiplier": null,
-  "long_atr_normal_multiplier": null,
-  "long_atr_tight_multiplier": null,
-  "short_atr_loose_multiplier": null,
-  "short_atr_normal_multiplier": null,
-  "short_atr_tight_multiplier": null,
   "enable_exchange_brackets": true,
   "exchange_trigger_price_type": "mark"
 }

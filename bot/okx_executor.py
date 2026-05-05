@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import bisect
 import json
 import random
@@ -106,6 +107,7 @@ class ExecutorConfig:
     bull_weak_long_trail_style_override: str | None = None
     bear_weak_short_rr_ratio_override: float | None = None
     bear_weak_short_trail_style_override: str | None = None
+    enable_stage_trailing: bool = True
     enable_atr_trailing: bool = False
     atr_period: int = 14
     atr_activation_rr: float = 2.0
@@ -238,6 +240,7 @@ class ExecutorConfig:
     regime_switcher_flat_overrides: dict[str, Any] | None = None
     taker_fee_rate: float = 0.0005
     slippage_bps: float = 2.0
+    replay_sync_entry_to_signal_price: bool = False
     enable_exchange_brackets: bool = False
     exchange_trigger_price_type: str = "mark"
     enable_manual_position_sync: bool = True
@@ -260,6 +263,24 @@ class ExecutorConfig:
     enable_stable_reverse_short_live: bool = True
     enable_smc_short_live: bool = True
     overlay_skip_dynamic_high_leverage: bool = False
+    live_candidate_priority: list[str] | None = None
+    stable_selector: str = "guarded_weak_loss"
+    stable_max_quality_score: int = 1
+    stable_target_rr: float | None = None
+    stable_max_hold_bars: int | None = None
+    stable_leverage: float | None = None
+    stable_position_size_pct: float = 1.0
+    stable_stop_multiplier: float | None = None
+    stable_max_short_stop_pct: float | None = None
+    stable_trail_style: str = "tight"
+    smc_case: str | None = None
+    smc_target_rr: float = 2.0
+    smc_max_hold_bars: int = 40
+    smc_trail_style: str = "tight"
+    smc_leverage: float = 10.0
+    smc_position_size_pct: float = 1.0
+    smc_min_liq_buffer_pct: float = 1.2
+    smc_maintenance_margin_pct: float = 0.5
     stable_reverse_short_live_params: dict[str, Any] | None = None
     smc_short_live_params: dict[str, Any] | None = None
     live_overlay_smc_case: str = "v2_medium_dispbody05_otherlag4_10x"
@@ -306,6 +327,19 @@ class ExecutorConfig:
             ):
                 if source_key in stable_params and target_key not in normalized_payload:
                     normalized_payload[target_key] = stable_params[source_key]
+        else:
+            legacy_stable_map = (
+                ("stable_target_rr", "live_overlay_stable_target_rr"),
+                ("stable_max_hold_bars", "live_overlay_stable_max_hold_bars"),
+                ("stable_leverage", "live_overlay_stable_leverage"),
+                ("stable_stop_multiplier", "live_overlay_stable_stop_multiplier"),
+                ("stable_max_short_stop_pct", "live_overlay_stable_max_short_stop_pct"),
+            )
+            for source_key, target_key in legacy_stable_map:
+                if source_key in normalized_payload and target_key not in normalized_payload:
+                    normalized_payload[target_key] = normalized_payload[source_key]
+            if "stable_position_size_pct" in normalized_payload and "live_overlay_stable_allocation" not in normalized_payload:
+                normalized_payload["live_overlay_stable_allocation"] = normalized_payload["stable_position_size_pct"]
 
         smc_params = normalized_payload.get("smc_short_live_params")
         if isinstance(smc_params, dict):
@@ -321,6 +355,9 @@ class ExecutorConfig:
             ):
                 if source_key in smc_params and target_key not in normalized_payload:
                     normalized_payload[target_key] = smc_params[source_key]
+        else:
+            if "smc_case" in normalized_payload and "live_overlay_smc_case" not in normalized_payload:
+                normalized_payload["live_overlay_smc_case"] = normalized_payload["smc_case"]
 
         filtered_payload = {
             key: value
@@ -369,6 +406,7 @@ class ExecutorConfig:
             bull_weak_long_trail_style_override=self.bull_weak_long_trail_style_override,
             bear_weak_short_rr_ratio_override=self.bear_weak_short_rr_ratio_override,
             bear_weak_short_trail_style_override=self.bear_weak_short_trail_style_override,
+            enable_stage_trailing=self.enable_stage_trailing,
             enable_atr_trailing=self.enable_atr_trailing,
             atr_period=self.atr_period,
             atr_activation_rr=self.atr_activation_rr,
@@ -450,6 +488,7 @@ class ExecutorConfig:
             regime_switcher_flat_overrides=self.regime_switcher_flat_overrides,
             taker_fee_rate=self.taker_fee_rate,
             slippage_bps=self.slippage_bps,
+            replay_sync_entry_to_signal_price=self.replay_sync_entry_to_signal_price,
         )
 
 
@@ -2041,6 +2080,7 @@ class OkxExecutionEngine:
         sizing = self._resolve_order_sizing(action, engine)
         if sizing.get("status") != "ok":
             return sizing
+        overlay_skipped_dynamic = self._overlay_should_skip_dynamic_high_leverage(action)
         sizing, dynamic_decision = self._dynamic_high_leverage_pre_open(action, sizing, engine)
         if dynamic_decision is not None:
             return dynamic_decision
@@ -2050,6 +2090,25 @@ class OkxExecutionEngine:
 
         if self.config.mode == "paper":
             if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+                if overlay_skipped_dynamic:
+                    position = getattr(engine, "position", None)
+                    if position is not None:
+                        effective_leverage = self._action_configured_leverage(action)
+                        requested_notional = (
+                            self._safe_float(sizing.get("risk_based_notional_usdt"))
+                            or self._safe_float((action.metadata or {}).get("risk_based_notional"))
+                            or self._safe_float(sizing.get("notional_usdt"))
+                            or self._safe_float((action.metadata or {}).get("notional"))
+                        )
+                        setattr(position, "execution_effective_leverage", round(effective_leverage, 6))
+                        setattr(position, "execution_risk_mode", "overlay_fixed")
+                        setattr(
+                            position,
+                            "execution_leverage_reasons",
+                            [f"overlay_fixed:{str((action.metadata or {}).get('candidate_event_type') or (action.metadata or {}).get('overlay_event_type') or 'overlay')}"],
+                        )
+                        setattr(position, "execution_requested_notional", requested_notional)
+                        setattr(position, "execution_target_notional", requested_notional)
                 if not (self._overlay_formal_fixed_shadow_enabled() and bool((action.metadata or {}).get("overlay_formal_fixed"))):
                     self._shadow_gate_mark_real_position(True, action, "paper_open_accepted")
                 self._save_sota_overlay_open_candidate(overlay_candidate)
@@ -2076,6 +2135,7 @@ class OkxExecutionEngine:
                 "expected_notional_usdt": sizing.get("expected_notional_usdt"),
                 "balance_source": sizing.get("balance_source"),
                 "position_size_pct": self.config.position_size_pct,
+                "overlay_skipped_dynamic_high_leverage": overlay_skipped_dynamic,
                 "dynamic_high_leverage": sizing.get("dynamic_high_leverage"),
             }
 
@@ -2756,7 +2816,13 @@ class OkxExecutionEngine:
             return False
         if action is None:
             return False
-        event_type = str(((action.metadata or {}).get("overlay_event_type") or "")).lower()
+        metadata = action.metadata or {}
+        event_type = str(
+            metadata.get("overlay_event_type")
+            or metadata.get("candidate_event_type")
+            or metadata.get("event_type")
+            or ""
+        ).lower()
         return event_type in {"stable", "stable_reverse_short", "smc", "smc_short"}
 
     def _overlay_action_timestamp(self, engine: Any, idx: int) -> str:
@@ -3056,6 +3122,178 @@ class OkxExecutionEngine:
             metadata=metadata,
         )
 
+    def _quality_snapshot_from_features(self, direction: str, features: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            "direction": direction,
+            "feature_adx": features.get("feature_adx", 0.0),
+            "feature_momentum": features.get("feature_momentum", 0.0),
+            "feature_ema_gap": features.get("feature_ema_gap", 0.0),
+            "feature_bullish_structure": features.get("feature_bullish_structure", False),
+            "feature_bearish_structure": features.get("feature_bearish_structure", False),
+        }
+        return quality_snapshot(payload)
+
+    def _stable_guard_would_apply(self, source: dict[str, Any]) -> bool:
+        leverage = float(source.get("effective_leverage", 0.0) or 0.0)
+        if leverage < float(self.config.dynamic_failed_breakout_guard_min_leverage):
+            return False
+        if str(source.get("regime_label") or "") != "high_growth":
+            return False
+        if str(source.get("risk_mode") or "") != "offense":
+            return False
+        quality = self._quality_snapshot_from_features(str(source.get("direction") or ""), source)
+        return int(quality["quality_score"]) < int(self.config.dynamic_failed_breakout_guard_min_quality_score)
+
+    def _stable_source_event_from_trade(self, trade: Trade, close_action: StrategyAction | None = None) -> dict[str, Any]:
+        diagnostics = getattr(trade, "execution_guard_diagnostics", None) or {}
+        close_metadata = (close_action.metadata or {}) if close_action is not None else {}
+        return {
+            "entry_time": getattr(trade, "entry_time", None),
+            "exit_time": getattr(trade, "exit_time", None),
+            "entry_idx": getattr(trade, "entry_idx", None),
+            "exit_idx": getattr(trade, "exit_idx", None),
+            "direction": getattr(trade, "direction", None),
+            "entry_price": float(getattr(trade, "entry_price", 0.0) or 0.0),
+            "exit_price": float(getattr(trade, "exit_price", 0.0) or 0.0),
+            "initial_stop_price": float(getattr(trade, "initial_stop_price", 0.0) or 0.0),
+            "exit_reason": getattr(trade, "exit_reason", None),
+            "return": float(getattr(trade, "pnl_pct", 0.0) or 0.0),
+            "regime_label": getattr(trade, "regime_label", None),
+            "risk_mode": getattr(trade, "execution_risk_mode", None),
+            "effective_leverage": getattr(trade, "execution_effective_leverage", None),
+            "failed_breakout_guard_applied": any(
+                str(reason).startswith("failed_breakout_guard")
+                for reason in (getattr(trade, "execution_leverage_reasons", None) or [])
+            ),
+            "feature_adx": diagnostics.get("feature_adx", 0.0),
+            "feature_momentum": diagnostics.get("feature_momentum", 0.0),
+            "feature_ema_gap": diagnostics.get("feature_ema_gap", 0.0),
+            "feature_bullish_structure": diagnostics.get("feature_bullish_structure", False),
+            "feature_bearish_structure": diagnostics.get("feature_bearish_structure", False),
+            "last_stop_update_reason": close_metadata.get("last_stop_update_reason"),
+            "pressure_target_applied": bool(getattr(trade, "pressure_target_applied", False) or close_metadata.get("pressure_target_applied")),
+            "pressure_touch_lock_applied": bool(getattr(trade, "pressure_touch_lock_applied", False) or close_metadata.get("pressure_touch_lock_applied")),
+            "time_based_trailing_enabled": bool(getattr(trade, "time_based_trailing_enabled", False)),
+        }
+
+    def _stable_selector_allows(self, source: dict[str, Any]) -> bool:
+        selector = str(getattr(self.config, "stable_selector", "guarded_weak_loss") or "guarded_weak_loss")
+        direction = str(source.get("direction") or "")
+        exit_reason = str(source.get("exit_reason") or "")
+        return_value = float(source.get("return", 0.0) or 0.0)
+        stop_update_reason = str(source.get("last_stop_update_reason") or "")
+        pressure_target_applied = bool(source.get("pressure_target_applied"))
+        pressure_touch_lock_applied = bool(source.get("pressure_touch_lock_applied"))
+        time_based_trailing_enabled = bool(source.get("time_based_trailing_enabled"))
+
+        if selector.endswith("_profit_reverse"):
+            base = (
+                direction == Direction.BULL
+                and exit_reason == "stop_loss"
+                and return_value > 0.0
+                and str(source.get("regime_label") or "") == "high_growth"
+                and str(source.get("risk_mode") or "") == "offense"
+            )
+            if not base:
+                return False
+            if selector == "trailing_stop_profit_reverse":
+                return True
+            if selector == "trailing_stage_profit_reverse":
+                return stop_update_reason.startswith("trail_stage_")
+            if selector == "trailing_atr_profit_reverse":
+                return stop_update_reason == "atr_trail"
+            if selector == "trailing_pressure_profit_reverse":
+                return stop_update_reason == "pressure_level_trail" or pressure_target_applied or pressure_touch_lock_applied
+            if selector == "trailing_pressure_touch_lock_profit_reverse":
+                return pressure_touch_lock_applied
+            if selector == "trailing_time_enabled_profit_reverse":
+                return time_based_trailing_enabled
+            if selector == "plain_stop_profit_reverse":
+                return not stop_update_reason
+        if selector == "bull_high_growth_offense_loss":
+            return (
+                direction == Direction.BULL
+                and str(source.get("regime_label") or "") == "high_growth"
+                and str(source.get("risk_mode") or "") == "offense"
+                and exit_reason == "stop_loss"
+                and return_value < 0.0
+            )
+        if not (
+            direction == Direction.BULL
+            and str(source.get("regime_label") or "") == "high_growth"
+            and str(source.get("risk_mode") or "") == "offense"
+        ):
+            return False
+        quality = self._quality_snapshot_from_features(direction, source)
+        guarded = bool(source.get("failed_breakout_guard_applied")) or self._stable_guard_would_apply(source)
+        weak_quality = int(quality["quality_score"]) <= int(getattr(self.config, "stable_max_quality_score", 1))
+        if selector == "guarded_weak":
+            return guarded
+        if selector == "guarded_weak_loss":
+            return guarded and return_value < 0.0
+        if selector == "weak_quality":
+            return weak_quality
+        if selector == "weak_quality_loss":
+            return weak_quality and return_value < 0.0
+        if selector == "weak_or_guarded":
+            return weak_quality or guarded
+        if selector == "weak_or_guarded_loss":
+            return (weak_quality or guarded) and return_value < 0.0
+        if selector == "all_high_growth_offense":
+            return True
+        if selector == "actual_loss_oracle":
+            return return_value < 0.0
+        return False
+
+    def _stable_reverse_short_candidate(
+        self,
+        engine: Any,
+        close_action: StrategyAction | None,
+        latest_closed_idx: int,
+    ) -> dict[str, Any] | None:
+        if not bool(getattr(self.config, "enable_stable_reverse_short_live", True)):
+            return None
+        if not getattr(engine, "trades", None):
+            return None
+        trade = engine.trades[-1]
+        if trade.direction != Direction.BULL or str(trade.exit_reason or "") != "stop_loss":
+            return None
+        source = self._stable_source_event_from_trade(trade, close_action)
+        if not self._stable_selector_allows(source):
+            return None
+        entry_price = float(source.get("exit_price", 0.0) or 0.0)
+        source_entry = float(source.get("entry_price", 0.0) or 0.0)
+        source_stop = float(source.get("initial_stop_price", 0.0) or 0.0)
+        if entry_price <= 0 or source_entry <= 0 or source_stop <= 0:
+            return None
+        source_stop_pct = abs(source_entry - source_stop) / source_entry
+        stop_pct = source_stop_pct * float(self.config.live_overlay_stable_stop_multiplier)
+        if stop_pct <= 0 or stop_pct * 100.0 > float(self.config.live_overlay_stable_max_short_stop_pct):
+            return None
+        stop_price = entry_price * (1.0 + stop_pct)
+        target_price = entry_price * (1.0 - stop_pct * float(self.config.live_overlay_stable_target_rr))
+        if target_price <= 0 or stop_price <= entry_price:
+            return None
+        leverage = float(self.config.live_overlay_stable_leverage)
+        position_size_pct = float(getattr(self.config, "stable_position_size_pct", self.config.live_overlay_stable_allocation) or 0.0)
+        notional = max(float(getattr(engine, "capital", 0.0) or 0.0), 0.0) * leverage * position_size_pct
+        return {
+            "event_type": "stable_reverse_short",
+            "entry_idx": latest_closed_idx,
+            "direction": Direction.BEAR,
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "target_rr": float(self.config.live_overlay_stable_target_rr),
+            "max_hold_bars": int(self.config.live_overlay_stable_max_hold_bars),
+            "trail_style": str(getattr(self.config, "stable_trail_style", "tight") or "tight"),
+            "leverage": leverage,
+            "position_size_pct": position_size_pct,
+            "maintenance_margin_pct": float(self.config.high_leverage_maintenance_margin_pct),
+            "requested_notional": notional,
+            "source": source,
+        }
+
     def _overlay_maybe_build_formal_stable_candidate(self, engine: Any, idx: int) -> StrategyAction | None:
         state = self._load_overlay_formal_state(engine)
         event = state.get("last_shadow_event")
@@ -3063,7 +3301,7 @@ class OkxExecutionEngine:
             return None
         if int(event.get("exit_idx", -1) or -1) != idx:
             return None
-        if not selected_by(event, "guarded_weak_loss", 1):
+        if not self._stable_selector_allows(event):
             return None
         entry_price = float(event.get("exit_price", 0.0) or 0.0)
         if entry_price <= 0:
@@ -3100,30 +3338,7 @@ class OkxExecutionEngine:
         return action
 
     def _overlay_should_open_stable_from_trade(self, trade: Trade) -> bool:
-        event = {
-            "direction": trade.direction,
-            "regime_label": trade.regime_label,
-            "risk_mode": getattr(trade, "execution_risk_mode", None),
-            "exit_reason": trade.exit_reason,
-            "return": trade.pnl_pct,
-            "failed_breakout_guard_applied": any(
-                str(reason).startswith("failed_breakout_guard")
-                for reason in (getattr(trade, "execution_leverage_reasons", None) or [])
-            ),
-            "feature_adx": None,
-            "feature_momentum": None,
-            "feature_ema_gap": None,
-            "feature_bullish_structure": None,
-            "feature_bearish_structure": None,
-        }
-        diagnostics = getattr(trade, "execution_guard_diagnostics", None)
-        if isinstance(diagnostics, dict):
-            event["feature_adx"] = diagnostics.get("feature_adx", 0.0)
-            event["feature_momentum"] = diagnostics.get("feature_momentum", 0.0)
-            event["feature_ema_gap"] = diagnostics.get("feature_ema_gap", 0.0)
-            event["feature_bullish_structure"] = diagnostics.get("feature_bullish_structure", False)
-            event["feature_bearish_structure"] = diagnostics.get("feature_bearish_structure", False)
-        return selected_by(event, "guarded_weak_loss", 1)
+        return self._stable_selector_allows(self._stable_source_event_from_trade(trade))
 
     def _overlay_maybe_build_stable_candidate(self, engine: Any, idx: int) -> StrategyAction | None:
         if not self._stable_live_enabled():
@@ -5769,7 +5984,7 @@ class OkxExecutionEngine:
         for idx, candle in enumerate(candles):
             candle_time = self._timestamp_from_ts(candle.ts)
             if candle_time > last_processed:
-                return max(min_start, idx - 1)
+                return max(min_start, idx)
         return max(min_start, len(candles) - 1)
 
     def _latest_closed_index(self, engine: Any, close_buffer_seconds: int = 5) -> int | None:

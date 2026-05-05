@@ -129,6 +129,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--failed-breakout-guard-regime-label-sets", default="high_growth")
     parser.add_argument("--failed-breakout-guard-risk-mode-sets", default="offense")
     parser.add_argument("--failed-breakout-guard-direction-sets", default="BULL")
+    parser.add_argument("--smc-context-overlay-enabled-values", default="false")
+    parser.add_argument("--smc-h4-favorable-multiplier-values", default="1.0")
+    parser.add_argument("--smc-h4-adverse-multiplier-values", default="1.0")
+    parser.add_argument("--smc-low-score-multiplier-values", default="1.0")
+    parser.add_argument("--smc-london-multiplier-values", default="1.0")
+    parser.add_argument("--smc-recent-sweep-mss-multiplier-values", default="1.0")
     parser.add_argument("--min-liq-buffer-pct", type=float, default=1.2)
     parser.add_argument("--maintenance-margin-pct", type=float, default=0.5)
     parser.add_argument("--max-drawdown-pct", type=float, default=45.0)
@@ -319,6 +325,106 @@ def failed_breakout_guard(
     return guarded_leverage, [f"failed_breakout_guard:{quality_score}/{min_score}"], diagnostics
 
 
+def htf_pa_ict_guard_multiplier(
+    trade: pd.Series,
+    params: dict[str, Any],
+) -> tuple[float, list[str], dict[str, Any]]:
+    if not bool(params.get("htf_pa_ict_guard_enabled", False)):
+        return 1.0, [], {}
+
+    direction = str(trade.get("direction") or "")
+    allowed_directions = configured_set(params.get("htf_pa_ict_guard_directions", ["BULL"]))
+    if allowed_directions is not None and direction not in allowed_directions:
+        return 1.0, [], {}
+
+    h4_alignment = str(trade.get("htf_h4_alignment") or "none")
+    d1_alignment = str(trade.get("htf_d1_alignment") or "none")
+    h4_state = str(trade.get("htf_h4_state") or "none")
+    d1_state = str(trade.get("htf_d1_state") or "none")
+    required_h4_alignment = str(params.get("htf_pa_ict_guard_h4_alignment", "opposed") or "opposed")
+    required_d1_alignment = str(params.get("htf_pa_ict_guard_d1_alignment", "opposed") or "opposed")
+    allowed_h4_states = configured_set(params.get("htf_pa_ict_guard_h4_states"))
+    allowed_d1_states = configured_set(params.get("htf_pa_ict_guard_d1_states"))
+    diagnostics = {
+        "direction": direction,
+        "h4_alignment": h4_alignment,
+        "d1_alignment": d1_alignment,
+        "h4_state": h4_state,
+        "d1_state": d1_state,
+        "h4_age_bars": trade.get("htf_h4_age_bars"),
+        "d1_age_bars": trade.get("htf_d1_age_bars"),
+        "required_h4_alignment": required_h4_alignment,
+        "required_d1_alignment": required_d1_alignment,
+    }
+    if h4_alignment != required_h4_alignment or d1_alignment != required_d1_alignment:
+        return 1.0, [], diagnostics
+    if allowed_h4_states is not None and h4_state not in allowed_h4_states:
+        return 1.0, [], diagnostics
+    if allowed_d1_states is not None and d1_state not in allowed_d1_states:
+        return 1.0, [], diagnostics
+
+    raw_multiplier = params.get("htf_pa_ict_guard_multiplier", 1.0)
+    multiplier = 1.0 if raw_multiplier is None else float(raw_multiplier)
+    multiplier = max(0.0, min(multiplier, 1.0))
+    if multiplier >= 1.0:
+        return 1.0, [], diagnostics
+    reason = f"htf_pa_ict_guard:{h4_alignment}+{d1_alignment}:x{multiplier:g}"
+    return multiplier, [reason], diagnostics
+
+
+def smc_context_multiplier(
+    trade: pd.Series,
+    params: dict[str, Any],
+) -> tuple[float, list[str], dict[str, Any]]:
+    if not bool(params.get("smc_context_overlay_enabled", False)):
+        return 1.0, [], {}
+
+    multiplier = 1.0
+    reasons: list[str] = []
+    h4_side = str(trade.get("smc_h4_pd_side") or "")
+    session = str(trade.get("smc_session_bucket") or "")
+    try:
+        score = int(float(trade.get("smc_score", 0) or 0))
+    except (TypeError, ValueError):
+        score = 0
+    recent_sweep_mss = bool(trade.get("smc_recent_sweep_mss", False))
+
+    if h4_side == "favorable":
+        value = float(params.get("smc_h4_favorable_multiplier", 1.0) or 1.0)
+        multiplier *= value
+        reasons.append(f"smc_h4_favorable:x{value:g}")
+    elif h4_side == "adverse":
+        value = float(params.get("smc_h4_adverse_multiplier", 1.0) or 1.0)
+        multiplier *= value
+        reasons.append(f"smc_h4_adverse:x{value:g}")
+
+    if score <= 1:
+        value = float(params.get("smc_low_score_multiplier", 1.0) or 1.0)
+        multiplier *= value
+        reasons.append(f"smc_low_score:x{value:g}")
+
+    if session == "london_open":
+        value = float(params.get("smc_london_multiplier", 1.0) or 1.0)
+        multiplier *= value
+        reasons.append(f"smc_london:x{value:g}")
+
+    if recent_sweep_mss:
+        value = float(params.get("smc_recent_sweep_mss_multiplier", 1.0) or 1.0)
+        multiplier *= value
+        reasons.append(f"smc_recent_sweep_mss:x{value:g}")
+
+    diagnostics = {
+        "h4_pd_side": h4_side,
+        "score": score,
+        "session_bucket": session,
+        "recent_sweep_mss": recent_sweep_mss,
+        "raw_multiplier": multiplier,
+    }
+    if abs(multiplier - 1.0) < 1e-12:
+        return 1.0, [], diagnostics
+    return multiplier, reasons, diagnostics
+
+
 def signal_allows_price_structure_reattack(
     trade: pd.Series,
     diagnostics: dict[str, Any],
@@ -432,6 +538,8 @@ def expansion_overlay(
         "avg_effective_leverage": 0.0,
         "max_effective_leverage_seen": 0.0,
         "failed_breakout_guard_applied": 0,
+        "htf_pa_ict_guard_applied": 0,
+        "smc_context_overlay_applied": 0,
         "worst_liquidation_buffer_pct": None,
         "widest_stop_distance_pct": None,
         "beats_historical_main_return": False,
@@ -453,6 +561,8 @@ def expansion_overlay(
     capitals: list[float] = []
     leverages: list[float] = []
     failed_breakout_guard_count = 0
+    htf_pa_ict_guard_count = 0
+    smc_context_overlay_count = 0
     events: list[dict[str, Any]] = []
     buffers: list[float] = []
     stop_distances: list[float] = []
@@ -550,6 +660,25 @@ def expansion_overlay(
             params=params,
             risk_mode=risk_mode,
         )
+        htf_guard_multiplier, htf_guard_reasons, htf_guard_diagnostics = htf_pa_ict_guard_multiplier(
+            trade=trade,
+            params=params,
+        )
+        htf_guard_applied = bool(htf_guard_reasons)
+        if htf_guard_applied:
+            htf_pa_ict_guard_count += 1
+            reasons.extend(htf_guard_reasons)
+            effective_leverage *= htf_guard_multiplier
+        smc_multiplier, smc_reasons, smc_diagnostics = smc_context_multiplier(
+            trade=trade,
+            params=params,
+        )
+        smc_applied = bool(smc_reasons)
+        if smc_applied:
+            smc_context_overlay_count += 1
+            reasons.extend(smc_reasons)
+            effective_leverage *= smc_multiplier
+            effective_leverage = min(effective_leverage, float(params["max_effective_leverage"]))
         trade_return = signal_unit_return * effective_leverage
         signal_health_returns.append(signal_unit_return)
         capital_before = capital
@@ -590,6 +719,11 @@ def expansion_overlay(
                 "pressure_touch_lock_level": None if pd.isna(trade.get("pressure_touch_lock_level")) else float(trade.get("pressure_touch_lock_level")),
                 "pressure_touch_lock_rr": None if pd.isna(trade.get("pressure_touch_lock_rr")) else float(trade.get("pressure_touch_lock_rr")),
                 "pressure_touch_lock_update_idx": None if pd.isna(trade.get("pressure_touch_lock_update_idx")) else int(trade.get("pressure_touch_lock_update_idx")),
+                "time_based_trailing_enabled": bool(trade.get("time_based_trailing_enabled", False)),
+                "auto_tit_reason": str(trade.get("auto_tit_reason") or ""),
+                "last_stop_update_reason": str(trade.get("last_stop_update_reason") or ""),
+                "last_stop_update_idx": None if pd.isna(trade.get("last_stop_update_idx")) else int(trade.get("last_stop_update_idx")),
+                "final_stop_price": None if pd.isna(trade.get("final_stop_price")) else float(trade.get("final_stop_price")),
                 "feature_adx": float(trade.get("feature_adx", 0.0) or 0.0),
                 "feature_momentum": float(trade.get("feature_momentum", 0.0) or 0.0),
                 "feature_ema_gap": float(trade.get("feature_ema_gap", 0.0) or 0.0),
@@ -600,12 +734,30 @@ def expansion_overlay(
                 "reasons": reasons,
                 "failed_breakout_guard_applied": guard_applied,
                 "failed_breakout_guard_diagnostics": guard_diagnostics,
+                "htf_pa_ict_guard_applied": htf_guard_applied,
+                "htf_pa_ict_guard_multiplier": htf_guard_multiplier,
+                "htf_pa_ict_guard_diagnostics": htf_guard_diagnostics,
+                "htf_h4_alignment": str(trade.get("htf_h4_alignment") or "none"),
+                "htf_d1_alignment": str(trade.get("htf_d1_alignment") or "none"),
+                "htf_h4_state": str(trade.get("htf_h4_state") or "none"),
+                "htf_d1_state": str(trade.get("htf_d1_state") or "none"),
+                "htf_h4_age_bars": trade.get("htf_h4_age_bars"),
+                "htf_d1_age_bars": trade.get("htf_d1_age_bars"),
+                "smc_context_overlay_applied": smc_applied,
+                "smc_context_multiplier": smc_multiplier,
+                "smc_context_diagnostics": smc_diagnostics,
+                "smc_h4_pd_side": str(trade.get("smc_h4_pd_side") or ""),
+                "smc_session_bucket": str(trade.get("smc_session_bucket") or ""),
+                "smc_score": trade.get("smc_score"),
+                "smc_recent_sweep_mss": bool(trade.get("smc_recent_sweep_mss", False)),
                 "market_healthy": market_healthy,
                 "risk_mode": risk_mode,
                 "risk_mode_stats": mode_stats,
             }
         )
 
+        if htf_guard_applied and effective_leverage == 0.0:
+            continue
         if capital > capital_before:
             win_streak += 1
             loss_streak = 0
@@ -631,6 +783,8 @@ def expansion_overlay(
             "avg_effective_leverage": round(sum(leverages) / len(leverages), 6) if leverages else 0.0,
             "max_effective_leverage_seen": round(max(leverages), 6) if leverages else 0.0,
             "failed_breakout_guard_applied": failed_breakout_guard_count,
+            "htf_pa_ict_guard_applied": htf_pa_ict_guard_count,
+            "smc_context_overlay_applied": smc_context_overlay_count,
             "worst_liquidation_buffer_pct": round(min(buffers), 6) if buffers else None,
             "widest_stop_distance_pct": round(max(stop_distances), 6) if stop_distances else None,
             "beats_historical_main_return": total_return_pct > HISTORICAL_MAIN_BEST_RETURN_PCT,
@@ -813,6 +967,12 @@ def candidate_params(args: argparse.Namespace) -> list[dict[str, Any]]:
         parse_str_list(args.failed_breakout_guard_regime_label_sets),
         parse_str_list(args.failed_breakout_guard_risk_mode_sets),
         parse_str_list(args.failed_breakout_guard_direction_sets),
+        parse_bool_list(args.smc_context_overlay_enabled_values),
+        parse_float_list(args.smc_h4_favorable_multiplier_values),
+        parse_float_list(args.smc_h4_adverse_multiplier_values),
+        parse_float_list(args.smc_low_score_multiplier_values),
+        parse_float_list(args.smc_london_multiplier_values),
+        parse_float_list(args.smc_recent_sweep_mss_multiplier_values),
     )
     params: list[dict[str, Any]] = []
     for (
@@ -859,6 +1019,12 @@ def candidate_params(args: argparse.Namespace) -> list[dict[str, Any]]:
         failed_breakout_guard_regime_label_set,
         failed_breakout_guard_risk_mode_set,
         failed_breakout_guard_direction_set,
+        smc_context_overlay_enabled,
+        smc_h4_favorable_multiplier,
+        smc_h4_adverse_multiplier,
+        smc_low_score_multiplier,
+        smc_london_multiplier,
+        smc_recent_sweep_mss_multiplier,
     ) in combos:
         if base_leverage > max_effective_leverage:
             continue
@@ -916,6 +1082,12 @@ def candidate_params(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "failed_breakout_guard_regime_labels": None if failed_breakout_guard_regime_label_set == "all" else failed_breakout_guard_regime_label_set.split("+"),
                 "failed_breakout_guard_risk_modes": None if failed_breakout_guard_risk_mode_set == "all" else failed_breakout_guard_risk_mode_set.split("+"),
                 "failed_breakout_guard_directions": None if failed_breakout_guard_direction_set == "all" else failed_breakout_guard_direction_set.split("+"),
+                "smc_context_overlay_enabled": smc_context_overlay_enabled,
+                "smc_h4_favorable_multiplier": smc_h4_favorable_multiplier,
+                "smc_h4_adverse_multiplier": smc_h4_adverse_multiplier,
+                "smc_low_score_multiplier": smc_low_score_multiplier,
+                "smc_london_multiplier": smc_london_multiplier,
+                "smc_recent_sweep_mss_multiplier": smc_recent_sweep_mss_multiplier,
                 "min_liq_buffer_pct": args.min_liq_buffer_pct,
                 "maintenance_margin_pct": args.maintenance_margin_pct,
             }

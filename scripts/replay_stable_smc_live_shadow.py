@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.backtest_config_report import DEFAULT_DATA_15M, DEFAULT_DATA_4H, load_config_payload  # noqa: E402
+from scripts.confirmed_multiframe_score_utils import (  # noqa: E402
+    align_confirmed_mapping,
+    passes_score_gate,
+    resample_confirmed_1h,
+    score_snapshot,
+)
 from scripts.high_leverage_repro_params import DEFAULT_PRESSURE_PARAMS_PATH, apply_pressure_params  # noqa: E402
 from scripts.live_readiness_report import load_prepared_data, run_engine, trade_dataframe  # noqa: E402
 from scripts.replay_stable_live_shadow import (  # noqa: E402
@@ -50,6 +57,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-15m", default=str(DEFAULT_DATA_15M))
     parser.add_argument("--data-4h", default=str(DEFAULT_DATA_4H))
     parser.add_argument("--start-date", default="2022-01-01")
+    parser.add_argument(
+        "--informative-asof-from-15m",
+        action="store_true",
+        help="Use primary-candle as-of 4h state to match live evaluation instead of finalized 4h candles.",
+    )
+    parser.add_argument(
+        "--confirmed-4h-only",
+        action="store_true",
+        help="Use only the previous fully closed 4h candle state for each primary candle.",
+    )
+    parser.add_argument(
+        "--replay-sync-entry-to-signal-price",
+        action="store_true",
+        help="Sync replay entry execution price back to signal entry price after open to emulate live exchange fill reconciliation.",
+    )
     parser.add_argument("--daily-loss-stop-pct", type=float, default=6.0)
     parser.add_argument("--equity-drawdown-stop-pct", type=float, default=15.0)
     parser.add_argument("--equity-drawdown-cooldown-days", type=int, default=2)
@@ -64,6 +86,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stable-leverage", type=float, default=5.0)
     parser.add_argument("--stable-stop-multiplier", type=float, default=1.0)
     parser.add_argument("--stable-max-short-stop-pct", type=float, default=1.75)
+    parser.add_argument("--enable-sota-score-gate", action="store_true")
+    parser.add_argument("--sota-score-net-min", type=int, default=2)
+    parser.add_argument("--sota-score-bull-min", type=int, default=8)
+    parser.add_argument("--sota-score-bear-max", type=int, default=6)
+    parser.add_argument("--sota-score-conflict-mode", default="any", choices=("any", "conflict", "clean"))
     parser.add_argument("--stage-trigger-rr-mode", default="close", choices=RR_MODE_CHOICES)
     parser.add_argument("--time-trailing-rr-mode", default="close", choices=RR_MODE_CHOICES)
     parser.add_argument("--atr-activation-rr-mode", default="close", choices=RR_MODE_CHOICES)
@@ -135,6 +162,14 @@ def replay_base_priority_stable_smc(
 
 
 def reference_gap(reference: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
+    reference_keys = {
+        f"{event.get('event_type')}|{event.get('entry_idx')}|{event.get('exit_idx')}"
+        for event in reference.get("events", [])
+    }
+    live_keys = {
+        f"{event.get('event_type')}|{event.get('entry_idx')}|{event.get('exit_idx')}"
+        for event in live.get("events", [])
+    }
     return {
         "reference_total_return_pct": reference.get("total_return_pct"),
         "live_total_return_pct": live.get("total_return_pct"),
@@ -142,6 +177,8 @@ def reference_gap(reference: dict[str, Any], live: dict[str, Any]) -> dict[str, 
         "reference_max_drawdown_pct": reference.get("max_drawdown_pct"),
         "live_max_drawdown_pct": live.get("max_drawdown_pct"),
         "dd_gap_pct": round(float(live.get("max_drawdown_pct", 0.0) or 0.0) - float(reference.get("max_drawdown_pct", 0.0) or 0.0), 4),
+        "accepted_only_in_reference": sorted(reference_keys - live_keys),
+        "accepted_only_in_live": sorted(live_keys - reference_keys),
     }
 
 
@@ -179,6 +216,60 @@ def selected_smc_allocations(args: argparse.Namespace) -> list[float]:
 def current_year_return_pct(result: dict[str, Any]) -> float:
     window = result.get("windows", {}).get("current_year", {})
     return float(window.get("total_return_pct", 0.0) or 0.0)
+
+
+def apply_sota_score_gate(
+    prepared: Any,
+    sota_events: list[dict[str, Any]],
+    *,
+    enabled: bool,
+    net_min: int,
+    bull_min: int,
+    bear_max: int,
+    conflict_mode: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rule = {
+        "net_min": int(net_min),
+        "bull_min": int(bull_min),
+        "bear_max": int(bear_max),
+        "conflict_mode": str(conflict_mode),
+    }
+    if not enabled:
+        return sota_events, {
+            "enabled": False,
+            "rule": rule,
+            "original_candidates": len(sota_events),
+            "filtered_candidates": len(sota_events),
+            "removed_candidates": 0,
+        }
+
+    c1h = resample_confirmed_1h(prepared.c15m)
+    mapping_1h = align_confirmed_mapping(c1h, prepared.c15m)
+    filtered: list[dict[str, Any]] = []
+    removed = 0
+    for event in sota_events:
+        entry_idx = int(event.get("entry_idx", 0) or 0)
+        snapshot = score_snapshot(prepared, c1h, mapping_1h, entry_idx)
+        enriched = dict(event)
+        enriched.update(asdict(snapshot))
+        if passes_score_gate(
+            enriched,
+            net_min=int(net_min),
+            bull_min=int(bull_min),
+            bear_max=int(bear_max),
+            conflict_mode=str(conflict_mode),
+        ):
+            filtered.append(enriched)
+        else:
+            removed += 1
+    return filtered, {
+        "enabled": True,
+        "rule": rule,
+        "original_candidates": len(sota_events),
+        "filtered_candidates": len(filtered),
+        "removed_candidates": removed,
+        "candles_1h": len(c1h),
+    }
 
 
 def live_candidate_score(live: dict[str, Any], baseline: dict[str, Any]) -> tuple[float, dict[str, Any]]:
@@ -268,9 +359,11 @@ def evaluate_smc_candidate(
         "score": score,
         "score_inputs": score_inputs,
         "candidate_generation": {
+            "raw_sota_candidates": int(getattr(args, "_raw_sota_candidates", len(base_events))),
             "sota_candidates": len(base_events),
             "stable_candidates": len(stable_events),
             "smc_candidates": len(smc_events),
+            "sota_score_gate": getattr(args, "_sota_score_gate", None),
             "stable_summary": stable_summary,
             "smc_summary": smc_summary,
         },
@@ -289,9 +382,11 @@ def compact_candidate_result(candidate: dict[str, Any]) -> dict[str, Any]:
         "score": candidate["score"],
         "score_inputs": candidate["score_inputs"],
         "candidate_generation": {
+            "raw_sota_candidates": candidate["candidate_generation"].get("raw_sota_candidates"),
             "sota_candidates": candidate["candidate_generation"]["sota_candidates"],
             "stable_candidates": candidate["candidate_generation"]["stable_candidates"],
             "smc_candidates": candidate["candidate_generation"]["smc_candidates"],
+            "sota_score_gate": candidate["candidate_generation"].get("sota_score_gate"),
             "smc_summary": candidate["candidate_generation"]["smc_summary"],
         },
         "reference_base_priority_stable_smc": candidate["reference_base_priority_stable_smc"],
@@ -312,11 +407,14 @@ def main() -> None:
         time_trailing_rr_mode=str(args.time_trailing_rr_mode),
         atr_activation_rr_mode=str(args.atr_activation_rr_mode),
     )
+    payload["replay_sync_entry_to_signal_price"] = bool(args.replay_sync_entry_to_signal_price)
     prepared = load_prepared_data(
         data_15m_path=Path(args.data_15m),
         data_4h_path=Path(args.data_4h),
         start=pd.Timestamp(args.start_date, tz="UTC"),
         threshold_payload=payload.get("regime_switcher_thresholds"),
+        informative_asof_from_15m=bool(args.informative_asof_from_15m),
+        confirmed_4h_only=bool(args.confirmed_4h_only),
     )
     metrics, engine = run_engine(payload, prepared, args.start_date)
     trades = enrich_trades_with_regime_features(trade_dataframe(engine), prepared)
@@ -332,7 +430,19 @@ def main() -> None:
     )
     shadow_events = shadow["events"]
     base_shadow_summary = event_stream_summary(shadow_events, initial_capital, prepared.end)
-    base_events = [standard_sota_event(event) for event in shadow_events]
+    raw_base_events = [standard_sota_event(event) for event in shadow_events]
+    base_events, sota_score_gate = apply_sota_score_gate(
+        prepared,
+        raw_base_events,
+        enabled=bool(args.enable_sota_score_gate),
+        net_min=int(args.sota_score_net_min),
+        bull_min=int(args.sota_score_bull_min),
+        bear_max=int(args.sota_score_bear_max),
+        conflict_mode=str(args.sota_score_conflict_mode),
+    )
+    gated_shadow_summary = event_stream_summary(base_events, initial_capital, prepared.end)
+    args._raw_sota_candidates = len(raw_base_events)
+    args._sota_score_gate = sota_score_gate
     stable_events, stable_summary = build_stable_events(
         payload,
         prepared,
@@ -369,7 +479,7 @@ def main() -> None:
                     stable_events=stable_events,
                     stable_summary=stable_summary,
                     initial_capital=initial_capital,
-                    baseline=base_shadow_summary,
+                    baseline=gated_shadow_summary,
                 )
             )
     candidates.sort(
@@ -391,6 +501,9 @@ def main() -> None:
             "data_end": str(prepared.end),
             "candles_15m": len(prepared.c15m),
             "candles_4h": len(prepared.c4h),
+            "informative_asof_from_15m": bool(args.informative_asof_from_15m),
+            "confirmed_4h_only": bool(args.confirmed_4h_only),
+            "replay_sync_entry_to_signal_price": bool(args.replay_sync_entry_to_signal_price),
             "smc_cases": smc_case_names,
             "smc_allocation_values": smc_allocations,
             "selected_smc_case": selected["smc_case"],
@@ -398,10 +511,12 @@ def main() -> None:
             "smc_case": selected["smc_case"],
             "smc_allocation": selected["smc_allocation"],
             "stable_params": stable_summary["params"],
+            "sota_score_gate": sota_score_gate,
             "trailing_rr_modes": trailing_rr_modes,
             "paper_log_output": str(Path(args.paper_log_output).resolve()),
         },
         "baseline_shadow_sota": {key: value for key, value in base_shadow_summary.items() if key != "events"},
+        "gated_shadow_sota": {key: value for key, value in gated_shadow_summary.items() if key != "events"},
         "selected_candidate": {
             "smc_case": selected["smc_case"],
             "smc_allocation": selected["smc_allocation"],

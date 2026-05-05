@@ -1,46 +1,52 @@
 # Research Branch Policy
 
-This branch is for high-leverage strategy research only.
-
-## Branch Roles
+Current branch roles:
 
 - `main`: deployable production code for the Tokyo bot.
-- `high_leverage_10x_research`: research code, scans, reports, and parameter experiments.
+- `new_strategy_research`: active integration branch for replay/live convergence, candidate selection, and cleanup before promotion to `main`.
+- `high_leverage_10x_research`: historical long-running research branch; not the canonical promotion branch anymore.
 
-Tokyo deployment should always be done from `main`, not from this branch.
+Tokyo deployment should always be done from `main`.
 
-## Allowed On This Branch
+## Canonical Workflow Docs
 
-- Strategy experiments in `strategy/` when needed for research.
-- Research scripts in `scripts/`.
-- Research notes and reproduction docs.
-- Files under `research/high_leverage/`.
-- Tests that validate research or strategy behavior.
+- `docs/workflows/live.md`
+- `docs/workflows/replay.md`
+- `docs/workflows/research.md`
 
-## Avoid On This Branch
+## Allowed On Research Branches
 
-Do not change production deployment surfaces here:
+- Strategy experiments in `strategy/` when needed for replay/live convergence.
+- Replay, audit, and research scripts under `scripts/`.
+- Research notes and reports under `research/` or `docs/archive/`.
+- Tests that validate replay/live behavior.
+
+## Protected Production Surfaces
+
+Treat these as production surfaces and review them as promotion changes, not casual research edits:
 
 - `systemd/`
 - `scripts/deploy_tokyo.sh`
 - `scripts/bootstrap_server.sh`
 - `config/config.live*.json`
 - `config/config.live*.template.json`
-- Telegram command/bot UX code unless the explicit task is to research bot UX.
+- live Telegram command/bot UX code
 
-If a research result should go live, promote it deliberately:
+## Promotion Rule
 
-1. Record the exact result and parameters in the reproduction document.
-2. Cherry-pick or merge the minimal strategy/config changes into `main`.
-3. Verify the production config reproduces the selected result.
+If a research result should go live:
+
+1. Reproduce it through the replay/audit workflow.
+2. Reduce it to the minimal production diff.
+3. Merge or cherry-pick it into `main`.
 4. Deploy Tokyo only from `main`.
 
 ## Safety Check
 
-Run this before committing research work:
+Run:
 
 ```bash
 bash scripts/check_research_branch_safety.sh
 ```
 
-The check fails if production deployment files are modified on this branch.
+The check is enforced on active research branches and fails if protected production files are changed without deliberate promotion.

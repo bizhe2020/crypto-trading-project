@@ -12,6 +12,11 @@ from bot.state_store import StateStore
 from strategy.scalp_robust_v2_core import StrategySnapshot
 
 
+class FakeCandle:
+    def __init__(self, ts: int) -> None:
+        self.ts = ts
+
+
 class FakeEngine:
     def __init__(self) -> None:
         self.capital = 100.0
@@ -44,11 +49,21 @@ class LiveEvaluateWindowTest(unittest.TestCase):
         engine = FakeEngine()
         executor = object.__new__(OkxExecutionEngine)
         executor.store = store
-        executor.config = type("Config", (), {"symbol": "BTC/USDT:USDT"})()
+        executor.config = type(
+            "Config",
+            (),
+            {
+                "symbol": "BTC/USDT:USDT",
+                "enable_live_candidate_arbitration": False,
+            },
+        )()
         executor.load_engine = MethodType(lambda self: (engine, start_idx), executor)
         executor._sync_live_capital = MethodType(lambda self, loaded: loaded.capital, executor)
         executor._latest_closed_index = MethodType(lambda self, loaded: latest_closed_idx, executor)
-        executor._assert_live_state_synced = MethodType(lambda self, loaded, *, context: None, executor)
+        executor._assert_live_state_synced = MethodType(
+            lambda self, loaded, *, context, timestamp=None, exit_idx=None: None,
+            executor,
+        )
         return executor, engine, store
 
     def test_evaluate_latest_includes_latest_closed_candle(self) -> None:
@@ -92,6 +107,37 @@ class LiveEvaluateWindowTest(unittest.TestCase):
 
         with patch("bot.okx_executor.datetime", FixedDateTime):
             self.assertEqual(executor.latest_closed_candle_time(close_buffer_seconds=5), "2026-04-29 11:45")
+
+    def test_latest_closed_candle_does_not_process_current_open_candle(self) -> None:
+        executor = object.__new__(OkxExecutionEngine)
+        executor.config = type("Config", (), {"timeframe": "15m"})()
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 4, 29, 12, 0, 13, tzinfo=timezone.utc)
+
+        with patch("bot.okx_executor.datetime", FixedDateTime):
+            self.assertEqual(executor.latest_closed_candle_time(close_buffer_seconds=5), "2026-04-29 11:45")
+
+    def test_find_resume_index_starts_after_last_processed_candle(self) -> None:
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        store = StateStore(Path(tmpdir.name) / "state.db")
+        store.set_value("last_processed_candle_time", "2026-01-01 00:15")
+
+        executor = object.__new__(OkxExecutionEngine)
+        executor.store = store
+        executor.config = type("Config", (), {"timeframe": "15m"})()
+        executor._minimum_start_index = MethodType(lambda self: 0, executor)
+
+        candles = [
+            FakeCandle(1767225600),
+            FakeCandle(1767226500),
+            FakeCandle(1767227400),
+        ]
+
+        self.assertEqual(executor._find_resume_index(candles), 2)
 
 
 if __name__ == "__main__":

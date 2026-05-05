@@ -60,6 +60,13 @@ class Trade:
     trail_style: str | None = None
     risk_regime: str | None = None
     regime_label: str | None = None
+    candidate_event_type: str | None = None
+    execution_effective_leverage: float | None = None
+    execution_risk_mode: str | None = None
+    execution_leverage_reasons: list[str] | None = None
+    execution_requested_notional: float | None = None
+    execution_target_notional: float | None = None
+    execution_guard_diagnostics: dict[str, Any] | None = None
     time_based_trailing_enabled: bool = False
     auto_tit_reason: str | None = None
     exit_idx: int | None = None
@@ -75,12 +82,14 @@ class Trade:
     pressure_touch_lock_level: float | None = None
     pressure_touch_lock_rr: float | None = None
     pressure_touch_lock_update_idx: int | None = None
+    last_stop_update_reason: str | None = None
+    last_stop_update_idx: int | None = None
+    final_stop_price: float | None = None
 
 
 @dataclass
 class StrategyConfig:
     rr_ratio: float = 4.0
-    trailing_config: str = "B"
     sl_buffer_pct: float = 1.0
     use_hfvf_filter: bool = True
     leverage: float = 3.0
@@ -123,6 +132,7 @@ class StrategyConfig:
     bear_weak_short_rr_ratio_override: float | None = None
     bear_weak_short_trail_style_override: str | None = None
     disable_fixed_target: bool = False
+    enable_stage_trailing: bool = True
     enable_atr_trailing: bool = False
     atr_period: int = 14
     atr_activation_rr: float = 2.0
@@ -204,6 +214,7 @@ class StrategyConfig:
     regime_switcher_flat_overrides: dict[str, Any] | None = None
     taker_fee_rate: float = 0.0005
     slippage_bps: float = 2.0
+    replay_sync_entry_to_signal_price: bool = False
 
 
 @dataclass
@@ -245,6 +256,7 @@ class PositionState:
     auto_tit_reason: str | None = None
     risk_regime: str | None = None
     regime_label: str | None = None
+    candidate_event_type: str | None = None
     exchange_order_id: str | None = None
     exchange_attach_algo_id: str | None = None
     exchange_attach_algo_client_id: str | None = None
@@ -266,6 +278,8 @@ class PositionState:
     pressure_touch_lock_level: float | None = None
     pressure_touch_lock_rr: float | None = None
     pressure_touch_lock_update_idx: int | None = None
+    last_stop_update_reason: str | None = None
+    last_stop_update_idx: int | None = None
 
 
 @dataclass
@@ -314,6 +328,15 @@ class PrecomputedState:
     reclaimed_bear: list[bool]
     broken_bull: list[bool]
     reclaimed_bull: list[bool]
+    bias_for_15m: list[str] | None = None
+    regime_1d_bull_100_for_15m: list[bool] | None = None
+    regime_1d_bull_200_for_15m: list[bool] | None = None
+    regime_1d_bear_100_for_15m: list[bool] | None = None
+    regime_1d_bear_200_for_15m: list[bool] | None = None
+    bull_trend_score_for_15m: list[int] | None = None
+    bear_trend_score_for_15m: list[int] | None = None
+    regime_label_for_15m: list[str] | None = None
+    regime_features_for_15m: list[dict[str, Any]] | None = None
 
 
 def load_candles(path: str | Path) -> list[Candle]:
@@ -596,6 +619,241 @@ def build_precomputed_state(c4h: list[Candle], c15m: list[Candle], swing_n: int 
     )
 
 
+def _partial_4h_candle(c15m: list[Candle], idx: int) -> Candle:
+    current = c15m[idx]
+    bucket_seconds = 4 * 60 * 60
+    bucket_ts = current.ts - (current.ts % bucket_seconds)
+    start_idx = idx
+    while start_idx > 0 and c15m[start_idx - 1].ts >= bucket_ts:
+        start_idx -= 1
+    bucket = c15m[start_idx : idx + 1]
+    return Candle(
+        ts=bucket_ts,
+        o=bucket[0].o,
+        h=max(candle.h for candle in bucket),
+        l=min(candle.l for candle in bucket),
+        c=bucket[-1].c,
+        v=sum(candle.v for candle in bucket),
+    )
+
+
+def _asof_4h_series(c4h: list[Candle], c15m: list[Candle], idx: int) -> list[Candle]:
+    partial = _partial_4h_candle(c15m, idx)
+    history = [candle for candle in c4h if candle.ts < partial.ts]
+    return [*history, partial]
+
+
+def _last_or_default(values: list[Any], default: Any) -> Any:
+    return values[-1] if values else default
+
+
+def _ema_next(previous: float, value: float, period: int) -> float:
+    alpha = 2.0 / (float(period) + 1.0)
+    return alpha * value + (1.0 - alpha) * previous
+
+
+def _asof_bias_from_fvgs(
+    completed_fvgs: list[tuple[int, str, float, float]],
+    c4h: list[Candle],
+    partial: Candle,
+    history_len: int,
+) -> str:
+    fvgs: list[tuple[int, str, float, float]] = [
+        fvg for fvg in completed_fvgs if fvg[0] < history_len
+    ]
+    if history_len >= 2:
+        prev2 = c4h[history_len - 2]
+        if prev2.l > partial.h:
+            fvgs.append((history_len, "bull", prev2.l, partial.h))
+        if prev2.h < partial.l:
+            fvgs.append((history_len, "bear", partial.l, prev2.h))
+
+    cp = partial.c
+    bull_above = False
+    bear_below = False
+    for _fvg_idx, ftype, top, bottom in reversed(fvgs):
+        if ftype == "bull" and cp > top:
+            bull_above = True
+            break
+        if ftype == "bear" and cp < bottom:
+            bear_below = True
+            break
+    if bull_above and not bear_below:
+        return Direction.BULL
+    if bear_below and not bull_above:
+        return Direction.BEAR
+    if bull_above:
+        return Direction.BULL
+    if bear_below:
+        return Direction.BEAR
+    return Direction.NONE
+
+
+def _partial_regime_state(c4h: list[Candle], ema_values: list[float], partial: Candle, history_len: int, period: int, direction: str) -> bool:
+    if history_len <= 0 or history_len < period - 1:
+        return False
+    ema = _ema_next(ema_values[history_len - 1], partial.c, period)
+    return partial.c > ema if direction == "bull" else partial.c < ema
+
+
+def _partial_trend_scores(
+    completed_ema50: list[float],
+    completed_ema200: list[float],
+    partial: Candle,
+    history_len: int,
+) -> tuple[int, int]:
+    if history_len <= 0:
+        return (0, 0)
+    ema50 = _ema_next(completed_ema50[history_len - 1], partial.c, 50)
+    ema200 = _ema_next(completed_ema200[history_len - 1], partial.c, 200)
+    bull_score = 0
+    bear_score = 0
+    if partial.c > ema50:
+        bull_score += 1
+    if partial.c < ema50:
+        bear_score += 1
+    if ema50 > ema200:
+        bull_score += 1
+    if ema50 < ema200:
+        bear_score += 1
+    if history_len >= 3:
+        prev_ema50 = completed_ema50[history_len - 3]
+        if ema50 > prev_ema50:
+            bull_score += 1
+        if ema50 < prev_ema50:
+            bear_score += 1
+    if partial.c > 0 and (ema50 - ema200) / partial.c > 0.02:
+        bull_score += 1
+    if partial.c > 0 and (ema200 - ema50) / partial.c > 0.02:
+        bear_score += 1
+    return (bull_score, bear_score)
+
+
+def build_precomputed_state_asof_15m(
+    c4h: list[Candle],
+    c15m: list[Candle],
+    swing_n: int = 3,
+    lookback: int = 80,
+    threshold_payload: dict[str, Any] | None = None,
+) -> PrecomputedState:
+    state = build_precomputed_state(c4h, c15m, swing_n=swing_n, lookback=lookback)
+    bias_for_15m: list[str] = []
+    regime_1d_bull_100_for_15m: list[bool] = []
+    regime_1d_bull_200_for_15m: list[bool] = []
+    regime_1d_bear_100_for_15m: list[bool] = []
+    regime_1d_bear_200_for_15m: list[bool] = []
+    bull_trend_score_for_15m: list[int] = []
+    bear_trend_score_for_15m: list[int] = []
+    regime_label_for_15m: list[str] = []
+    regime_features_for_15m: list[dict[str, Any]] = []
+
+    try:
+        from scripts.regime_detector import compute_regime_features, detect_regime
+    except Exception:
+        compute_regime_features = None
+        detect_regime = None
+
+    completed_fvgs = precompute_fvgs_4h(c4h)
+    completed_ema50 = state.ema50_4h
+    completed_ema100 = compute_ema_series(c4h, 100)
+    completed_ema200 = state.ema200_4h
+    regime_cache: dict[int, tuple[str, dict[str, Any]]] = {}
+    history_len = 0
+    for idx in range(len(c15m)):
+        series = _asof_4h_series(c4h, c15m, idx)
+        partial = series[-1]
+        while history_len < len(c4h) and c4h[history_len].ts < partial.ts:
+            history_len += 1
+
+        bias = _asof_bias_from_fvgs(completed_fvgs, c4h, partial, history_len)
+        bull_100 = _partial_regime_state(c4h, completed_ema100, partial, history_len, 100, "bull")
+        bull_200 = _partial_regime_state(c4h, completed_ema200, partial, history_len, 200, "bull")
+        bear_100 = _partial_regime_state(c4h, completed_ema100, partial, history_len, 100, "bear")
+        bear_200 = _partial_regime_state(c4h, completed_ema200, partial, history_len, 200, "bear")
+        bull_score, bear_score = _partial_trend_scores(completed_ema50, completed_ema200, partial, history_len)
+        cached_regime = regime_cache.get(history_len)
+        if cached_regime is None:
+            features: dict[str, Any] = {}
+            label = "flat"
+            if compute_regime_features is not None and detect_regime is not None:
+                try:
+                    regime_history = c4h[:history_len]
+                    features = compute_regime_features(regime_history, threshold_payload)
+                    label = detect_regime(regime_history, threshold_payload)
+                except Exception:
+                    features = {}
+                    label = "flat"
+            cached_regime = (label, features)
+            regime_cache[history_len] = cached_regime
+        label, features = cached_regime
+        bias_for_15m.append(bias)
+        regime_1d_bull_100_for_15m.append(bull_100)
+        regime_1d_bull_200_for_15m.append(bull_200)
+        regime_1d_bear_100_for_15m.append(bear_100)
+        regime_1d_bear_200_for_15m.append(bear_200)
+        bull_trend_score_for_15m.append(bull_score)
+        bear_trend_score_for_15m.append(bear_score)
+        regime_label_for_15m.append(label)
+        regime_features_for_15m.append(features)
+
+    state.bias_for_15m = bias_for_15m
+    state.regime_1d_bull_100_for_15m = regime_1d_bull_100_for_15m
+    state.regime_1d_bull_200_for_15m = regime_1d_bull_200_for_15m
+    state.regime_1d_bear_100_for_15m = regime_1d_bear_100_for_15m
+    state.regime_1d_bear_200_for_15m = regime_1d_bear_200_for_15m
+    state.bull_trend_score_for_15m = bull_trend_score_for_15m
+    state.bear_trend_score_for_15m = bear_trend_score_for_15m
+    state.regime_label_for_15m = regime_label_for_15m
+    state.regime_features_for_15m = regime_features_for_15m
+    return state
+
+
+def build_precomputed_state_confirmed_4h(
+    c4h: list[Candle],
+    c15m: list[Candle],
+    swing_n: int = 3,
+    lookback: int = 80,
+) -> PrecomputedState:
+    state = build_precomputed_state(c4h, c15m, swing_n=swing_n, lookback=lookback)
+    mapping = align_timeframes(c4h, c15m)
+    bias_for_15m: list[str] = []
+    regime_1d_bull_100_for_15m: list[bool] = []
+    regime_1d_bull_200_for_15m: list[bool] = []
+    regime_1d_bear_100_for_15m: list[bool] = []
+    regime_1d_bear_200_for_15m: list[bool] = []
+    bull_trend_score_for_15m: list[int] = []
+    bear_trend_score_for_15m: list[int] = []
+
+    for mapped_idx in mapping:
+        confirmed_idx = mapped_idx - 1
+        if confirmed_idx < 0:
+            bias_for_15m.append(Direction.NONE)
+            regime_1d_bull_100_for_15m.append(False)
+            regime_1d_bull_200_for_15m.append(False)
+            regime_1d_bear_100_for_15m.append(False)
+            regime_1d_bear_200_for_15m.append(False)
+            bull_trend_score_for_15m.append(0)
+            bear_trend_score_for_15m.append(0)
+            continue
+
+        bias_for_15m.append(state.bias_4h[confirmed_idx])
+        regime_1d_bull_100_for_15m.append(state.regime_1d_bull_100[confirmed_idx])
+        regime_1d_bull_200_for_15m.append(state.regime_1d_bull_200[confirmed_idx])
+        regime_1d_bear_100_for_15m.append(state.regime_1d_bear_100[confirmed_idx])
+        regime_1d_bear_200_for_15m.append(state.regime_1d_bear_200[confirmed_idx])
+        bull_trend_score_for_15m.append(state.bull_trend_score_4h[confirmed_idx])
+        bear_trend_score_for_15m.append(state.bear_trend_score_4h[confirmed_idx])
+
+    state.bias_for_15m = bias_for_15m
+    state.regime_1d_bull_100_for_15m = regime_1d_bull_100_for_15m
+    state.regime_1d_bull_200_for_15m = regime_1d_bull_200_for_15m
+    state.regime_1d_bear_100_for_15m = regime_1d_bear_100_for_15m
+    state.regime_1d_bear_200_for_15m = regime_1d_bear_200_for_15m
+    state.bull_trend_score_for_15m = bull_trend_score_for_15m
+    state.bear_trend_score_for_15m = bear_trend_score_for_15m
+    return state
+
+
 class ScalpRobustEngine:
     def __init__(
         self,
@@ -618,6 +876,7 @@ class ScalpRobustEngine:
         self.exit_reasons: dict[str, int] = {}
         self._regime_switch_cache: dict[int, tuple[str, StrategyConfig]] = {}
         self._regime_feature_cache: dict[int, dict[str, Any]] = {}
+        self._regime_config_cache: dict[str, StrategyConfig] = {}
         self._atr_15m = self._compute_atr_series(self.config.atr_period)
         self._reset_pending_pullback_state()
 
@@ -725,12 +984,31 @@ class ScalpRobustEngine:
                 Direction.BEAR: self._pending_from_dict(pending_by_direction.get(Direction.BEAR)),
             }
 
-    def open_position(self, idx: int, direction: str, entry_price: float, sl_price: float, target_price: float) -> StrategyAction:
+    def open_position(
+        self,
+        idx: int,
+        direction: str,
+        entry_price: float,
+        sl_price: float,
+        target_price: float,
+        *,
+        target_rr_override: float | None = None,
+        max_hold_bars_override: int | None = None,
+        trail_style_override: str | None = None,
+        candidate_event_type: str | None = None,
+        requested_notional_override: float | None = None,
+    ) -> StrategyAction:
         applied_risk_per_trade, risk_regime = self._risk_per_trade_for_idx(idx, direction)
         risk_amount = self.capital * applied_risk_per_trade
         filled_entry_price = self._apply_entry_slippage(entry_price, direction)
         position_size_pct = self._position_size_pct_for_idx(idx)
         entry_regime_score, target_rr, max_hold_bars, trail_style = self._exit_template_for_idx(idx, direction)
+        if target_rr_override is not None:
+            target_rr = float(target_rr_override)
+        if max_hold_bars_override is not None:
+            max_hold_bars = int(max_hold_bars_override)
+        if trail_style_override in {"loose", "normal", "tight"}:
+            trail_style = str(trail_style_override)
         regime_label = self._regime_switch_label_for_idx(idx)
         regime_features = self._regime_features_for_idx(idx)
         tit_enabled, auto_tit_reason = self._time_based_trailing_for_entry(
@@ -740,19 +1018,26 @@ class ScalpRobustEngine:
             risk_regime=risk_regime,
         )
         filled_target_price = self._target_price_from_rr(filled_entry_price, sl_price, direction, target_rr)
-        max_notional = (
-            float(self.config.fixed_notional_usdt)
-            if self.config.fixed_notional_usdt is not None
-            else self.capital * position_size_pct * self.config.leverage
-        )
         stop_distance = abs(filled_entry_price - sl_price)
-        risk_based_notional = (
-            (risk_amount / stop_distance) * filled_entry_price
-            if stop_distance > 0
-            else max_notional
-        )
-        notional = min(max_notional, risk_based_notional)
+        if requested_notional_override is not None:
+            notional = max(float(requested_notional_override), 0.0)
+            max_notional = notional
+            risk_based_notional = notional
+        else:
+            max_notional = (
+                float(self.config.fixed_notional_usdt)
+                if self.config.fixed_notional_usdt is not None
+                else self.capital * position_size_pct * self.config.leverage
+            )
+            risk_based_notional = (
+                (risk_amount / stop_distance) * filled_entry_price
+                if stop_distance > 0
+                else max_notional
+            )
+            notional = min(max_notional, risk_based_notional)
         quantity = notional / filled_entry_price if filled_entry_price > 0 else 0.0
+        if requested_notional_override is not None and stop_distance > 0:
+            risk_amount = quantity * stop_distance
         entry_fee = notional * self.config.taker_fee_rate
         entry_slippage_cost = quantity * abs(filled_entry_price - entry_price)
         self.position = PositionState(
@@ -774,18 +1059,26 @@ class ScalpRobustEngine:
             target_rr=target_rr,
             max_hold_bars=max_hold_bars,
             trail_style=trail_style,
+            candidate_event_type=candidate_event_type,
             time_based_trailing_enabled=tit_enabled,
             auto_tit_reason=auto_tit_reason,
             risk_regime=risk_regime,
             regime_label=regime_label,
         )
+        if self.config.replay_sync_entry_to_signal_price:
+            self.sync_position_execution(
+                entry_price=entry_price,
+                entry_slippage_cost=0.0,
+                target_price=filled_target_price,
+                reset_initial_stop=True,
+            )
         return StrategyAction(
             type=ActionType.OPEN_LONG if direction == Direction.BULL else ActionType.OPEN_SHORT,
             timestamp=self.position.entry_time,
             direction=direction,
-            entry_price=filled_entry_price,
+            entry_price=self.position.entry_price,
             stop_price=sl_price,
-            target_price=filled_target_price,
+            target_price=self.position.target_price,
             metadata={
                 "index": idx,
                 "position_size_pct": position_size_pct,
@@ -793,18 +1086,24 @@ class ScalpRobustEngine:
                 "target_rr": target_rr,
                 "max_hold_bars": max_hold_bars,
                 "trail_style": trail_style,
+                "candidate_event_type": candidate_event_type,
                 "signal_entry_price": entry_price,
                 "signal_target_price": target_price,
+                "target_rr_override": target_rr_override,
+                "max_hold_bars_override": max_hold_bars_override,
+                "trail_style_override": trail_style_override,
+                "requested_notional_override": requested_notional_override,
                 "capital_at_entry": self.capital,
-                "notional": notional,
-                "quantity": quantity,
+                "notional": self.position.notional,
+                "quantity": self.position.quantity,
                 "max_notional": max_notional,
                 "risk_based_notional": risk_based_notional,
                 "risk_per_trade": applied_risk_per_trade,
-                "risk_amount": risk_amount,
+                "risk_amount": self.position.risk_amount,
                 "risk_regime": risk_regime,
-                "entry_fee": entry_fee,
-                "entry_slippage_cost": entry_slippage_cost,
+                "entry_fee": self.position.entry_fee,
+                "entry_slippage_cost": self.position.entry_slippage_cost,
+                "replay_sync_entry_to_signal_price": self.config.replay_sync_entry_to_signal_price,
                 "time_based_trailing_enabled": tit_enabled,
                 "auto_tit_reason": auto_tit_reason,
                 "regime_label": regime_label,
@@ -815,6 +1114,53 @@ class ScalpRobustEngine:
                 "feature_bearish_structure": bool(regime_features.get("bearish_structure", False)),
             },
         )
+
+    def sync_position_execution(
+        self,
+        *,
+        entry_price: float | None = None,
+        quantity: float | None = None,
+        notional: float | None = None,
+        stop_price: float | None = None,
+        target_price: float | None = None,
+        entry_fee: float | None = None,
+        entry_slippage_cost: float | None = None,
+        capital_at_entry: float | None = None,
+        reset_initial_stop: bool = True,
+    ) -> None:
+        if self.position is None:
+            return
+        pos = self.position
+        old_quantity = float(pos.quantity or 0.0)
+        new_entry_price = float(entry_price) if entry_price is not None and float(entry_price) > 0 else pos.entry_price
+        new_quantity = float(quantity) if quantity is not None and float(quantity) > 0 else pos.quantity
+        new_stop = float(stop_price) if stop_price is not None and float(stop_price) > 0 else pos.sl_price
+        if reset_initial_stop or pos.stage < 0:
+            pos.initial_sl_price = new_stop
+        pos.entry_price = new_entry_price
+        pos.sl_price = new_stop
+        if target_price is not None and float(target_price) > 0:
+            pos.target_price = float(target_price)
+        else:
+            pos.target_price = self._target_price_from_rr(pos.entry_price, pos.initial_sl_price, pos.direction, pos.target_rr)
+        pos.quantity = new_quantity
+        pos.notional = (
+            float(notional)
+            if notional is not None and float(notional) > 0
+            else abs(pos.quantity * pos.entry_price)
+        )
+        risk_price = abs(pos.entry_price - pos.initial_sl_price)
+        pos.risk_amount = pos.quantity * risk_price
+        if entry_fee is not None:
+            pos.entry_fee = float(entry_fee)
+        elif old_quantity > 0 and new_quantity > 0:
+            pos.entry_fee = float(pos.entry_fee or 0.0) * (new_quantity / old_quantity)
+        if entry_slippage_cost is not None:
+            pos.entry_slippage_cost = float(entry_slippage_cost)
+        elif old_quantity > 0 and new_quantity > 0:
+            pos.entry_slippage_cost = float(pos.entry_slippage_cost or 0.0) * (new_quantity / old_quantity)
+        if capital_at_entry is not None:
+            pos.capital_at_entry = float(capital_at_entry)
 
     def close_position(self, idx: int, reason: str, exit_price: float | None = None) -> StrategyAction:
         if not self.position:
@@ -856,6 +1202,13 @@ class ScalpRobustEngine:
                 trail_style=pos.trail_style,
                 risk_regime=pos.risk_regime,
                 regime_label=pos.regime_label,
+                candidate_event_type=pos.candidate_event_type,
+                execution_effective_leverage=pos.execution_effective_leverage,
+                execution_risk_mode=pos.execution_risk_mode,
+                execution_leverage_reasons=pos.execution_leverage_reasons,
+                execution_requested_notional=pos.execution_requested_notional,
+                execution_target_notional=pos.execution_target_notional,
+                execution_guard_diagnostics=pos.execution_guard_diagnostics,
                 time_based_trailing_enabled=pos.time_based_trailing_enabled,
                 auto_tit_reason=pos.auto_tit_reason,
                 exit_idx=idx,
@@ -871,6 +1224,9 @@ class ScalpRobustEngine:
                 pressure_touch_lock_level=pos.pressure_touch_lock_level,
                 pressure_touch_lock_rr=pos.pressure_touch_lock_rr,
                 pressure_touch_lock_update_idx=pos.pressure_touch_lock_update_idx,
+                last_stop_update_reason=pos.last_stop_update_reason,
+                last_stop_update_idx=pos.last_stop_update_idx,
+                final_stop_price=pos.sl_price,
             )
         )
         self.capital += pnl
@@ -919,9 +1275,10 @@ class ScalpRobustEngine:
                     )
                 )
                 return actions
-            update = self._apply_trailing_bull(pos, curr, idx)
-            if update:
-                actions.append(update)
+            if self.config.enable_stage_trailing:
+                update = self._apply_trailing_bull(pos, curr, idx)
+                if update:
+                    actions.append(update)
             pressure_action = self._apply_pressure_level_exit_or_trail(pos, curr, idx)
             if pressure_action:
                 actions.append(pressure_action)
@@ -951,9 +1308,10 @@ class ScalpRobustEngine:
                     )
                 )
                 return actions
-            update = self._apply_trailing_bear(pos, curr, idx)
-            if update:
-                actions.append(update)
+            if self.config.enable_stage_trailing:
+                update = self._apply_trailing_bear(pos, curr, idx)
+                if update:
+                    actions.append(update)
             pressure_action = self._apply_pressure_level_exit_or_trail(pos, curr, idx)
             if pressure_action:
                 actions.append(pressure_action)
@@ -1096,6 +1454,9 @@ class ScalpRobustEngine:
     def _regime_features_for_idx(self, idx: int) -> dict[str, Any]:
         if idx < 0 or idx >= len(self.mapping):
             return {}
+        asof_features = self.precomputed.regime_features_for_15m
+        if asof_features is not None and idx < len(asof_features):
+            return asof_features[idx] or {}
         c4h_idx = self.mapping[idx]
         features = self._regime_feature_cache.get(c4h_idx)
         if features is None:
@@ -1325,6 +1686,8 @@ class ScalpRobustEngine:
                 )
 
         pos.sl_price = new_stop
+        pos.last_stop_update_reason = "pressure_level_trail"
+        pos.last_stop_update_idx = idx
         return StrategyAction(
             type=ActionType.UPDATE_STOP,
             timestamp=self._timestamp_for_idx(idx),
@@ -1359,6 +1722,8 @@ class ScalpRobustEngine:
             return None
         pos.sl_price = new_stop
         pos.stage = new_stage
+        pos.last_stop_update_reason = f"trail_stage_{new_stage}"
+        pos.last_stop_update_idx = idx
         target_update = self._maybe_cap_target_price(pos)
         return StrategyAction(
             type=ActionType.UPDATE_STOP,
@@ -1394,6 +1759,8 @@ class ScalpRobustEngine:
             return None
         pos.sl_price = new_stop
         pos.stage = new_stage
+        pos.last_stop_update_reason = f"trail_stage_{new_stage}"
+        pos.last_stop_update_idx = idx
         target_update = self._maybe_cap_target_price(pos)
         return StrategyAction(
             type=ActionType.UPDATE_STOP,
@@ -1528,6 +1895,9 @@ class ScalpRobustEngine:
     def _regime_switch_label_for_idx(self, idx: int) -> str:
         if not self._base_config.enable_regime_switching:
             return "static"
+        asof_labels = self.precomputed.regime_label_for_15m
+        if asof_labels is not None and idx < len(asof_labels):
+            return asof_labels[idx]
         c4h_idx = self.mapping[idx]
         cached = self._regime_switch_cache.get(c4h_idx)
         if cached is not None:
@@ -1544,19 +1914,7 @@ class ScalpRobustEngine:
         if all(min_value is None and max_value is None for min_value, max_value in feature_bounds.values()):
             return True
 
-        c4h_idx = self.mapping[idx]
-        features = self._regime_feature_cache.get(c4h_idx)
-        if features is None:
-            history = self._effective_regime_history(idx)
-            if not history:
-                return False
-            try:
-                from scripts.regime_detector import compute_regime_features
-
-                features = compute_regime_features(history, self._base_config.regime_switcher_thresholds)
-            except Exception:
-                features = {}
-            self._regime_feature_cache[c4h_idx] = features
+        features = self._regime_features_for_idx(idx)
         if not features:
             return False
 
@@ -1727,6 +2085,8 @@ class ScalpRobustEngine:
         if new_stop <= pos.sl_price:
             return None
         pos.sl_price = new_stop
+        pos.last_stop_update_reason = "atr_trail"
+        pos.last_stop_update_idx = idx
         return StrategyAction(
             type=ActionType.UPDATE_STOP,
             timestamp=self._timestamp_for_idx(idx),
@@ -1761,6 +2121,8 @@ class ScalpRobustEngine:
         if new_stop >= pos.sl_price:
             return None
         pos.sl_price = new_stop
+        pos.last_stop_update_reason = "atr_trail"
+        pos.last_stop_update_idx = idx
         return StrategyAction(
             type=ActionType.UPDATE_STOP,
             timestamp=self._timestamp_for_idx(idx),
@@ -1802,7 +2164,7 @@ class ScalpRobustEngine:
                 if self.position is None:
                     continue
 
-            bias = self.precomputed.bias_4h[self.mapping[i]]
+            bias = self._bias_for_idx(i)
 
             active_pending = self.waiting_for_pullback or any(self.pending_by_direction.values())
             if self.config.use_hfvf_filter and bias == Direction.NONE and not active_pending:
@@ -1884,6 +2246,9 @@ class ScalpRobustEngine:
         return config_copy
 
     def _regime_label_for_idx(self, idx: int) -> str:
+        asof_labels = self.precomputed.regime_label_for_15m
+        if asof_labels is not None and idx < len(asof_labels):
+            return asof_labels[idx]
         history = self._effective_regime_history(idx)
         if not history:
             return "flat"
@@ -1899,6 +2264,15 @@ class ScalpRobustEngine:
         if not self._base_config.enable_regime_switching:
             self.config = self._base_config
             return "static"
+        asof_labels = self.precomputed.regime_label_for_15m
+        if asof_labels is not None and idx < len(asof_labels):
+            regime = asof_labels[idx]
+            config = self._regime_config_cache.get(regime)
+            if config is None:
+                config = self._config_for_regime(regime)
+                self._regime_config_cache[regime] = config
+            self.config = config
+            return regime
         c4h_idx = self.mapping[idx]
         cached = self._regime_switch_cache.get(c4h_idx)
         if cached is None:
@@ -1962,10 +2336,9 @@ class ScalpRobustEngine:
             "total_fees_paid": total_fees,
             "total_slippage_cost": total_slippage_cost,
             "exit_reasons": dict(self.exit_reasons),
-            "parameters": {
-                "rr_ratio": self.config.rr_ratio,
-                "trailing_config": self.config.trailing_config,
-                "sl_buffer_pct": self.config.sl_buffer_pct,
+                "parameters": {
+                    "rr_ratio": self.config.rr_ratio,
+                    "sl_buffer_pct": self.config.sl_buffer_pct,
                 "use_hfvf_filter": self.config.use_hfvf_filter,
                 "leverage": self.config.leverage,
                 "position_size_pct": self.config.position_size_pct,
@@ -1991,6 +2364,7 @@ class ScalpRobustEngine:
                 "normal_target_rr_cap": self.config.normal_target_rr_cap,
                 "tight_target_rr_cap": self.config.tight_target_rr_cap,
                 "disable_fixed_target": self.config.disable_fixed_target,
+                "enable_stage_trailing": self.config.enable_stage_trailing,
                 "enable_atr_trailing": self.config.enable_atr_trailing,
                 "atr_period": self.config.atr_period,
                 "atr_activation_rr": self.config.atr_activation_rr,
@@ -2063,6 +2437,27 @@ class ScalpRobustEngine:
     def _timestamp_for_idx(self, idx: int) -> str:
         return datetime.fromtimestamp(self.c15m[idx].ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
 
+    def _bias_for_idx(self, idx: int) -> str:
+        if self.precomputed.bias_for_15m is not None and idx < len(self.precomputed.bias_for_15m):
+            return self.precomputed.bias_for_15m[idx]
+        return self.precomputed.bias_4h[self.mapping[idx]]
+
+    def _regime_state_for_idx(self, idx: int, period: int, direction: str) -> bool:
+        mapped_idx = self.mapping[idx]
+        if period == 100 and direction == "bull":
+            values = self.precomputed.regime_1d_bull_100_for_15m
+            return values[idx] if values is not None and idx < len(values) else self.precomputed.regime_1d_bull_100[mapped_idx]
+        if period == 200 and direction == "bull":
+            values = self.precomputed.regime_1d_bull_200_for_15m
+            return values[idx] if values is not None and idx < len(values) else self.precomputed.regime_1d_bull_200[mapped_idx]
+        if period == 100 and direction == "bear":
+            values = self.precomputed.regime_1d_bear_100_for_15m
+            return values[idx] if values is not None and idx < len(values) else self.precomputed.regime_1d_bear_100[mapped_idx]
+        if period == 200 and direction == "bear":
+            values = self.precomputed.regime_1d_bear_200_for_15m
+            return values[idx] if values is not None and idx < len(values) else self.precomputed.regime_1d_bear_200[mapped_idx]
+        raise ValueError(f"Unsupported regime EMA period: {period}")
+
     def _apply_entry_slippage(self, price: float, direction: str) -> float:
         slip = self.config.slippage_bps / 10_000.0
         if direction == Direction.BULL:
@@ -2079,17 +2474,8 @@ class ScalpRobustEngine:
         period = self.config.regime_filter_1d_ema_period
         if period is None:
             return True
-        mapped_idx = self.mapping[idx]
         direction = self.config.regime_filter_1d_direction
-        if period == 100 and direction == "bull":
-            return self.precomputed.regime_1d_bull_100[mapped_idx]
-        if period == 200 and direction == "bull":
-            return self.precomputed.regime_1d_bull_200[mapped_idx]
-        if period == 100 and direction == "bear":
-            return self.precomputed.regime_1d_bear_100[mapped_idx]
-        if period == 200 and direction == "bear":
-            return self.precomputed.regime_1d_bear_200[mapped_idx]
-        raise ValueError(f"Unsupported regime EMA period: {period}")
+        return self._regime_state_for_idx(idx, int(period), direction)
 
     def _regime_ok_for_direction_idx(self, idx: int, direction: str) -> bool:
         if not self.config.enable_directional_regime_switch:
@@ -2106,16 +2492,8 @@ class ScalpRobustEngine:
             period = self.config.regime_filter_1d_ema_period
         if period is None:
             return True
-        mapped_idx = self.mapping[idx]
-        if period == 100 and direction == Direction.BULL:
-            return self.precomputed.regime_1d_bull_100[mapped_idx]
-        if period == 200 and direction == Direction.BULL:
-            return self.precomputed.regime_1d_bull_200[mapped_idx]
-        if period == 100 and direction == Direction.BEAR:
-            return self.precomputed.regime_1d_bear_100[mapped_idx]
-        if period == 200 and direction == Direction.BEAR:
-            return self.precomputed.regime_1d_bear_200[mapped_idx]
-        raise ValueError(f"Unsupported regime EMA period: {period}")
+        regime_direction = "bull" if direction == Direction.BULL else "bear"
+        return self._regime_state_for_idx(idx, int(period), regime_direction)
 
     def _position_size_pct_for_idx(self, idx: int) -> float:
         if self.config.fixed_notional_usdt is not None:
@@ -2226,19 +2604,31 @@ class ScalpRobustEngine:
         return None
 
     def _btc_bull_trend_score_for_idx(self, idx: int) -> int:
+        if self.precomputed.bull_trend_score_for_15m is not None and idx < len(self.precomputed.bull_trend_score_for_15m):
+            return self.precomputed.bull_trend_score_for_15m[idx]
         mapped_idx = self.mapping[idx]
         return self.precomputed.bull_trend_score_4h[mapped_idx]
 
     def _btc_bear_trend_score_for_idx(self, idx: int) -> int:
+        if self.precomputed.bear_trend_score_for_15m is not None and idx < len(self.precomputed.bear_trend_score_for_15m):
+            return self.precomputed.bear_trend_score_for_15m[idx]
         mapped_idx = self.mapping[idx]
         return self.precomputed.bear_trend_score_4h[mapped_idx]
 
     def _risk_regime_for_idx(self, idx: int) -> str:
         mapped_idx = self.mapping[idx]
-        bull_200 = self.precomputed.regime_1d_bull_200[mapped_idx]
-        bear_200 = self.precomputed.regime_1d_bear_200[mapped_idx]
-        bull_score = self.precomputed.bull_trend_score_4h[mapped_idx]
-        bear_score = self.precomputed.bear_trend_score_4h[mapped_idx]
+        bull_200 = (
+            self.precomputed.regime_1d_bull_200_for_15m[idx]
+            if self.precomputed.regime_1d_bull_200_for_15m is not None and idx < len(self.precomputed.regime_1d_bull_200_for_15m)
+            else self.precomputed.regime_1d_bull_200[mapped_idx]
+        )
+        bear_200 = (
+            self.precomputed.regime_1d_bear_200_for_15m[idx]
+            if self.precomputed.regime_1d_bear_200_for_15m is not None and idx < len(self.precomputed.regime_1d_bear_200_for_15m)
+            else self.precomputed.regime_1d_bear_200[mapped_idx]
+        )
+        bull_score = self._btc_bull_trend_score_for_idx(idx)
+        bear_score = self._btc_bear_trend_score_for_idx(idx)
 
         if bull_200 and bull_score >= 3:
             return "bull_strong"

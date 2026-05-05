@@ -9,7 +9,20 @@ from pathlib import Path
 from scripts.live_drift_monitor import build_live_trades, format_report, load_action_log, trade_metrics
 
 
-def insert_action(conn: sqlite3.Connection, timestamp: str, action_type: str, payload: dict) -> None:
+def insert_action(
+    conn: sqlite3.Connection,
+    timestamp: str,
+    action_type: str,
+    payload: dict,
+    *,
+    created_at: str | None = None,
+) -> None:
+    if created_at is not None:
+        conn.execute(
+            "INSERT INTO action_log(timestamp, action_type, payload, created_at) VALUES(?, ?, ?, ?)",
+            (timestamp, action_type, json.dumps(payload), created_at),
+        )
+        return
     conn.execute(
         "INSERT INTO action_log(timestamp, action_type, payload) VALUES(?, ?, ?)",
         (timestamp, action_type, json.dumps(payload)),
@@ -91,6 +104,90 @@ class LiveDriftMonitorTest(unittest.TestCase):
         self.assertAlmostEqual(trades[0].entry_slippage_bps or 0.0, 5.0)
         self.assertAlmostEqual(trades[0].exit_slippage_bps or 0.0, 4.716981132075472)
         self.assertAlmostEqual(trades[0].stop_target_deviation_bps or 0.0, 4.716981132075472)
+
+    def test_build_live_trades_uses_manual_sync_snapshot_as_execution_anchor(self) -> None:
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        db_path = Path(tmpdir.name) / "state.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE action_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            insert_action(
+                conn,
+                "2026-04-01 00:00",
+                "OPEN_LONG",
+                {
+                    "type": "OPEN_LONG",
+                    "timestamp": "2026-04-01 00:00",
+                    "direction": "BULL",
+                    "entry_price": 10050.0,
+                    "stop_price": 9800.0,
+                    "target_price": 10600.0,
+                    "metadata": {
+                        "signal_entry_price": 10000.0,
+                        "capital_at_entry": 1000.0,
+                        "notional": 3000.0,
+                        "risk_amount": 30.0,
+                    },
+                },
+            )
+            insert_action(
+                conn,
+                "2026-04-01 00:15",
+                "MANUAL_POSITION_SYNC",
+                {
+                    "context": "after_execute",
+                    "snapshot": {
+                        "position": {
+                            "direction": "BULL",
+                            "entry_time": "2026-04-01 00:00",
+                            "signal_entry_price": 10000.0,
+                            "entry_price": 10000.0,
+                            "sl_price": 9800.0,
+                            "target_price": 10600.0,
+                            "capital_at_entry": 990.0,
+                            "notional": 2000.0,
+                            "risk_amount": 40.0,
+                        }
+                    },
+                },
+            )
+            insert_action(
+                conn,
+                "2026-04-01 03:00",
+                "CLOSE_POSITION",
+                {
+                    "type": "CLOSE_POSITION",
+                    "timestamp": "2026-04-01 03:00",
+                    "direction": "BULL",
+                    "exit_price": 10600.0,
+                    "reason": "target_rr",
+                        "metadata": {"signal_exit_price": 10600.0, "net_pnl": 80.0},
+                },
+                created_at="2026-04-01 03:00:00",
+            )
+
+        trades, diagnostics = build_live_trades(load_action_log(db_path))
+
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(diagnostics["orphan_closes"], 0)
+        self.assertAlmostEqual(trades[0].entry_price or 0.0, 10000.0)
+        self.assertAlmostEqual(trades[0].capital_at_entry or 0.0, 990.0)
+        self.assertAlmostEqual(trades[0].notional or 0.0, 2000.0)
+        self.assertAlmostEqual(trades[0].risk_amount or 0.0, 40.0)
+        self.assertAlmostEqual(trades[0].entry_slippage_bps or 0.0, 0.0)
+        self.assertEqual(trades[0].entry_time.isoformat(), "2026-04-01T00:00:00+00:00")
+        self.assertEqual(trades[0].entry_execution_time.isoformat(), "2026-04-01T00:15:00+00:00")
+        self.assertEqual(trades[0].exit_execution_time.isoformat(), "2026-04-01T03:00:00+00:00")
 
     def test_trade_metrics_uses_account_return_distribution(self) -> None:
         trades, _ = build_live_trades(load_action_log(self.build_db()))

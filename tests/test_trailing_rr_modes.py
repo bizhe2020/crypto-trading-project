@@ -45,6 +45,23 @@ def build_long_position() -> PositionState:
 
 
 class TrailingRRModeTest(unittest.TestCase):
+    def test_stage_trigger_extreme_can_advance_without_close_confirmation(self) -> None:
+        close_engine = build_mode_engine(StrategyConfig(stage_trigger_rr_mode="close"))
+        close_engine.position = build_long_position()
+        close_action = close_engine._apply_trailing_bull(close_engine.position, close_engine.c15m[1], 1)
+        self.assertIsNotNone(close_action)
+        self.assertEqual(close_action.reason, "trail_stage_0")
+        self.assertAlmostEqual(close_action.stop_price, 1000.0)
+
+        extreme_engine = build_mode_engine(StrategyConfig(stage_trigger_rr_mode="extreme"))
+        extreme_engine.position = build_long_position()
+        extreme_action = extreme_engine._apply_trailing_bull(extreme_engine.position, extreme_engine.c15m[1], 1)
+
+        self.assertIsNotNone(extreme_action)
+        self.assertEqual(extreme_action.type, ActionType.UPDATE_STOP)
+        self.assertEqual(extreme_action.reason, "trail_stage_2")
+        self.assertAlmostEqual(extreme_action.stop_price, 1020.0)
+
     def test_time_trailing_extreme_can_enter_breathe_stage_earlier(self) -> None:
         close_engine = build_mode_engine(
             StrategyConfig(
@@ -70,6 +87,36 @@ class TrailingRRModeTest(unittest.TestCase):
         extreme_state = extreme_engine._time_based_trailing_state(extreme_engine.position, extreme_engine.c15m[1], 1)
         self.assertEqual(extreme_state.stage, 1)
         self.assertEqual(extreme_state.label, "S1_breathe")
+
+    def test_atr_activation_extreme_can_enable_trail_before_close_hits_threshold(self) -> None:
+        close_engine = build_mode_engine(
+            StrategyConfig(
+                enable_atr_trailing=True,
+                atr_activation_rr=2.5,
+                atr_activation_rr_mode="close",
+                atr_tight_multiplier=1.0,
+            )
+        )
+        close_engine.position = build_long_position()
+        close_engine.position.trail_style = "tight"
+        close_action = close_engine._apply_atr_trailing_bull(close_engine.position, close_engine.c15m[1], 1)
+        self.assertIsNone(close_action)
+
+        extreme_engine = build_mode_engine(
+            StrategyConfig(
+                enable_atr_trailing=True,
+                atr_activation_rr=2.5,
+                atr_activation_rr_mode="extreme",
+                atr_tight_multiplier=1.0,
+            )
+        )
+        extreme_engine.position = build_long_position()
+        extreme_engine.position.trail_style = "tight"
+        extreme_action = extreme_engine._apply_atr_trailing_bull(extreme_engine.position, extreme_engine.c15m[1], 1)
+
+        self.assertIsNotNone(extreme_action)
+        self.assertEqual(extreme_action.type, ActionType.UPDATE_STOP)
+        self.assertEqual(extreme_action.reason, "atr_trail")
 
 
 if __name__ == "__main__":

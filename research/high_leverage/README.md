@@ -14,7 +14,7 @@ Use this directory for high-leverage experiments that should not be confused wit
 
 The latest promoted research result is still documented in:
 
-- `HIGH_LEVERAGE_REATTACK_REPRODUCTION.md`
+- `docs/archive/HIGH_LEVERAGE_REATTACK_REPRODUCTION.md`
 - `config/high_leverage_pressure_target_cap_best.params.json`
 - `scripts/reproduce_pressure_target_cap_best.sh`
 

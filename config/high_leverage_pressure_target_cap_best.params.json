@@ -115,7 +115,7 @@
       ]
     }
   },
-  "failed_research_archive": "HIGH_LEVERAGE_FAILED_RESEARCH.md",
+  "failed_research_archive": "docs/archive/HIGH_LEVERAGE_FAILED_RESEARCH.md",
   "pressure_level_target_cap_params": {
     "enable_pressure_level_trailing": true,
     "pressure_min_rr": 2.0,
