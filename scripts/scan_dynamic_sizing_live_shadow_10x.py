@@ -37,6 +37,7 @@ from scripts.replay_sota_smc_live_shadow import apply_trailing_rr_modes, replay_
 from scripts.report_smc_trade_context import daily_candles_from_4h  # noqa: E402
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay  # noqa: E402
 from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS, replay_shadow_events  # noqa: E402
+from scripts.score_bucket_sizing_utils import apply_score_bucket_sizing_to_events  # noqa: E402
 from scripts.smc_live_utils import SMC_CASES, build_smc_events  # noqa: E402
 from strategy.scalp_robust_v2_core import precompute_swings  # noqa: E402
 
@@ -61,6 +62,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sota-score-bull-min", type=int, default=8)
     parser.add_argument("--sota-score-bear-max", type=int, default=6)
     parser.add_argument("--sota-score-conflict-mode", default="any", choices=("any", "conflict", "clean"))
+    parser.add_argument("--enable-long-score-bucket-sizing", action="store_true")
+    parser.add_argument(
+        "--long-score-bucket-sizing-rules-json",
+        default="",
+        help="Optional JSON array/dict for long score bucket sizing rules.",
+    )
     parser.add_argument("--daily-loss-stop-pct", type=float, default=6.0)
     parser.add_argument("--equity-drawdown-stop-pct", type=float, default=12.0)
     parser.add_argument("--equity-drawdown-cooldown-days", type=int, default=2)
@@ -77,6 +84,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-trades", type=int, default=0)
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     return parser.parse_args()
+
+
+def parse_score_bucket_rules(raw: str) -> Any:
+    if not str(raw or "").strip():
+        return None
+    return json.loads(raw)
 
 
 def dynamic_params_from_base(
@@ -329,6 +342,11 @@ def main() -> None:
             bear_max=int(args.sota_score_bear_max),
             conflict_mode=str(args.sota_score_conflict_mode),
         )
+        base_events, long_score_bucket_sizing = apply_score_bucket_sizing_to_events(
+            base_events,
+            enabled=bool(args.enable_long_score_bucket_sizing),
+            rules=parse_score_bucket_rules(str(args.long_score_bucket_sizing_rules_json)),
+        )
         baseline = standard_event_summary(base_events, initial_capital, "entry_idx")
         baseline = add_standard_windows(baseline, initial_capital, prepared.end, "entry_idx")
         live, decisions = replay_live_shadow(base_events + smc_events, initial_capital, prepared.end, baseline)
@@ -347,6 +365,7 @@ def main() -> None:
                     "trigger_counts": shadow.get("trigger_counts", {}),
                 },
                 "sota_score_gate": score_gate,
+                "long_score_bucket_sizing": long_score_bucket_sizing,
                 "smc_candidates": len(smc_events),
                 "live_shadow": compact(live, int(args.sample_trades)),
                 "decision_count_total": len(decisions),
@@ -376,6 +395,10 @@ def main() -> None:
                 "bull_min": int(args.sota_score_bull_min),
                 "bear_max": int(args.sota_score_bear_max),
                 "conflict_mode": str(args.sota_score_conflict_mode),
+            },
+            "long_score_bucket_sizing": {
+                "enabled": bool(args.enable_long_score_bucket_sizing),
+                "rules": parse_score_bucket_rules(str(args.long_score_bucket_sizing_rules_json)),
             },
             "shadow_risk_gate": {
                 "daily_loss_stop_pct": float(args.daily_loss_stop_pct),
