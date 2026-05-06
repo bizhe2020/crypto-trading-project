@@ -229,6 +229,15 @@
       "bear_eq": 6,
       "leverage_multiplier": 3.0,
       "max_effective_leverage": 20.0
+    },
+    {
+      "name": "nbb_6_11_5_conflict_2p5_cap20",
+      "net_eq": 6,
+      "bull_eq": 11,
+      "bear_eq": 5,
+      "conflict_mode": "conflict",
+      "leverage_multiplier": 2.5,
+      "max_effective_leverage": 20.0
     }
   ],
   "enable_smc_short_live": true,
