@@ -10,9 +10,27 @@ Use this directory for high-leverage experiments that should not be confused wit
 - Loss-bucket notes.
 - Candidate promotion notes.
 
-## Current Promoted Baseline
+## Current Promoted Live-Bot Candidate
 
-The latest promoted research result is still documented in:
+The current promoted live-bot candidate is:
+
+- `docs/archive/HIGH_LEVERAGE_SOTA_SMC_LIVE_BOT_20260506.md`
+- `config/config.live.high-leverage-structure.template.json`
+- `config/config.paper.high-leverage-structure.json`
+- `config/live_drift_baseline.high_leverage.json`
+
+Target reference:
+
+- Full: `12911.21%`
+- MaxDD: `28.36%`
+- 2026: `30.95%`
+- 2026 MaxDD: `17.08%`
+- Accepted events: SOTA long `275`, SMC short `24`
+- Rejected events: `3`, all due single-position lock
+
+## Previous Promoted Baseline
+
+The previous pressure-shadow research result is documented in:
 
 - `docs/archive/HIGH_LEVERAGE_REATTACK_REPRODUCTION.md`
 - `config/high_leverage_pressure_target_cap_best.params.json`

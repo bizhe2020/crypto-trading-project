@@ -34,5 +34,9 @@ Current live candidate stack:
 - `SOTA long + SMC short + single-position arbitration`
 - `SOTA score gate` is part of the live candidate filter path when enabled in config
 - `SMC short` remains an overlay candidate; `overlay_skip_dynamic_high_leverage` should stay enabled unless explicitly re-audited
+- Current promoted gate: `sota_score_net_min=3`, `sota_score_bull_min=8`, `sota_score_bear_max=6`, `sota_score_conflict_mode=any`
+- Current promoted shadow risk gate: daily loss `6%`, equity DD `12%`, cooldown `2` days, consecutive loss stop `4`
+- Current promoted trailing: `stage=close`, `time=extreme`, `atr_activation=extreme`, `atr_activation_rr=2.06`, `T_max=144`, `S4_close_rr=0.8`
+- Current promoted dynamic sizing: base `4.0`, high-growth/tight-stop/max-effective `7.5`, failed-breakout guard `1.5`
 
 Do not use research scan scripts as a deployment entry.

@@ -231,7 +231,7 @@ class ExecutorConfig:
     enable_live_candidate_arbitration: bool = False
     live_candidate_priority: list[str] | None = None
     enable_sota_score_gate_live: bool = False
-    sota_score_net_min: int = 2
+    sota_score_net_min: int = 3
     sota_score_bull_min: int = 8
     sota_score_bear_max: int = 6
     sota_score_conflict_mode: str = "any"

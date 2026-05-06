@@ -45,8 +45,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smc-case", default="v2_medium_dispbody05_otherlag4_10x", choices=sorted(SMC_CASES))
     parser.add_argument("--smc-allocation", type=float, default=1.0)
     parser.add_argument("--stage-trigger-rr-mode", default="close", choices=RR_MODE_CHOICES)
-    parser.add_argument("--time-trailing-rr-mode", default="close", choices=RR_MODE_CHOICES)
-    parser.add_argument("--atr-activation-rr-mode", default="close", choices=RR_MODE_CHOICES)
+    parser.add_argument("--time-trailing-rr-mode", default="extreme", choices=RR_MODE_CHOICES)
+    parser.add_argument("--atr-activation-rr-mode", default="extreme", choices=RR_MODE_CHOICES)
+    parser.add_argument("--daily-loss-stop-pct", type=float, default=6.0)
+    parser.add_argument("--equity-drawdown-stop-pct", type=float, default=12.0)
+    parser.add_argument("--equity-drawdown-cooldown-days", type=int, default=2)
+    parser.add_argument("--consecutive-loss-stop", type=int, default=4)
     parser.add_argument("--top-n", type=int, default=20)
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     return parser.parse_args()
@@ -112,10 +116,10 @@ def main() -> None:
     shadow = replay_shadow_events(
         fixed["events"],
         initial_capital,
-        daily_loss_stop_pct=6.0,
-        equity_drawdown_stop_pct=15.0,
-        consecutive_loss_stop=0,
-        equity_drawdown_cooldown_days=2,
+        daily_loss_stop_pct=float(args.daily_loss_stop_pct),
+        equity_drawdown_stop_pct=float(args.equity_drawdown_stop_pct),
+        consecutive_loss_stop=int(args.consecutive_loss_stop),
+        equity_drawdown_cooldown_days=int(args.equity_drawdown_cooldown_days),
     )
     shadow_events = shadow["events"]
     base_events = [standard_sota_event(event) for event in shadow_events]
@@ -170,6 +174,12 @@ def main() -> None:
                 "stage_trigger_rr_mode": str(args.stage_trigger_rr_mode),
                 "time_trailing_rr_mode": str(args.time_trailing_rr_mode),
                 "atr_activation_rr_mode": str(args.atr_activation_rr_mode),
+            },
+            "shadow_risk_gate": {
+                "daily_loss_stop_pct": float(args.daily_loss_stop_pct),
+                "equity_drawdown_stop_pct": float(args.equity_drawdown_stop_pct),
+                "equity_drawdown_cooldown_days": int(args.equity_drawdown_cooldown_days),
+                "consecutive_loss_stop": int(args.consecutive_loss_stop),
             },
         },
         "candidate_generation": {
