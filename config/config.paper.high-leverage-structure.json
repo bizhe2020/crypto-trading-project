@@ -240,6 +240,15 @@
   "smc_position_size_pct": 1.0,
   "smc_min_liq_buffer_pct": 1.2,
   "smc_maintenance_margin_pct": 0.5,
+  "enable_smc_long_live": false,
+  "smc_long_case": "fvg_hist_total_rr15_10x_half",
+  "smc_long_target_rr": 1.5,
+  "smc_long_max_hold_bars": 40,
+  "smc_long_trail_style": "tight",
+  "smc_long_leverage": 10.0,
+  "smc_long_position_size_pct": 0.5,
+  "smc_long_min_liq_buffer_pct": 1.2,
+  "smc_long_maintenance_margin_pct": 0.5,
   "overlay_skip_dynamic_high_leverage": true,
   "proxy": null
 }

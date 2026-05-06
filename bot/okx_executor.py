@@ -246,6 +246,15 @@ class ExecutorConfig:
     smc_position_size_pct: float = 1.0
     smc_min_liq_buffer_pct: float = 1.2
     smc_maintenance_margin_pct: float = 0.5
+    enable_smc_long_live: bool = False
+    smc_long_case: str = "fvg_hist_total_rr15_10x_half"
+    smc_long_target_rr: float = 1.5
+    smc_long_max_hold_bars: int = 40
+    smc_long_trail_style: str = "tight"
+    smc_long_leverage: float = 10.0
+    smc_long_position_size_pct: float = 0.5
+    smc_long_min_liq_buffer_pct: float = 1.2
+    smc_long_maintenance_margin_pct: float = 0.5
     overlay_skip_dynamic_high_leverage: bool = True
     proxy: str | None = None
     api_key: str | None = None
@@ -1713,7 +1722,7 @@ class OkxExecutionEngine:
         return str(metadata.get("candidate_event_type") or "sota_long")
 
     def _is_overlay_open_action(self, action: StrategyAction) -> bool:
-        return self._open_action_event_type(action) == "smc_short"
+        return self._open_action_event_type(action) in {"smc_short", "smc_long"}
 
     def _is_stop_loss_reason(self, reason: str | None) -> bool:
         return str(reason or "") in {"stop_loss", "external_stop_loss"}
@@ -1851,6 +1860,30 @@ class OkxExecutionEngine:
             "other_min_mss_lag_bars": 4,
         }
 
+    def _smc_long_case_params(self) -> dict[str, Any]:
+        try:
+            from scripts.smc_live_utils import SMC_LONG_CASES
+
+            if str(self.config.smc_long_case) in SMC_LONG_CASES:
+                return dict(SMC_LONG_CASES[str(self.config.smc_long_case)])
+        except Exception:
+            pass
+        return {
+            "target_rr": float(self.config.smc_long_target_rr),
+            "allowed_time_buckets": "other+asia_evening_ny+ny_am_killzone",
+            "swing_n": 2,
+            "min_body_atr": 0.7,
+            "min_range_atr": 1.1,
+            "entry_lookahead_bars": 40,
+            "max_open_positions": 1,
+            "max_mss_lag_bars": 15,
+            "min_displacement_body_atr": 0.9,
+            "min_displacement_range_atr": 1.3,
+            "require_fvg_touch": True,
+            "allow_ote_only": False,
+            "require_ote_touch": False,
+        }
+
     def _smc_strategy_args(self) -> argparse.Namespace:
         defaults = {
             "data_15m": "",
@@ -1904,11 +1937,67 @@ class OkxExecutionEngine:
             )
             return argparse.Namespace(**merged)
 
-    def _smc_event_allowed(self, engine: Any, event: Any, latest_closed_idx: int, smc_args: argparse.Namespace) -> bool:
+    def _smc_long_strategy_args(self) -> argparse.Namespace:
+        defaults = {
+            "data_15m": "",
+            "data_4h": "",
+            "start_date": "1970-01-01",
+            "target_rr": float(self.config.smc_long_target_rr),
+            "allowed_time_buckets": "other+asia_evening_ny+ny_am_killzone",
+            "swing_n": 2,
+            "min_body_atr": 0.7,
+            "min_range_atr": 1.1,
+            "entry_lookahead_bars": 40,
+            "max_open_positions": 1,
+            "min_displacement_body_atr": 0.9,
+            "min_displacement_range_atr": 1.3,
+            "max_mss_lag_bars": 15,
+        }
+        merged = defaults | self._smc_long_case_params()
+        merged["target_rr"] = float(self.config.smc_long_target_rr)
+        merged.update(
+            {
+                "swing_lookback": 80,
+                "liquidity_lookback_bars": 192,
+                "mss_lookahead_bars": 24,
+                "fvg_lookback_bars": 8,
+                "outcome_lookahead_bars": 0,
+                "atr_period": 14,
+                "stop_buffer_atr": 0.05,
+                "require_confirmed_retest": True,
+                "require_fvg_touch": bool(merged.get("require_fvg_touch", True)),
+                "allow_ote_only": bool(merged.get("allow_ote_only", False)),
+                "require_htf_bias_align": True,
+                "require_h4_bias_align": True,
+                "require_d1_bias_align": False,
+                "allowed_directions": "BULL",
+                "require_ote_touch": bool(merged.get("require_ote_touch", False)),
+                "bull_min_displacement_body_atr": 0.0,
+                "bull_max_displacement_body_atr": 0.0,
+                "bull_min_displacement_range_atr": 0.0,
+                "bull_max_displacement_range_atr": 0.0,
+                "min_fvg_size_pct": 0.0,
+                "max_fvg_fill_pct": 0.0,
+                "bear_min_sweep_distance_pct": 0.0,
+                "bear_require_fvg_touch": False,
+                "bear_min_fvg_size_pct": 0.0,
+            }
+        )
+        return argparse.Namespace(**merged)
+
+    def _smc_event_allowed(
+        self,
+        engine: Any,
+        event: Any,
+        latest_closed_idx: int,
+        smc_args: argparse.Namespace,
+        direction: str,
+        case_params: dict[str, Any],
+    ) -> bool:
         retest = getattr(event, "retest", None)
         if retest is None or int(getattr(retest, "idx", -1)) != int(latest_closed_idx):
             return False
-        if str(getattr(event, "direction", "")) != Direction.BEAR:
+        if str(getattr(event, "direction", "")) != direction:
             return False
         if bool(getattr(smc_args, "require_confirmed_retest", True)) and not bool(getattr(retest, "confirmed", False)):
             return False
@@ -1927,7 +2016,7 @@ class OkxExecutionEngine:
         bucket, _ = time_bucket(engine.c15m[latest_closed_idx].ts)
         if not allowed_bucket(bucket, str(getattr(smc_args, "allowed_time_buckets", "all"))):
             return False
-        if not allowed_direction(Direction.BEAR, str(getattr(smc_args, "allowed_directions", "all"))):
+        if not allowed_direction(direction, str(getattr(smc_args, "allowed_directions", "all"))):
             return False
         daily = daily_candles_from_4h(engine.c4h)
         daily_ts = [candle.ts for candle in daily]
@@ -1937,9 +2026,9 @@ class OkxExecutionEngine:
         d1_idx = completed_d1_idx_for_entry(daily_ts, engine.c15m[latest_closed_idx].ts)
         h4_bias = htf_structure_bias(engine.c4h, h4_highs, h4_lows, h4_idx) if h4_idx >= 0 else Direction.NONE
         d1_bias = htf_structure_bias(daily, d1_highs, d1_lows, d1_idx) if d1_idx >= 0 else Direction.NONE
-        if bool(getattr(smc_args, "require_h4_bias_align", True)) and bool(getattr(smc_args, "require_htf_bias_align", True)) and h4_bias != Direction.BEAR:
+        if bool(getattr(smc_args, "require_h4_bias_align", True)) and bool(getattr(smc_args, "require_htf_bias_align", True)) and h4_bias != direction:
             return False
-        if bool(getattr(smc_args, "require_d1_bias_align", False)) and bool(getattr(smc_args, "require_htf_bias_align", True)) and d1_bias != Direction.BEAR:
+        if bool(getattr(smc_args, "require_d1_bias_align", False)) and bool(getattr(smc_args, "require_htf_bias_align", True)) and d1_bias != direction:
             return False
         if bool(getattr(smc_args, "require_ote_touch", False)) and not bool(getattr(retest, "ote_touched", False)):
             return False
@@ -1951,10 +2040,21 @@ class OkxExecutionEngine:
         max_lag = int(getattr(smc_args, "max_mss_lag_bars", 0) or 0)
         if max_lag > 0 and lag is not None and lag > max_lag:
             return False
-        other_floor = int(self._smc_case_params().get("other_min_mss_lag_bars", 0) or 0)
+        other_floor = int(case_params.get("other_min_mss_lag_bars", 0) or 0)
         if other_floor > 0 and bucket == "other" and lag is not None and lag < other_floor:
             return False
-        if float(getattr(smc_args, "bear_min_sweep_distance_pct", 0.0) or 0.0) > 0.0:
+        global_floor = int(case_params.get("global_min_mss_lag_bars", 0) or 0)
+        if global_floor > 0 and lag is not None and lag < global_floor:
+            return False
+        global_ceiling = int(case_params.get("global_max_mss_lag_bars", 0) or 0)
+        if global_ceiling > 0 and lag is not None and lag > global_ceiling:
+            return False
+        ny_limit = int(case_params.get("ny_max_mss_lag_bars", 0) or 0)
+        if ny_limit > 0 and bucket == "ny_am_killzone" and lag is not None and lag > ny_limit:
+            return False
+        if bool(case_params.get("drop_asia_session", False)) and bucket == "asia_evening_ny":
+            return False
+        if direction == Direction.BEAR and float(getattr(smc_args, "bear_min_sweep_distance_pct", 0.0) or 0.0) > 0.0:
             if float(getattr(event, "sweep_distance_pct", 0.0) or 0.0) < float(getattr(smc_args, "bear_min_sweep_distance_pct", 0.0)):
                 return False
         return True
@@ -1968,11 +2068,16 @@ class OkxExecutionEngine:
         except Exception:
             return None
         smc_args = self._smc_strategy_args()
+        case_params = self._smc_case_params()
         scan_args = build_event_scan_args(smc_args)
         scan_args.allow_incomplete_tail = True
         scan_args.outcome_lookahead_bars = 0
         events = scan_events(engine.c15m[: latest_closed_idx + 1], scan_args)
-        matches = [event for event in events if self._smc_event_allowed(engine, event, latest_closed_idx, smc_args)]
+        matches = [
+            event
+            for event in events
+            if self._smc_event_allowed(engine, event, latest_closed_idx, smc_args, Direction.BEAR, case_params)
+        ]
         if not matches:
             return None
         event = sorted(matches, key=lambda item: int(item.sweep_idx), reverse=True)[0]
@@ -2021,6 +2126,80 @@ class OkxExecutionEngine:
             "requested_notional": notional,
             "source": {
                 "smc_case": self.config.smc_case,
+                "sweep_idx": event.sweep_idx,
+                "sweep_time": event.sweep_time,
+                "mss_idx": event.mss_idx,
+                "mss_time": event.mss_time,
+                "time_bucket": event.time_bucket,
+                "mss_lag_bars": (int(event.mss_idx) - int(event.sweep_idx)) if event.mss_idx is not None else None,
+                "liquidation_buffer_pct": liquidation_buffer_pct,
+            },
+        }
+
+    def _smc_long_candidate(self, engine: Any, latest_closed_idx: int) -> dict[str, Any] | None:
+        if not bool(self.config.enable_smc_long_live):
+            return None
+        try:
+            from scripts.report_pa_ict_liquidity_features import atr_series, scan_events
+            from scripts.research_smc_standalone_v1 import build_event_scan_args
+        except Exception:
+            return None
+        smc_args = self._smc_long_strategy_args()
+        case_params = self._smc_long_case_params()
+        scan_args = build_event_scan_args(smc_args)
+        scan_args.allow_incomplete_tail = True
+        scan_args.outcome_lookahead_bars = 0
+        events = scan_events(engine.c15m[: latest_closed_idx + 1], scan_args)
+        matches = [
+            event
+            for event in events
+            if self._smc_event_allowed(engine, event, latest_closed_idx, smc_args, Direction.BULL, case_params)
+        ]
+        if not matches:
+            return None
+        event = sorted(matches, key=lambda item: int(item.sweep_idx), reverse=True)[0]
+        retest = event.retest
+        if retest is None:
+            return None
+        source_key = f"smc_long|{self.config.smc_long_case}|{retest.timestamp}|{event.sweep_idx}|{event.mss_idx}"
+        if self._candidate_seen(source_key):
+            return None
+        atr = atr_series(engine.c15m[: latest_closed_idx + 1], int(getattr(smc_args, "atr_period", 14)))
+        entry_price = float(retest.close)
+        stop_buffer = atr[latest_closed_idx] * float(getattr(smc_args, "stop_buffer_atr", 0.05)) if latest_closed_idx < len(atr) else 0.0
+        stop_price = float(event.sweep_extreme) - stop_buffer
+        risk = entry_price - stop_price
+        if entry_price <= 0 or risk <= 0:
+            self._mark_candidate_seen(source_key)
+            return None
+        target_rr = float(self.config.smc_long_target_rr)
+        target_price = entry_price + risk * target_rr
+        leverage = float(self.config.smc_long_leverage)
+        position_size_pct = float(self.config.smc_long_position_size_pct)
+        notional = max(float(getattr(engine, "capital", 0.0) or 0.0), 0.0) * leverage * position_size_pct
+        maintenance = max(float(self.config.smc_long_maintenance_margin_pct), 0.0) / 100.0
+        liquidation_price = entry_price * (1.0 - (1.0 / max(leverage, 1e-9)) + maintenance)
+        liquidation_buffer_pct = (stop_price - liquidation_price) / entry_price * 100.0
+        if liquidation_buffer_pct < float(self.config.smc_long_min_liq_buffer_pct):
+            self._mark_candidate_seen(source_key)
+            return None
+        return {
+            "event_type": "smc_long",
+            "source_key": source_key,
+            "entry_idx": latest_closed_idx,
+            "direction": Direction.BULL,
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "target_rr": target_rr,
+            "max_hold_bars": int(self.config.smc_long_max_hold_bars),
+            "trail_style": str(self.config.smc_long_trail_style or "tight"),
+            "leverage": leverage,
+            "position_size_pct": position_size_pct,
+            "maintenance_margin_pct": float(self.config.smc_long_maintenance_margin_pct),
+            "requested_notional": notional,
+            "source": {
+                "smc_case": self.config.smc_long_case,
                 "sweep_idx": event.sweep_idx,
                 "sweep_time": event.sweep_time,
                 "mss_idx": event.mss_idx,
@@ -2087,9 +2266,12 @@ class OkxExecutionEngine:
                 }
             )
 
-        smc_candidate = self._smc_short_candidate(engine, latest_closed_idx)
-        if smc_candidate is not None:
-            candidates.append(smc_candidate)
+        smc_short_candidate = self._smc_short_candidate(engine, latest_closed_idx)
+        if smc_short_candidate is not None:
+            candidates.append(smc_short_candidate)
+        smc_long_candidate = self._smc_long_candidate(engine, latest_closed_idx)
+        if smc_long_candidate is not None:
+            candidates.append(smc_long_candidate)
 
         if not candidates:
             output_actions = [action for action in actions if action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}]

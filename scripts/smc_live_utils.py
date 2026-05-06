@@ -74,6 +74,64 @@ SMC_CASES: dict[str, dict[str, Any]] = {
 }
 
 
+SMC_LONG_CASES: dict[str, dict[str, Any]] = {
+    "fvg_hist_total_rr15_10x_half": {
+        "target_rr": 1.5,
+        "allowed_time_buckets": "other+asia_evening_ny+ny_am_killzone",
+        "swing_n": 2,
+        "min_body_atr": 0.7,
+        "min_range_atr": 1.1,
+        "entry_lookahead_bars": 40,
+        "max_open_positions": 1,
+        "max_mss_lag_bars": 15,
+        "require_fvg_touch": True,
+        "allow_ote_only": False,
+        "require_ote_touch": False,
+        "min_displacement_body_atr": 0.9,
+        "min_displacement_range_atr": 1.3,
+        "allowed_directions": "BULL",
+        "leverage": 10.0,
+        "position_size_pct": 0.5,
+    },
+    "fvg_intersection_rr15_5x_half": {
+        "target_rr": 1.5,
+        "allowed_time_buckets": "other+asia_evening_ny+ny_am_killzone",
+        "swing_n": 2,
+        "min_body_atr": 0.7,
+        "min_range_atr": 1.1,
+        "entry_lookahead_bars": 40,
+        "max_open_positions": 1,
+        "max_mss_lag_bars": 15,
+        "require_fvg_touch": True,
+        "allow_ote_only": False,
+        "require_ote_touch": False,
+        "min_displacement_body_atr": 0.5,
+        "min_displacement_range_atr": 0.0,
+        "allowed_directions": "BULL",
+        "leverage": 5.0,
+        "position_size_pct": 0.5,
+    },
+    "fvg_2026_guard_rr175_5x_half": {
+        "target_rr": 1.75,
+        "allowed_time_buckets": "other+asia_evening_ny+ny_am_killzone",
+        "swing_n": 2,
+        "min_body_atr": 0.7,
+        "min_range_atr": 1.1,
+        "entry_lookahead_bars": 40,
+        "max_open_positions": 1,
+        "max_mss_lag_bars": 15,
+        "require_fvg_touch": True,
+        "allow_ote_only": False,
+        "require_ote_touch": False,
+        "min_displacement_body_atr": 0.5,
+        "min_displacement_range_atr": 0.0,
+        "allowed_directions": "BULL",
+        "leverage": 5.0,
+        "position_size_pct": 0.5,
+    },
+}
+
+
 def normalize_ts(value: Any) -> pd.Timestamp:
     ts = pd.Timestamp(value)
     if ts.tzinfo is None:
