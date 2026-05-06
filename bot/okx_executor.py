@@ -235,6 +235,8 @@ class ExecutorConfig:
     sota_score_bull_min: int = 8
     sota_score_bear_max: int = 6
     sota_score_conflict_mode: str = "any"
+    enable_long_score_bucket_sizing_live: bool = False
+    long_score_bucket_sizing_rules: list[dict[str, Any]] | None = None
     enable_smc_short_live: bool = False
     smc_case: str = "v2_medium_dispbody05_otherlag4_10x"
     smc_target_rr: float = 2.0
@@ -1797,6 +1799,37 @@ class OkxExecutionEngine:
                 rejected.append(decision)
         return accepted, rejected
 
+    def _apply_long_score_bucket_sizing(
+        self,
+        action: StrategyAction,
+        effective_leverage: float,
+        risk_mode: str,
+    ) -> tuple[float, dict[str, Any] | None]:
+        if not bool(self.config.enable_long_score_bucket_sizing_live):
+            return effective_leverage, None
+        if self._open_action_event_type(action) != "sota_long" or action.type != ActionType.OPEN_LONG:
+            return effective_leverage, None
+
+        metadata = action.metadata or {}
+        score = metadata.get("sota_score_gate")
+        score_payload = score.get("score") if isinstance(score, dict) else None
+        if not isinstance(score_payload, dict):
+            return effective_leverage, {
+                "enabled": True,
+                "applied": False,
+                "reason": "missing_score",
+            }
+
+        from scripts.score_bucket_sizing_utils import apply_score_bucket_leverage
+
+        adjusted, decision = apply_score_bucket_leverage(
+            effective_leverage=float(effective_leverage),
+            score={**score_payload, "risk_mode": risk_mode},
+            enabled=True,
+            rules=self.config.long_score_bucket_sizing_rules,
+        )
+        return adjusted, decision
+
     def _smc_case_params(self) -> dict[str, Any]:
         try:
             from scripts.smc_live_utils import SMC_CASES
@@ -3078,6 +3111,13 @@ class OkxExecutionEngine:
             diagnostics,
             mode_stats,
         )
+        effective_leverage, score_bucket_decision = self._apply_long_score_bucket_sizing(
+            action,
+            effective_leverage,
+            risk_mode,
+        )
+        if isinstance(score_bucket_decision, dict) and bool(score_bucket_decision.get("applied")):
+            leverage_reasons.append(str(score_bucket_decision.get("reason") or "score_bucket_sizing"))
         max_stop_distance = (
             float(self.config.dynamic_defense_max_stop_distance_pct)
             if risk_mode == "defense"
@@ -3095,6 +3135,7 @@ class OkxExecutionEngine:
             "leverage_reasons": leverage_reasons,
             "diagnostics": diagnostics,
             "max_stop_distance_pct": max_stop_distance,
+            "score_bucket_sizing": score_bucket_decision,
         }
         state["mode"] = risk_mode
         state["last_decision"] = decision

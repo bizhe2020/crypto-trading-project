@@ -33,6 +33,7 @@ from scripts.live_shadow_utils import (  # noqa: E402
     standard_event_summary,
     standard_sota_event,
 )
+from scripts.score_bucket_sizing_utils import apply_score_bucket_sizing_to_events  # noqa: E402
 from scripts.report_smc_trade_context import daily_candles_from_4h  # noqa: E402
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay  # noqa: E402
 from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS, replay_shadow_events  # noqa: E402
@@ -74,6 +75,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sota-score-bull-min", type=int, default=8)
     parser.add_argument("--sota-score-bear-max", type=int, default=6)
     parser.add_argument("--sota-score-conflict-mode", default="any", choices=("any", "conflict", "clean"))
+    parser.add_argument("--enable-long-score-bucket-sizing", action="store_true")
+    parser.add_argument(
+        "--long-score-bucket-sizing-rules-json",
+        default="",
+        help="Optional JSON array/dict for long score bucket sizing rules.",
+    )
     parser.add_argument("--stage-trigger-rr-mode", default="close", choices=RR_MODE_CHOICES)
     parser.add_argument("--time-trailing-rr-mode", default="extreme", choices=RR_MODE_CHOICES)
     parser.add_argument("--atr-activation-rr-mode", default="extreme", choices=RR_MODE_CHOICES)
@@ -239,6 +246,12 @@ def write_paper_log(path: Path, decisions: list[dict[str, Any]]) -> None:
             handle.write(json.dumps(clean_for_json(decision), ensure_ascii=False, allow_nan=False) + "\n")
 
 
+def parse_score_bucket_rules(raw: str) -> Any:
+    if not raw:
+        return None
+    return json.loads(raw)
+
+
 def apply_sota_score_gate(
     prepared: Any,
     sota_events: list[dict[str, Any]],
@@ -340,6 +353,11 @@ def main() -> None:
         bear_max=int(args.sota_score_bear_max),
         conflict_mode=str(args.sota_score_conflict_mode),
     )
+    base_events, long_score_bucket_sizing = apply_score_bucket_sizing_to_events(
+        base_events,
+        enabled=bool(args.enable_long_score_bucket_sizing),
+        rules=parse_score_bucket_rules(str(args.long_score_bucket_sizing_rules_json)),
+    )
     gated_shadow_summary = event_stream_summary(base_events, initial_capital, prepared.end)
 
     daily = daily_candles_from_4h(prepared.c4h)
@@ -391,6 +409,7 @@ def main() -> None:
             "smc_case": args.smc_case,
             "smc_allocation": args.smc_allocation,
             "sota_score_gate": sota_score_gate,
+            "long_score_bucket_sizing": long_score_bucket_sizing,
             "paper_log_output": str(Path(args.paper_log_output).resolve()),
         },
         "baseline_shadow_sota": compact_result(base_shadow_summary, 0),
@@ -400,6 +419,7 @@ def main() -> None:
             "sota_candidates": len(base_events),
             "smc_candidates": len(smc_events),
             "sota_score_gate": sota_score_gate,
+            "long_score_bucket_sizing": long_score_bucket_sizing,
             "smc_summary": smc_summary,
         },
         "reference_base_priority_sota_first": compact_combo_with_events(reference, int(args.sample_trades)),

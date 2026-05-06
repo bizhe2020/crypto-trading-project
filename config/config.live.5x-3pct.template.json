@@ -52,6 +52,15 @@
   "sota_score_bull_min": 8,
   "sota_score_bear_max": 6,
   "sota_score_conflict_mode": "any",
+  "enable_long_score_bucket_sizing_live": true,
+  "long_score_bucket_sizing_rules": [
+    {
+      "name": "bear_total_6_light_boost",
+      "bear_eq": 6,
+      "leverage_multiplier": 1.35,
+      "max_effective_leverage": 8.0
+    }
+  ],
   "enable_smc_short_live": true,
   "smc_case": "v2_medium_dispbody05_otherlag4_10x",
   "smc_target_rr": 2.0,
