@@ -488,8 +488,8 @@ class OkxExecutionEngine:
         return {
             "keyboard": [
                 ["/daily", "/profit", "/balance"],
-                ["/status", "/ob", "/drift"],
-                ["/status table", "/performance"],
+                ["/strategy", "/ob", "/drift"],
+                ["/status", "/status table", "/performance"],
                 ["/count", "/start", "/stop", "/help"],
             ],
             "resize_keyboard": True,
@@ -505,7 +505,8 @@ class OkxExecutionEngine:
             {"command": "profit", "description": "累计收益"},
             {"command": "balance", "description": "账户余额"},
             {"command": "status", "description": "机器人状态"},
-            {"command": "ob", "description": "OB开仓条件"},
+            {"command": "strategy", "description": "策略链路/最近仲裁"},
+            {"command": "ob", "description": "候选雷达精简版"},
             {"command": "drift", "description": "实盘体检"},
             {"command": "performance", "description": "策略表现"},
             {"command": "count", "description": "交易次数"},
@@ -575,12 +576,18 @@ class OkxExecutionEngine:
 
     def _telegram_command_reply(self, text: str) -> str:
         raw = text.strip()
-        command = raw.split("@", 1)[0].strip().lower()
-        command_name = raw.split(maxsplit=1)[0].split("@", 1)[0].strip().lower() if raw else ""
+        first_token = raw.split(maxsplit=1)[0] if raw else ""
+        command_name = first_token.split("@", 1)[0].strip().lower()
+        tail = raw[len(first_token) :].strip().lower() if first_token else ""
+        command = f"{command_name} {tail}".strip()
         if command_name in {"/drift", "/health", "/体检"}:
             return self._build_drift_report_message()
-        if command_name in {"/ob", "/状态"}:
+        if command in {"/ob full", "/ob_full", "/obfull"}:
             return self._build_ob_status_message()
+        if command_name in {"/strategy", "/策略", "/链路"}:
+            return self._build_strategy_status_message()
+        if command_name in {"/ob", "/状态"}:
+            return self._build_strategy_status_message()
         if command == "/help":
             return self._telegram_help_text()
         if command == "/start":
@@ -618,7 +625,9 @@ class OkxExecutionEngine:
                 "📈 /profit 累计已实现收益",
                 "🏦 /balance 账户余额",
                 "📡 /status 运行和持仓状态",
-                "🧭 /ob OB开仓雷达",
+                "🧭 /strategy 策略链路/最近仲裁",
+                "🔎 /ob 候选雷达精简版",
+                "🧱 /ob full 旧OB细节诊断",
                 "🩺 /drift 实盘体检",
                 "🧾 /status table 面板版状态",
                 "🚀 /performance 策略表现",
@@ -813,6 +822,12 @@ class OkxExecutionEngine:
             if reason.startswith("failed_breakout_guard:"):
                 score = reason.split(":", 1)[1]
                 parts.append(f"防假突破保护 {score}")
+            elif reason.startswith("score_bucket:"):
+                name = reason.split(":", 1)[1]
+                parts.append(f"Score桶 {self._score_bucket_reason_label(name)}")
+            elif reason.startswith("overlay_fixed:"):
+                event_type = reason.split(":", 1)[1]
+                parts.append(f"固定候选 {self._strategy_event_label(event_type)}")
             else:
                 parts.append(labels.get(reason, reason))
         return " + ".join(parts)
@@ -1089,13 +1104,17 @@ class OkxExecutionEngine:
         snapshot_loaded = "是" if bootstrap_status.get("snapshot_loaded") else "否"
         market_loaded = "是" if bootstrap_status.get("market_loaded") else "否"
         lines = [
-            "[Bot启动]",
+            self._telegram_title("🤖", "Bot启动"),
             f"状态: {status_text}",
             f"标的: {self.config.symbol}",
             f"模式: {self.config.mode}",
+            f"主链: {self._strategy_priority_text()}",
+            f"SOTA gate: {self._score_gate_status_text()}",
+            f"Bucket sizing: {self._long_score_bucket_status_text()}",
+            f"SMC short: {self._smc_status_text('short')}",
             f"市场加载: {market_loaded}",
             f"快照加载: {snapshot_loaded}",
-            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            self._telegram_time_line(),
         ]
         if bootstrap_status.get("bootstrap_error"):
             lines.append(f"错误: {bootstrap_status['bootstrap_error']}")
@@ -1401,6 +1420,269 @@ class OkxExecutionEngine:
             )
         return lines
 
+    def _strategy_event_label(self, event_type: Any) -> str:
+        labels = {
+            "sota_long": "SOTA Long",
+            "smc_short": "SMC Short",
+            "smc_long": "SMC Long",
+        }
+        return labels.get(str(event_type or ""), str(event_type or "-"))
+
+    def _score_bucket_reason_label(self, name: str) -> str:
+        labels = {
+            "bear_total_6_20x_boost": "bear=6 20x",
+            "nbb_6_11_5_conflict_2p5_cap20": "6/11/5冲突 2.5x cap20",
+            "bear_total_6_light_boost": "bear=6轻放大",
+        }
+        return labels.get(str(name or ""), str(name or "-"))
+
+    def _strategy_priority_text(self) -> str:
+        priority = " > ".join(self._strategy_event_label(item) for item in self._live_candidate_priority())
+        if not priority:
+            priority = "SOTA Long"
+        suffix = "" if self._live_candidate_arbitration_enabled() else " (仲裁OFF)"
+        return f"{priority}{suffix}"
+
+    def _score_gate_status_text(self) -> str:
+        if not bool(self.config.enable_sota_score_gate_live):
+            return "OFF"
+        rule = self._sota_score_gate_rule()
+        return (
+            "ON "
+            f"net>={rule.get('net_min')} / bull>={rule.get('bull_min')} / "
+            f"bear<={rule.get('bear_max')} / {rule.get('conflict_mode')}"
+        )
+
+    def _score_payload_text(self, score: Any) -> str:
+        if not isinstance(score, dict):
+            return "-"
+        net = score.get("net_score")
+        bull = score.get("bull_total")
+        bear = score.get("bear_total")
+        conflict = "conflict" if bool(score.get("conflict")) else "clean"
+        return f"net {net} / bull {bull} / bear {bear} / {conflict}"
+
+    def _score_bucket_rule_text(self, rule: dict[str, Any]) -> str:
+        name = self._score_bucket_reason_label(str(rule.get("name") or "unnamed"))
+        criteria: list[str] = []
+        for prefix, label in (("net", "net"), ("bull", "bull"), ("bear", "bear")):
+            if rule.get(f"{prefix}_eq") is not None:
+                criteria.append(f"{label}={rule[f'{prefix}_eq']}")
+            if rule.get(f"{prefix}_min") is not None:
+                criteria.append(f"{label}>={rule[f'{prefix}_min']}")
+            if rule.get(f"{prefix}_max") is not None:
+                criteria.append(f"{label}<={rule[f'{prefix}_max']}")
+        conflict_mode = str(rule.get("conflict_mode") or "any")
+        if conflict_mode != "any":
+            criteria.append(conflict_mode)
+        leverage = (
+            f"target {float(rule['target_effective_leverage']):.2f}x"
+            if rule.get("target_effective_leverage") is not None
+            else f"x{float(rule.get('leverage_multiplier', rule.get('multiplier', 1.0)) or 1.0):.2f}"
+        )
+        if rule.get("max_effective_leverage") is not None:
+            leverage += f" cap {float(rule['max_effective_leverage']):.1f}x"
+        body = ", ".join(criteria + [leverage])
+        return f"{name}({body})" if body else name
+
+    def _long_score_bucket_status_text(self) -> str:
+        if not bool(self.config.enable_long_score_bucket_sizing_live):
+            return "OFF"
+        rules = self.config.long_score_bucket_sizing_rules
+        if not isinstance(rules, list) or not rules:
+            return "ON default"
+        rendered = [self._score_bucket_rule_text(rule) for rule in rules[:3] if isinstance(rule, dict)]
+        extra = len(rules) - len(rendered)
+        suffix = f" +{extra}" if extra > 0 else ""
+        return "ON " + "; ".join(rendered) + suffix
+
+    def _smc_status_text(self, side: str) -> str:
+        if side == "short":
+            if not bool(self.config.enable_smc_short_live):
+                return "OFF"
+            return f"ON {self.config.smc_case} / {float(self.config.smc_leverage):.1f}x / RR {float(self.config.smc_target_rr):.2f}"
+        if not bool(self.config.enable_smc_long_live):
+            return "OFF"
+        return (
+            f"ON {self.config.smc_long_case} / "
+            f"{float(self.config.smc_long_leverage):.1f}x / RR {float(self.config.smc_long_target_rr):.2f}"
+        )
+
+    def _trailing_status_text(self) -> str:
+        flags = [
+            f"stage {'ON' if self.config.enable_stage_trailing else 'OFF'}",
+            f"ATR {'ON' if self.config.enable_atr_trailing else 'OFF'}",
+            f"time {'ON' if self.config.enable_time_based_trailing else 'OFF'}",
+            f"pressure {'ON' if self.config.enable_pressure_level_trailing else 'OFF'}",
+        ]
+        return " / ".join(flags)
+
+    def _latest_action_payload(self, action_type: str, *, limit: int = 200) -> dict[str, Any] | None:
+        for item in self.store.recent_actions(limit):
+            if item.get("action_type") != action_type:
+                continue
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            return {
+                **payload,
+                "_timestamp": item.get("timestamp"),
+                "_created_at": item.get("created_at"),
+            }
+        return None
+
+    def _format_arbitration_candidate(self, candidate: Any) -> str:
+        if not isinstance(candidate, dict):
+            return "-"
+        event_type = self._strategy_event_label(candidate.get("event_type"))
+        direction = self._direction_label(candidate.get("direction"))
+        entry = self._format_optional_price(candidate.get("entry_price"))
+        timestamp = candidate.get("timestamp") or candidate.get("entry_time") or "-"
+        return f"{event_type} {direction} @ {entry} / {timestamp}"
+
+    def _arbitration_status_lines(self) -> list[str]:
+        payload = self._latest_action_payload("LIVE_CANDIDATE_ARBITRATION")
+        if not payload:
+            return ["最近仲裁: 暂无"]
+        decision = str(payload.get("decision") or "-")
+        lines = [
+            "最近仲裁",
+            f"结果: {decision} / {payload.get('_timestamp') or '-'}",
+        ]
+        selected = payload.get("selected")
+        if isinstance(selected, dict):
+            lines.append(f"Selected: {self._format_arbitration_candidate(selected)}")
+        rejected = payload.get("rejected") if isinstance(payload.get("rejected"), list) else []
+        if rejected:
+            counts: dict[str, int] = {}
+            for item in rejected:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("reason") or item.get("event_type") or "unknown")
+                counts[key] = counts.get(key, 0) + 1
+            if counts:
+                lines.append("Rejected: " + ", ".join(f"{key} x{value}" for key, value in sorted(counts.items())))
+        score_gate_rejected = payload.get("score_gate_rejected")
+        if isinstance(score_gate_rejected, list) and score_gate_rejected:
+            lines.append(f"Score gate拒绝: {len(score_gate_rejected)}")
+        return lines
+
+    def _current_strategy_position_lines(self, snapshot: dict[str, Any], dyn: dict[str, Any]) -> list[str]:
+        position = snapshot.get("position") if isinstance(snapshot.get("position"), dict) else None
+        if not position:
+            return ["当前策略仓位: flat"]
+        entry_time = str(position.get("entry_time") or "")
+        action_metadata = self._latest_open_action_metadata(entry_time)
+        event_type = position.get("candidate_event_type") or action_metadata.get("candidate_event_type") or "sota_long"
+        context = self._current_position_execution_context(snapshot, dyn)
+        lines = [
+            f"当前策略仓位: {self._direction_label(position.get('direction'))} / {self._strategy_event_label(event_type)}",
+            (
+                "入场/止损/止盈: "
+                f"{self._format_optional_price(position.get('entry_price'))} / "
+                f"{self._format_optional_price(position.get('sl_price'))} / "
+                f"{self._format_optional_price(position.get('target_price'))}"
+            ),
+        ]
+        if context:
+            lines.append(
+                "杠杆: "
+                f"账户 {self._format_optional_leverage(context.get('actual_effective_leverage'))} / "
+                f"执行 {self._format_optional_leverage(context.get('selected_effective_leverage'))} / "
+                f"{context.get('risk_mode') or '-'}"
+            )
+            lines.append(
+                "仓位: "
+                f"{self._format_optional_usdt(context.get('theoretical_notional'), digits=0)} -> "
+                f"{self._format_optional_usdt(context.get('actual_notional'), digits=0)}"
+            )
+            lines.append(f"压仓: {context.get('reason_text') or '-'}")
+        return lines
+
+    def _open_strategy_context_lines(self, action: StrategyAction, dynamic_info: dict[str, Any]) -> list[str]:
+        metadata = action.metadata or {}
+        event_type = self._open_action_event_type(action)
+        lines = [f"候选: {self._strategy_event_label(event_type)}"]
+        score_gate = metadata.get("sota_score_gate")
+        if event_type == "sota_long" and isinstance(score_gate, dict):
+            lines.append(f"Score: {self._score_payload_text(score_gate.get('score'))}")
+            accepted = "通过" if bool(score_gate.get("accepted", True)) else "拒绝"
+            lines.append(f"Gate: {accepted}")
+        if event_type in {"smc_short", "smc_long"}:
+            source = metadata.get("candidate_source") if isinstance(metadata.get("candidate_source"), dict) else {}
+            case = source.get("smc_case") or (self.config.smc_case if event_type == "smc_short" else self.config.smc_long_case)
+            time_bucket = source.get("time_bucket")
+            lag = source.get("mss_lag_bars")
+            parts = [str(case)]
+            if time_bucket is not None:
+                parts.append(str(time_bucket))
+            if lag is not None:
+                parts.append(f"lag {lag}")
+            lines.append("SMC: " + " / ".join(parts))
+        bucket = dynamic_info.get("score_bucket_sizing") if isinstance(dynamic_info.get("score_bucket_sizing"), dict) else None
+        if isinstance(bucket, dict) and bool(bucket.get("applied")):
+            rule = bucket.get("rule") if isinstance(bucket.get("rule"), dict) else {}
+            name = self._score_bucket_reason_label(str(rule.get("name") or "unnamed"))
+            lines.append(f"Bucket: {name} -> {self._format_optional_leverage(bucket.get('target_effective_leverage'))}")
+        return lines
+
+    def _build_strategy_status_message(self) -> str:
+        try:
+            snapshot = self._load_snapshot_payload()
+            dyn = self._load_dynamic_high_leverage_state() if self._dynamic_high_leverage_enabled() else {}
+            position = self._position_summary()
+            local_position = position["local_position"]
+            long_contracts = float(position["long"].get("contracts", 0.0) or 0.0)
+            short_contracts = float(position["short"].get("contracts", 0.0) or 0.0)
+            exchange_side = "long" if long_contracts > 0 else "short" if short_contracts > 0 else "flat"
+            local_side = "flat"
+            if local_position:
+                local_side = "long" if local_position.get("direction") == "BULL" else "short"
+            bracket = position.get("pending_bracket") if isinstance(position.get("pending_bracket"), dict) else {}
+            lines = [
+                self._telegram_title("🧭", "策略控制台"),
+                f"标的: {self.config.symbol}",
+                f"模式: {self.config.mode}",
+                f"开仓: {self._open_status_text(self._telegram_open_paused())}",
+                f"主链: {self._strategy_priority_text()}",
+                f"单仓仲裁: {'ON' if self._live_candidate_arbitration_enabled() else 'OFF'} / max_pos={self.config.max_open_positions}",
+                f"SOTA gate: {self._score_gate_status_text()}",
+                f"Long bucket: {self._long_score_bucket_status_text()}",
+                f"SMC short: {self._smc_status_text('short')}",
+            ]
+            if bool(self.config.enable_smc_long_live):
+                lines.append(f"SMC long: {self._smc_status_text('long')}")
+            lines.extend(
+                [
+                    f"Trailing: {self._trailing_status_text()}",
+                    "",
+                    "仓位",
+                    f"交易所: {self._side_status_text(exchange_side)}",
+                    f"本地: {self._side_status_text(local_side)}",
+                    (
+                        "保护: "
+                        f"SL {self._format_optional_price(bracket.get('stop_price'))} / "
+                        f"TP {self._format_optional_price(bracket.get('target_price'))}"
+                    ),
+                ]
+            )
+            lines.extend(self._current_strategy_position_lines(snapshot, dyn))
+            lines.append("")
+            lines.extend(self._arbitration_status_lines())
+            lines.append("")
+            lines.extend(self._latest_shadow_status_lines())
+            lines.append(self._telegram_time_line())
+            return "\n".join(lines)
+        except Exception as exc:
+            return "\n".join(
+                [
+                    self._telegram_title("🧭", "策略控制台"),
+                    "状态: 生成失败",
+                    f"原因: {exc}",
+                    self._telegram_time_line(),
+                ]
+            )
+
     def _build_ob_status_message(self) -> str:
         try:
             engine, _ = self.load_engine()
@@ -1533,7 +1815,7 @@ class OkxExecutionEngine:
             key = "telegram_last_ob_status_ts"
             interval = max(1, int(self.config.telegram_ob_status_interval_minutes)) * 60
             if self._interval_due(key, interval):
-                if self._send_telegram(self._build_ob_status_message()):
+                if self._send_telegram(self._build_strategy_status_message()):
                     self._mark_interval_sent(key)
 
         if self.config.telegram_drift_report_enabled:
@@ -2490,6 +2772,7 @@ class OkxExecutionEngine:
             open_lines = [
                 "[开仓已确认]",
                 f"方向: {direction}",
+                *self._open_strategy_context_lines(action, dynamic_info),
                 f"标的: {self.config.symbol}",
                 f"成交: {observed['contracts']:.4f} 张 (~{observed['notional_usdt']:.2f}U)",
                 f"目标仓位: {sizing['amount']:.4f} {sizing['order_unit']} (~{sizing['expected_notional_usdt']:.2f}U)",

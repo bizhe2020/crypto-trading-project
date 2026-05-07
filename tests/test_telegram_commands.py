@@ -48,6 +48,7 @@ class TelegramCommandTests(unittest.TestCase):
         help_text = engine._telegram_command_reply("/help")
         self.assertIn("/balance", help_text)
         self.assertIn("/drift", help_text)
+        self.assertIn("/strategy", help_text)
         self.assertIn("/ob", help_text)
         status = engine._telegram_command_reply("/status")
         self.assertIn("📡 状态雷达", status)
@@ -135,10 +136,93 @@ class TelegramCommandTests(unittest.TestCase):
 
     def test_ob_aliases_reply_with_ob_report(self) -> None:
         engine = self._engine()
+        engine._build_strategy_status_message = lambda: "STRATEGY_REPORT"  # type: ignore[method-assign]
         engine._build_ob_status_message = lambda: "OB_REPORT"  # type: ignore[method-assign]
 
-        self.assertEqual(engine._telegram_command_reply("/ob"), "OB_REPORT")
-        self.assertEqual(engine._telegram_command_reply("/状态"), "OB_REPORT")
+        self.assertEqual(engine._telegram_command_reply("/ob"), "STRATEGY_REPORT")
+        self.assertEqual(engine._telegram_command_reply("/状态"), "STRATEGY_REPORT")
+        self.assertEqual(engine._telegram_command_reply("/ob full"), "OB_REPORT")
+
+    def test_strategy_aliases_reply_with_strategy_report(self) -> None:
+        engine = self._engine()
+        engine._build_strategy_status_message = lambda: "STRATEGY_REPORT"  # type: ignore[method-assign]
+
+        self.assertEqual(engine._telegram_command_reply("/strategy"), "STRATEGY_REPORT")
+        self.assertEqual(engine._telegram_command_reply("/策略"), "STRATEGY_REPORT")
+        self.assertEqual(engine._telegram_command_reply("/链路"), "STRATEGY_REPORT")
+
+    def test_strategy_status_message_reflects_current_live_chain(self) -> None:
+        engine = self._engine()
+        engine.config.enable_live_candidate_arbitration = True
+        engine.config.enable_sota_score_gate_live = True
+        engine.config.enable_long_score_bucket_sizing_live = True
+        engine.config.long_score_bucket_sizing_rules = [
+            {
+                "name": "nbb_6_11_5_conflict_2p5_cap20",
+                "net_eq": 6,
+                "bull_eq": 11,
+                "bear_eq": 5,
+                "conflict_mode": "conflict",
+                "leverage_multiplier": 2.5,
+                "max_effective_leverage": 20.0,
+            }
+        ]
+        engine.config.enable_smc_short_live = True
+        engine.config.smc_case = "v2_medium_dispbody05_otherlag4_10x"
+        engine.config.enable_pressure_level_trailing = True
+        engine.store.set_value(
+            "strategy_snapshot",
+            json.dumps(
+                {
+                    "capital": 10000.0,
+                    "position": {
+                        "direction": "BULL",
+                        "entry_time": "2026-05-07 10:15",
+                        "entry_price": 95500.0,
+                        "sl_price": 94800.0,
+                        "target_price": 98000.0,
+                        "notional": 20000.0,
+                        "capital_at_entry": 10000.0,
+                        "execution_effective_leverage": 2.0,
+                        "execution_risk_mode": "offense",
+                        "execution_leverage_reasons": ["base", "score_bucket:nbb_6_11_5_conflict_2p5_cap20"],
+                        "execution_requested_notional": 15000.0,
+                        "execution_target_notional": 20000.0,
+                        "candidate_event_type": "sota_long",
+                    },
+                    "trade_count": 12,
+                    "exit_reasons": {},
+                },
+                ensure_ascii=False,
+            ),
+        )
+        engine.store.append_action(
+            "2026-05-07 10:15",
+            "LIVE_CANDIDATE_ARBITRATION",
+            {
+                "decision": "accepted",
+                "selected": {
+                    "event_type": "sota_long",
+                    "timestamp": "2026-05-07 10:15",
+                    "direction": "BULL",
+                    "entry_price": 95500.0,
+                },
+                "rejected": [{"event_type": "smc_short"}],
+                "score_gate_rejected": [],
+            },
+        )
+
+        report = engine._build_strategy_status_message()
+
+        self.assertIn("🧭 策略控制台", report)
+        self.assertIn("主链: SOTA Long > SMC Short", report)
+        self.assertIn("SOTA gate: ON net>=3 / bull>=8 / bear<=6 / any", report)
+        self.assertIn("Long bucket: ON 6/11/5冲突 2.5x cap20", report)
+        self.assertIn("SMC short: ON v2_medium_dispbody05_otherlag4_10x / 10.0x / RR 2.00", report)
+        self.assertIn("当前策略仓位: 🟢 多头 / SOTA Long", report)
+        self.assertIn("压仓: 基础 + Score桶 6/11/5冲突 2.5x cap20", report)
+        self.assertIn("Selected: SOTA Long", report)
+        self.assertIn("Rejected: smc_short x1", report)
 
     def test_ob_regime_display_labels_compression_bucket_plainly(self) -> None:
         engine = object.__new__(OkxExecutionEngine)
