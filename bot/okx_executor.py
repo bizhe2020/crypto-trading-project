@@ -990,11 +990,23 @@ class OkxExecutionEngine:
             pnl = self._safe_float(metadata.get("net_pnl"))
             if pnl is None:
                 continue
+            if not self._close_action_counts_as_realized(payload):
+                continue
             timestamp = str(item.get("timestamp") or "")
             if daily and not timestamp.startswith(today):
                 continue
             events.append({"timestamp": timestamp, "pnl": pnl, "reason": payload.get("reason")})
         return events
+
+    def _close_action_counts_as_realized(self, payload: dict[str, Any]) -> bool:
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            return False
+        if bool(metadata.get("ignored_for_realized_pnl")):
+            return False
+        if self.config.mode != "live" or not self._shadow_gate_enabled():
+            return True
+        return str(metadata.get("source") or "") in {"external_flat_sync", "live_order_execution"}
 
     def _telegram_profit_text(self, *, daily: bool) -> str:
         events = self._realized_pnl_events(daily=daily)
@@ -2666,7 +2678,6 @@ class OkxExecutionEngine:
         self.store.append_action(action.timestamp, action.type.value, asdict(action))
 
     def execute_action(self, action: StrategyAction, engine: Any) -> dict[str, Any]:
-        self.record_action(action)
         if action.type == ActionType.HOLD:
             return {"status": "ignored", "reason": "hold"}
         if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT} and self._telegram_open_paused():
@@ -2693,10 +2704,22 @@ class OkxExecutionEngine:
             }
         shadow_decision = self._shadow_gate_pre_execute(action, engine)
         if shadow_decision is not None:
+            if action.type == ActionType.CLOSE_POSITION:
+                self._rollback_unexecuted_close(action, engine, reason=str(shadow_decision.get("status") or "skipped_close"))
+                self.store.append_action(
+                    action.timestamp,
+                    "EXECUTION_SKIPPED",
+                    {
+                        "action": asdict(action),
+                        "decision": shadow_decision,
+                    },
+                )
             return shadow_decision
         if action.type == ActionType.UPDATE_STOP:
             if self.config.mode != "live" or not self.config.enable_exchange_brackets:
+                self.record_action(action)
                 return {"status": "recorded_only", "action": action.type.value, "stop_price": action.stop_price}
+            self.record_action(action)
             return self._amend_exchange_brackets(action, engine)
 
         sizing = self._resolve_order_sizing(action, engine)
@@ -2715,6 +2738,7 @@ class OkxExecutionEngine:
             return high_leverage_decision
 
         if self.config.mode == "paper":
+            self.record_action(action)
             if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
                 self._shadow_gate_mark_real_position(True, action, "paper_open_accepted")
             if action.type == ActionType.CLOSE_POSITION:
@@ -2768,6 +2792,7 @@ class OkxExecutionEngine:
                 )
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
             self._shadow_gate_mark_real_position(True, action, "open_confirmed")
+            self.record_action(action)
             dynamic_info = sizing.get("dynamic_high_leverage") if isinstance(sizing.get("dynamic_high_leverage"), dict) else {}
             open_lines = [
                 "[开仓已确认]",
@@ -2833,6 +2858,13 @@ class OkxExecutionEngine:
                     )
                 )
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
+            metadata = dict(action.metadata or {})
+            metadata["source"] = metadata.get("source") or "live_order_execution"
+            metadata["order_id"] = order.get("id")
+            metadata["observed_contracts"] = observed.get("contracts")
+            metadata["observed_notional_usdt"] = observed.get("notional_usdt")
+            action.metadata = metadata
+            self.record_action(action)
             self._shadow_gate_after_close(action, engine)
             self._dynamic_high_leverage_after_close(action, engine)
             self._send_telegram(
@@ -2851,7 +2883,43 @@ class OkxExecutionEngine:
             )
             return {"status": "submitted", "order": order, "observed_position": observed, **sizing}
 
+        self.record_action(action)
         return {"status": "recorded_only", "action": action.type.value}
+
+    def _rollback_unexecuted_close(self, action: StrategyAction, engine: Any, *, reason: str) -> None:
+        metadata = action.metadata or {}
+        pnl = self._safe_float(metadata.get("net_pnl"))
+        if pnl is not None:
+            engine.capital = float(getattr(engine, "capital", 0.0) or 0.0) - pnl
+
+        if action.reason and isinstance(getattr(engine, "exit_reasons", None), dict):
+            current = int(engine.exit_reasons.get(action.reason, 0) or 0)
+            if current <= 1:
+                engine.exit_reasons.pop(action.reason, None)
+            else:
+                engine.exit_reasons[action.reason] = current - 1
+
+        trades = getattr(engine, "trades", None)
+        if isinstance(trades, list) and trades:
+            latest = trades[-1]
+            latest_exit_time = str(getattr(latest, "exit_time", "") or "")
+            latest_reason = str(getattr(latest, "exit_reason", "") or "")
+            latest_pnl = self._safe_float(getattr(latest, "pnl", None))
+            pnl_matches = pnl is None or latest_pnl is None or abs(float(latest_pnl) - float(pnl)) < 1e-6
+            if latest_exit_time == action.timestamp and latest_reason == str(action.reason or "") and pnl_matches:
+                trades.pop()
+
+        self.store.append_action(
+            action.timestamp,
+            "UNEXECUTED_CLOSE_ROLLBACK",
+            {
+                "reason": reason,
+                "direction": action.direction,
+                "exit_price": action.exit_price,
+                "close_reason": action.reason,
+                "net_pnl": pnl,
+            },
+        )
 
     def _shadow_gate_enabled(self) -> bool:
         return (

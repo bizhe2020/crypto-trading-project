@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime as real_datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from bot.okx_executor import ExecutorConfig, OkxExecutionEngine
 from strategy.scalp_robust_v2_core import Direction
@@ -223,6 +225,45 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertIn("压仓: 基础 + Score桶 6/11/5冲突 2.5x cap20", report)
         self.assertIn("Selected: SOTA Long", report)
         self.assertIn("Rejected: smc_short x1", report)
+
+    def test_daily_profit_excludes_skipped_live_shadow_close(self) -> None:
+        engine = self._engine()
+        engine.config.mode = "live"
+        engine.config.enable_shadow_risk_gate = True
+        engine.config.shadow_daily_loss_stop_pct = 1.0
+        today = "2026-05-07"
+        engine.store.append_action(
+            f"{today} 10:15",
+            "EXECUTION_SKIPPED",
+            {
+                "action": {
+                    "type": "CLOSE_POSITION",
+                    "timestamp": f"{today} 10:15",
+                    "direction": "BULL",
+                    "reason": "stop_loss",
+                    "metadata": {"net_pnl": -805.9},
+                },
+                "decision": {"status": "shadow_gate_skipped_close"},
+            },
+        )
+        engine.store.append_action(
+            f"{today} 12:00",
+            "CLOSE_POSITION",
+            {
+                "type": "CLOSE_POSITION",
+                "timestamp": f"{today} 12:00",
+                "direction": "BULL",
+                "reason": "external_stop_loss",
+                "metadata": {"source": "external_flat_sync", "net_pnl": 100.0},
+            },
+        )
+
+        with patch("bot.okx_executor.datetime") as mocked_datetime:
+            mocked_datetime.now.return_value = real_datetime(2026, 5, 7, 15, 0, 0)
+            events = engine._realized_pnl_events(daily=True)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["pnl"], 100.0)
 
     def test_ob_regime_display_labels_compression_bucket_plainly(self) -> None:
         engine = object.__new__(OkxExecutionEngine)
