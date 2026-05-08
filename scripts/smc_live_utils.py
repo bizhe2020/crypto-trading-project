@@ -71,6 +71,26 @@ SMC_CASES: dict[str, dict[str, Any]] = {
         "leverage": 10.0,
         "position_size_pct": 1.0,
     },
+    "gap_expansion_21d_other_3x": {
+        "target_rr": 2.0,
+        "allowed_time_buckets": "other",
+        "swing_n": 2,
+        "min_body_atr": 0.5,
+        "min_range_atr": 0.9,
+        "entry_lookahead_bars": 40,
+        "max_open_positions": 1,
+        "max_mss_lag_bars": 15,
+        "min_displacement_body_atr": 0.5,
+        "require_confirmed_retest": False,
+        "require_fvg_touch": True,
+        "allow_ote_only": False,
+        "require_htf_bias_align": False,
+        "require_h4_bias_align": False,
+        "require_d1_bias_align": False,
+        "allowed_directions": "BEAR",
+        "leverage": 3.0,
+        "position_size_pct": 1.0,
+    },
 }
 
 

@@ -37,7 +37,7 @@ from scripts.score_bucket_sizing_utils import apply_score_bucket_sizing_to_event
 from scripts.report_smc_trade_context import daily_candles_from_4h  # noqa: E402
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay  # noqa: E402
 from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS, replay_shadow_events  # noqa: E402
-from scripts.smc_live_utils import SMC_CASES, build_smc_events, live_feasibility_audit, replay_base_priority_sota_first  # noqa: E402
+from scripts.smc_live_utils import SMC_CASES, build_smc_events, leveraged_net_return, live_feasibility_audit, replay_base_priority_sota_first  # noqa: E402
 from strategy.scalp_robust_v2_core import precompute_swings  # noqa: E402
 
 
@@ -70,6 +70,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--smc-case", default="v2_medium_dispbody05_otherlag4_10x", choices=sorted(SMC_CASES))
     parser.add_argument("--smc-allocation", type=float, default=1.0)
+    parser.add_argument("--enable-gap-smc-short", action="store_true")
+    parser.add_argument("--gap-smc-case", default="gap_expansion_21d_other_3x", choices=sorted(SMC_CASES))
+    parser.add_argument("--gap-smc-min-flat-days", type=float, default=21.0)
+    parser.add_argument("--gap-smc-leverage", type=float, default=3.0)
+    parser.add_argument("--gap-smc-max-stop-distance-pct", type=float, default=1.5)
     parser.add_argument("--enable-sota-score-gate", action="store_true")
     parser.add_argument("--sota-score-net-min", type=int, default=3)
     parser.add_argument("--sota-score-bull-min", type=int, default=8)
@@ -120,6 +125,7 @@ def priority_value(event: dict[str, Any]) -> int:
     priority = {
         "sota_long": 0,
         "smc_short": 1,
+        "gap_smc_short_expansion": 2,
     }
     return priority.get(str(event.get("event_type") or ""), 9)
 
@@ -222,6 +228,190 @@ def compact_combo_with_events(result: dict[str, Any], sample_trades: int) -> dic
     payload = compact_combo_result(result, sample_trades)
     payload["events"] = result.get("events", [])
     return payload
+
+
+def _normalize_ts(value: Any) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is None:
+        return ts.tz_localize("UTC")
+    return ts.tz_convert("UTC")
+
+
+def _row_in_gap(row: dict[str, Any], gaps: list[dict[str, Any]], min_gap_days: float) -> dict[str, Any] | None:
+    ts = _normalize_ts(row["entry_time"])
+    for gap in gaps:
+        start = _normalize_ts(gap["gap_start"])
+        if start <= ts < _normalize_ts(gap["gap_end"]):
+            elapsed = (ts - start).total_seconds() / 86400.0
+            if elapsed >= float(min_gap_days):
+                return {**gap, "gap_elapsed_days_at_entry": round(elapsed, 4)}
+    return None
+
+
+def _select_gap_smc_rows(
+    rows: list[dict[str, Any]],
+    gaps: list[dict[str, Any]],
+    *,
+    min_gap_days: float,
+    max_stop_distance_pct: float,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    used_gap_keys: set[tuple[str, str]] = set()
+    for row in sorted(rows, key=lambda item: _normalize_ts(item["entry_time"])):
+        if str(row.get("direction") or "") != "BEAR":
+            continue
+        gap = _row_in_gap(row, gaps, min_gap_days)
+        if gap is None:
+            continue
+        stop_distance = float(row.get("stop_distance_pct", 0.0) or 0.0)
+        if float(max_stop_distance_pct) > 0.0 and stop_distance > float(max_stop_distance_pct):
+            continue
+        gap_key = (str(gap["gap_start"]), str(gap["gap_end"]))
+        if gap_key in used_gap_keys:
+            continue
+        selected.append(
+            {
+                **row,
+                "gap_start": gap["gap_start"],
+                "gap_end": gap["gap_end"],
+                "gap_bucket": gap.get("bucket"),
+                "gap_days": gap.get("gap_days"),
+                "gap_elapsed_days_at_entry": gap.get("gap_elapsed_days_at_entry"),
+            }
+        )
+        used_gap_keys.add(gap_key)
+    return selected
+
+
+def _gap_smc_row_to_event(row: dict[str, Any], *, leverage: float, variant: dict[str, Any], taker_fee_rate: float, slippage_bps: float) -> dict[str, Any]:
+    model = leveraged_net_return(
+        signal_return_pct=float(row.get("signal_return_pct", 0.0) or 0.0),
+        leverage=float(leverage),
+        position_size_pct=1.0,
+        allocation=1.0,
+        taker_fee_rate=float(taker_fee_rate),
+        slippage_bps=float(slippage_bps),
+    )
+    return {
+        "event_type": "gap_smc_short_expansion",
+        "entry_idx": int(row["entry_idx"]),
+        "exit_idx": int(row["exit_idx"]),
+        "entry_time": str(_normalize_ts(row["entry_time"])),
+        "exit_time": str(_normalize_ts(row["exit_time"])),
+        "direction": "BEAR",
+        "return": float(model["account_return"]),
+        "return_pct": round(float(model["account_return"]) * 100.0, 4),
+        "exit_reason": str(row.get("outcome") or row.get("status") or "unknown"),
+        "source_effective_leverage": float(leverage),
+        "smc_signal_return_pct": round(float(row.get("signal_return_pct", 0.0) or 0.0), 4),
+        "smc_unit_return_pct": round(float(model["net_unit_return_pct"]), 4),
+        "smc_time_bucket": str(row.get("time_bucket") or ""),
+        "smc_mss_lag_bars": row.get("mss_lag_bars"),
+        "smc_stop_distance_pct": row.get("stop_distance_pct"),
+        "gap_start": row.get("gap_start"),
+        "gap_end": row.get("gap_end"),
+        "gap_bucket": row.get("gap_bucket"),
+        "gap_days": row.get("gap_days"),
+        "gap_elapsed_days_at_entry": row.get("gap_elapsed_days_at_entry"),
+        "gap_smc_short_expansion": {"variant": variant},
+    }
+
+
+def build_gap_smc_events(
+    args: argparse.Namespace,
+    prepared: Any,
+    daily: list[Any],
+    h4_highs: list[int],
+    h4_lows: list[int],
+    d1_highs: list[int],
+    d1_lows: list[int],
+    reference_events: list[dict[str, Any]],
+    *,
+    taker_fee_rate: float,
+    slippage_bps: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not bool(args.enable_gap_smc_short):
+        return [], {"enabled": False, "accepted_trades": 0}
+    from scripts.report_high_value_frequency_gaps import build_gap_rows
+    from scripts.smc_live_utils import smc_case_namespace
+    from scripts.research_smc_standalone_v1 import apply_max_open_positions, build_event_scan_args, scan_events, trade_rows_for_events
+
+    case_params = dict(SMC_CASES[str(args.gap_smc_case)])
+    case_args = smc_case_namespace(args, case_params)
+    case_args.leverage = float(args.gap_smc_leverage)
+    case_args.position_size_pct = 1.0
+    for key, value in {
+        "swing_lookback": 80,
+        "liquidity_lookback_bars": 192,
+        "mss_lookahead_bars": 24,
+        "fvg_lookback_bars": 8,
+        "outcome_lookahead_bars": 96,
+        "atr_period": 14,
+        "stop_buffer_atr": 0.05,
+        "require_ote_touch": False,
+        "bull_min_displacement_body_atr": 0.0,
+        "bull_max_displacement_body_atr": 0.0,
+        "bull_min_displacement_range_atr": 0.0,
+        "bull_max_displacement_range_atr": 0.0,
+        "min_fvg_size_pct": 0.0,
+        "max_fvg_fill_pct": 0.0,
+        "bear_min_sweep_distance_pct": 0.0,
+        "bear_require_fvg_touch": False,
+        "bear_min_fvg_size_pct": 0.0,
+        "position_risk_fraction": 1.0,
+    }.items():
+        if not hasattr(case_args, key):
+            setattr(case_args, key, value)
+    raw_events = scan_events(prepared.c15m, build_event_scan_args(case_args))
+    rows = trade_rows_for_events(raw_events, prepared, daily, h4_highs, h4_lows, d1_highs, d1_lows, case_args)
+    rows, slot_skipped = apply_max_open_positions(rows, int(case_args.max_open_positions))
+    gaps = build_gap_rows(sorted(reference_events, key=lambda item: int(item.get("entry_idx", 0) or 0)), 0.0)
+    selected_rows = _select_gap_smc_rows(
+        rows,
+        gaps,
+        min_gap_days=float(args.gap_smc_min_flat_days),
+        max_stop_distance_pct=float(args.gap_smc_max_stop_distance_pct),
+    )
+    variant = {
+        "case": str(args.gap_smc_case),
+        "min_gap_days": float(args.gap_smc_min_flat_days),
+        "candidate_time_buckets": str(case_params.get("allowed_time_buckets", "other")),
+        "require_h4_bias_align": bool(case_params.get("require_h4_bias_align", False)),
+        "require_confirmed_retest": bool(case_params.get("require_confirmed_retest", False)),
+        "require_fvg_touch": bool(case_params.get("require_fvg_touch", True)),
+        "allow_ote_only": bool(case_params.get("allow_ote_only", False)),
+        "min_displacement_body_atr": float(case_params.get("min_displacement_body_atr", 0.5)),
+        "max_mss_lag_bars": int(case_params.get("max_mss_lag_bars", 15)),
+        "max_stop_distance_pct": float(args.gap_smc_max_stop_distance_pct),
+        "min_signal_return_pct": -999.0,
+        "leverage": float(args.gap_smc_leverage),
+        "per_gap_limit": 1,
+    }
+    gap_events = [
+        _gap_smc_row_to_event(
+            row,
+            leverage=float(args.gap_smc_leverage),
+            variant=variant,
+            taker_fee_rate=float(taker_fee_rate),
+            slippage_bps=float(slippage_bps),
+        )
+        for row in selected_rows
+    ]
+    for event in gap_events:
+        event["event_type"] = "gap_smc_short_expansion"
+        event["smc_case"] = str(args.gap_smc_case)
+        event["smc_taker_fee_rate"] = float(taker_fee_rate)
+        event["smc_slippage_bps"] = float(slippage_bps)
+    return gap_events, {
+        "enabled": True,
+        "case": str(args.gap_smc_case),
+        "min_flat_days": float(args.gap_smc_min_flat_days),
+        "max_stop_distance_pct": float(args.gap_smc_max_stop_distance_pct),
+        "rows_after_filters": len(rows),
+        "slot_skipped": int(slot_skipped),
+        "accepted_trades": len(gap_events),
+        "standalone_event_stats": event_stream_summary(gap_events, float(args.smc_allocation), prepared.end),
+    }
 
 
 def reference_gap(reference: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
@@ -377,7 +567,6 @@ def main() -> None:
         taker_fee_rate=float(payload.get("taker_fee_rate", 0.0005) or 0.0),
         slippage_bps=float(payload.get("slippage_bps", 0.0) or 0.0),
     )
-
     reference = replay_base_priority_sota_first(
         base_events,
         smc_events,
@@ -385,8 +574,20 @@ def main() -> None:
         prepared.end,
         gated_shadow_summary,
     )
+    gap_smc_events, gap_smc_summary = build_gap_smc_events(
+        args,
+        prepared,
+        daily,
+        h4_highs,
+        h4_lows,
+        d1_highs,
+        d1_lows,
+        list(reference.get("events", [])),
+        taker_fee_rate=float(payload.get("taker_fee_rate", 0.0005) or 0.0),
+        slippage_bps=float(payload.get("slippage_bps", 0.0) or 0.0),
+    )
     live, decisions = replay_live_shadow(
-        base_events + smc_events,
+        base_events + smc_events + gap_smc_events,
         initial_capital,
         prepared.end,
         gated_shadow_summary,
@@ -408,6 +609,7 @@ def main() -> None:
             "replay_sync_entry_to_signal_price": bool(args.replay_sync_entry_to_signal_price),
             "smc_case": args.smc_case,
             "smc_allocation": args.smc_allocation,
+            "gap_smc_short": gap_smc_summary,
             "sota_score_gate": sota_score_gate,
             "long_score_bucket_sizing": long_score_bucket_sizing,
             "paper_log_output": str(Path(args.paper_log_output).resolve()),
@@ -418,9 +620,11 @@ def main() -> None:
             "raw_sota_candidates": len(raw_base_events),
             "sota_candidates": len(base_events),
             "smc_candidates": len(smc_events),
+            "gap_smc_short_candidates": len(gap_smc_events),
             "sota_score_gate": sota_score_gate,
             "long_score_bucket_sizing": long_score_bucket_sizing,
             "smc_summary": smc_summary,
+            "gap_smc_summary": gap_smc_summary,
         },
         "reference_base_priority_sota_first": compact_combo_with_events(reference, int(args.sample_trades)),
         "live_shadow": compact_live_result(live, int(args.sample_trades)),

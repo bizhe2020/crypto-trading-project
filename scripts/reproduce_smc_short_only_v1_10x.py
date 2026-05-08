@@ -66,6 +66,20 @@ def strategy_args(args: argparse.Namespace) -> argparse.Namespace:
     out.target_rr = float(args.target_rr)
     out.allowed_time_buckets = str(args.allowed_time_buckets)
     out.max_mss_lag_bars = int(args.max_mss_lag_bars)
+    for key in (
+        "require_confirmed_retest",
+        "require_fvg_touch",
+        "allow_ote_only",
+        "require_htf_bias_align",
+        "require_h4_bias_align",
+        "require_d1_bias_align",
+        "require_ote_touch",
+        "bear_min_sweep_distance_pct",
+        "bear_require_fvg_touch",
+        "bear_min_fvg_size_pct",
+    ):
+        if hasattr(args, key):
+            setattr(out, key, getattr(args, key))
     return out
 
 

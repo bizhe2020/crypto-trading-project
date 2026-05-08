@@ -433,6 +433,110 @@ class LiveCandidateArbitrationTest(unittest.TestCase):
         self.assertEqual(decision["decision"], "accepted")
         self.assertEqual(decision["selected"]["event_type"], "smc_long")
 
+    def test_gap_smc_short_candidate_can_be_selected_when_enabled(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_live_candidate_arbitration=True,
+            enable_gap_smc_short_live=True,
+            live_candidate_priority=["sota_long", "smc_short", "gap_smc_short_expansion"],
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        executor._gap_smc_short_candidate = lambda _engine, _idx: {
+            "event_type": "gap_smc_short_expansion",
+            "source_key": "gap_smc|unit",
+            "entry_idx": 1,
+            "direction": Direction.BEAR,
+            "entry_price": 1000.0,
+            "stop_price": 1015.0,
+            "target_price": 970.0,
+            "target_rr": 2.0,
+            "max_hold_bars": 40,
+            "trail_style": "tight",
+            "leverage": 3.0,
+            "position_size_pct": 1.0,
+            "maintenance_margin_pct": 0.5,
+            "requested_notional": 3000.0,
+            "source": {"smc_case": "gap_expansion_21d_other_3x", "flat_days": 21.5},
+        }
+
+        filtered_actions, decision = executor._apply_live_candidate_arbitration(engine, [], 1)
+
+        self.assertEqual(len(filtered_actions), 1)
+        self.assertEqual(filtered_actions[0].type, ActionType.OPEN_SHORT)
+        self.assertEqual(filtered_actions[0].metadata["candidate_event_type"], "gap_smc_short_expansion")
+        self.assertEqual(decision["decision"], "accepted")
+        self.assertEqual(decision["selected"]["event_type"], "gap_smc_short_expansion")
+
+    def test_gap_smc_short_is_overlay_fixed_sizing(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_dynamic_high_leverage_structure=True,
+            overlay_skip_dynamic_high_leverage=True,
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        action = engine.open_position(
+            0,
+            Direction.BEAR,
+            1000.0,
+            1015.0,
+            970.0,
+            target_rr_override=2.0,
+            max_hold_bars_override=40,
+            trail_style_override="tight",
+            candidate_event_type="gap_smc_short_expansion",
+            requested_notional_override=3000.0,
+        )
+        metadata = dict(action.metadata or {})
+        metadata["candidate_leverage"] = 3.0
+        action.metadata = metadata
+
+        result = executor.execute_action(action, engine)
+
+        self.assertEqual(result["status"], "paper_recorded")
+        self.assertTrue(result["overlay_skipped_dynamic_high_leverage"])
+        self.assertEqual(result.get("dynamic_high_leverage"), None)
+        self.assertAlmostEqual(float(result["notional_usdt"]), 3000.0)
+        self.assertEqual(engine.position.execution_risk_mode, "overlay_fixed")
+        self.assertEqual(engine.position.execution_leverage_reasons, ["overlay_fixed:gap_smc_short_expansion"])
+
+    def test_gap_smc_short_respects_flat_day_gate(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_gap_smc_short_live=True,
+            gap_smc_short_min_flat_days=21.0,
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        executor._flat_days_since_last_position = lambda _engine, _idx: 20.9
+
+        self.assertIsNone(executor._gap_smc_short_candidate(engine, 1))
+
 
 if __name__ == "__main__":
     unittest.main()

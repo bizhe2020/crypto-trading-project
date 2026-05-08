@@ -246,6 +246,16 @@ class ExecutorConfig:
     smc_position_size_pct: float = 1.0
     smc_min_liq_buffer_pct: float = 1.2
     smc_maintenance_margin_pct: float = 0.5
+    enable_gap_smc_short_live: bool = False
+    gap_smc_short_case: str = "gap_expansion_21d_other_3x"
+    gap_smc_short_min_flat_days: float = 21.0
+    gap_smc_short_target_rr: float = 2.0
+    gap_smc_short_max_hold_bars: int = 40
+    gap_smc_short_trail_style: str = "tight"
+    gap_smc_short_leverage: float = 3.0
+    gap_smc_short_position_size_pct: float = 1.0
+    gap_smc_short_min_liq_buffer_pct: float = 1.2
+    gap_smc_short_maintenance_margin_pct: float = 0.5
     enable_smc_long_live: bool = False
     smc_long_case: str = "fvg_hist_total_rr15_10x_half"
     smc_long_target_rr: float = 1.5
@@ -1436,6 +1446,7 @@ class OkxExecutionEngine:
         labels = {
             "sota_long": "SOTA Long",
             "smc_short": "SMC Short",
+            "gap_smc_short_expansion": "Gap SMC Short",
             "smc_long": "SMC Long",
         }
         return labels.get(str(event_type or ""), str(event_type or "-"))
@@ -1620,9 +1631,14 @@ class OkxExecutionEngine:
             lines.append(f"Score: {self._score_payload_text(score_gate.get('score'))}")
             accepted = "通过" if bool(score_gate.get("accepted", True)) else "拒绝"
             lines.append(f"Gate: {accepted}")
-        if event_type in {"smc_short", "smc_long"}:
+        if event_type in {"smc_short", "gap_smc_short_expansion", "smc_long"}:
             source = metadata.get("candidate_source") if isinstance(metadata.get("candidate_source"), dict) else {}
-            case = source.get("smc_case") or (self.config.smc_case if event_type == "smc_short" else self.config.smc_long_case)
+            if event_type == "smc_long":
+                case = source.get("smc_case") or self.config.smc_long_case
+            elif event_type == "gap_smc_short_expansion":
+                case = source.get("smc_case") or self.config.gap_smc_short_case
+            else:
+                case = source.get("smc_case") or self.config.smc_case
             time_bucket = source.get("time_bucket")
             lag = source.get("mss_lag_bars")
             parts = [str(case)]
@@ -1630,6 +1646,8 @@ class OkxExecutionEngine:
                 parts.append(str(time_bucket))
             if lag is not None:
                 parts.append(f"lag {lag}")
+            if event_type == "gap_smc_short_expansion" and source.get("flat_days") is not None:
+                parts.append(f"flat {float(source.get('flat_days') or 0.0):.1f}d")
             lines.append("SMC: " + " / ".join(parts))
         bucket = dynamic_info.get("score_bucket_sizing") if isinstance(dynamic_info.get("score_bucket_sizing"), dict) else None
         if isinstance(bucket, dict) and bool(bucket.get("applied")):
@@ -1982,7 +2000,7 @@ class OkxExecutionEngine:
     def _live_candidate_priority(self) -> list[str]:
         configured = self.config.live_candidate_priority
         if configured is None:
-            return ["sota_long", "smc_short"]
+            return ["sota_long", "smc_short", "gap_smc_short_expansion"]
         if isinstance(configured, str):
             return [item.strip() for item in configured.split(",") if item.strip()]
         return [str(item) for item in configured if str(item)]
@@ -2016,7 +2034,7 @@ class OkxExecutionEngine:
         return str(metadata.get("candidate_event_type") or "sota_long")
 
     def _is_overlay_open_action(self, action: StrategyAction) -> bool:
-        return self._open_action_event_type(action) in {"smc_short", "smc_long"}
+        return self._open_action_event_type(action) in {"smc_short", "gap_smc_short_expansion", "smc_long"}
 
     def _is_stop_loss_reason(self, reason: str | None) -> bool:
         return str(reason or "") in {"stop_loss", "external_stop_loss"}
@@ -2154,6 +2172,33 @@ class OkxExecutionEngine:
             "other_min_mss_lag_bars": 4,
         }
 
+    def _gap_smc_short_case_params(self) -> dict[str, Any]:
+        try:
+            from scripts.smc_live_utils import SMC_CASES
+
+            if str(self.config.gap_smc_short_case) in SMC_CASES:
+                return dict(SMC_CASES[str(self.config.gap_smc_short_case)])
+        except Exception:
+            pass
+        return {
+            "target_rr": float(self.config.gap_smc_short_target_rr),
+            "allowed_time_buckets": "other",
+            "swing_n": 2,
+            "min_body_atr": 0.5,
+            "min_range_atr": 0.9,
+            "entry_lookahead_bars": 40,
+            "max_open_positions": 1,
+            "max_mss_lag_bars": 15,
+            "min_displacement_body_atr": 0.5,
+            "require_confirmed_retest": False,
+            "require_fvg_touch": True,
+            "allow_ote_only": False,
+            "require_htf_bias_align": False,
+            "require_h4_bias_align": False,
+            "require_d1_bias_align": False,
+            "allowed_directions": "BEAR",
+        }
+
     def _smc_long_case_params(self) -> dict[str, Any]:
         try:
             from scripts.smc_live_utils import SMC_LONG_CASES
@@ -2215,6 +2260,59 @@ class OkxExecutionEngine:
                     "allow_ote_only": True,
                     "require_htf_bias_align": True,
                     "require_h4_bias_align": True,
+                    "require_d1_bias_align": False,
+                    "allowed_directions": "BEAR",
+                    "require_ote_touch": False,
+                    "bull_min_displacement_body_atr": 0.0,
+                    "bull_max_displacement_body_atr": 0.0,
+                    "bull_min_displacement_range_atr": 0.0,
+                    "bull_max_displacement_range_atr": 0.0,
+                    "min_fvg_size_pct": 0.0,
+                    "max_fvg_fill_pct": 0.0,
+                    "bear_min_sweep_distance_pct": 0.0,
+                    "bear_require_fvg_touch": False,
+                    "bear_min_fvg_size_pct": 0.0,
+                }
+            )
+            return argparse.Namespace(**merged)
+
+    def _gap_smc_short_strategy_args(self) -> argparse.Namespace:
+        defaults = {
+            "data_15m": "",
+            "data_4h": "",
+            "start_date": "1970-01-01",
+            "target_rr": float(self.config.gap_smc_short_target_rr),
+            "allowed_time_buckets": "other",
+            "swing_n": 2,
+            "min_body_atr": 0.5,
+            "min_range_atr": 0.9,
+            "entry_lookahead_bars": 40,
+            "max_open_positions": 1,
+            "min_displacement_body_atr": 0.5,
+            "min_displacement_range_atr": 0.0,
+            "max_mss_lag_bars": 15,
+        }
+        merged = defaults | self._gap_smc_short_case_params()
+        merged["target_rr"] = float(self.config.gap_smc_short_target_rr)
+        try:
+            from scripts.reproduce_smc_short_only_v1_10x import strategy_args as smc_short_v1_strategy_args
+
+            return smc_short_v1_strategy_args(argparse.Namespace(**merged))
+        except Exception:
+            merged.update(
+                {
+                    "swing_lookback": 80,
+                    "liquidity_lookback_bars": 192,
+                    "mss_lookahead_bars": 24,
+                    "fvg_lookback_bars": 8,
+                    "outcome_lookahead_bars": 0,
+                    "atr_period": 14,
+                    "stop_buffer_atr": 0.05,
+                    "require_confirmed_retest": False,
+                    "require_fvg_touch": True,
+                    "allow_ote_only": False,
+                    "require_htf_bias_align": False,
+                    "require_h4_bias_align": False,
                     "require_d1_bias_align": False,
                     "allowed_directions": "BEAR",
                     "require_ote_touch": False,
@@ -2430,6 +2528,126 @@ class OkxExecutionEngine:
             },
         }
 
+    def _last_flat_start_idx(self, engine: Any, latest_closed_idx: int) -> int:
+        snapshot = self.store.load_snapshot()
+        if isinstance(snapshot, dict):
+            position = snapshot.get("position")
+            if isinstance(position, dict):
+                try:
+                    entry_idx = int(position.get("entry_idx", latest_closed_idx) or latest_closed_idx)
+                except (TypeError, ValueError):
+                    entry_idx = latest_closed_idx
+                return max(0, entry_idx)
+        last_exit_idx: int | None = None
+        for item in self.store.recent_actions(1000):
+            if item.get("action_type") != ActionType.CLOSE_POSITION.value:
+                continue
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            metadata = payload.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            try:
+                idx = int(metadata.get("index"))
+            except (TypeError, ValueError):
+                continue
+            if idx <= int(latest_closed_idx):
+                last_exit_idx = max(last_exit_idx or idx, idx)
+        if last_exit_idx is not None:
+            return int(last_exit_idx)
+        return max(0, min(100, int(latest_closed_idx)))
+
+    def _flat_days_since_last_position(self, engine: Any, latest_closed_idx: int) -> float:
+        start_idx = self._last_flat_start_idx(engine, latest_closed_idx)
+        start_ts = datetime.fromtimestamp(engine.c15m[start_idx].ts, tz=timezone.utc)
+        current_ts = datetime.fromtimestamp(engine.c15m[latest_closed_idx].ts, tz=timezone.utc)
+        return max((current_ts - start_ts).total_seconds() / 86400.0, 0.0)
+
+    def _gap_smc_short_candidate(self, engine: Any, latest_closed_idx: int) -> dict[str, Any] | None:
+        if not bool(self.config.enable_gap_smc_short_live):
+            return None
+        if getattr(engine, "position", None) is not None:
+            return None
+        flat_days = self._flat_days_since_last_position(engine, latest_closed_idx)
+        if flat_days < float(self.config.gap_smc_short_min_flat_days):
+            return None
+        try:
+            from scripts.report_pa_ict_liquidity_features import atr_series, scan_events
+            from scripts.research_smc_standalone_v1 import build_event_scan_args
+        except Exception:
+            return None
+        smc_args = self._gap_smc_short_strategy_args()
+        case_params = self._gap_smc_short_case_params()
+        scan_args = build_event_scan_args(smc_args)
+        scan_args.allow_incomplete_tail = True
+        scan_args.outcome_lookahead_bars = 0
+        events = scan_events(engine.c15m[: latest_closed_idx + 1], scan_args)
+        matches = [
+            event
+            for event in events
+            if self._smc_event_allowed(engine, event, latest_closed_idx, smc_args, Direction.BEAR, case_params)
+        ]
+        if not matches:
+            return None
+        event = sorted(matches, key=lambda item: int(item.sweep_idx), reverse=True)[0]
+        retest = event.retest
+        if retest is None:
+            return None
+        source_key = f"gap_smc|{self.config.gap_smc_short_case}|{retest.timestamp}|{event.sweep_idx}|{event.mss_idx}"
+        if self._candidate_seen(source_key):
+            return None
+        atr = atr_series(engine.c15m[: latest_closed_idx + 1], int(getattr(smc_args, "atr_period", 14)))
+        entry_price = float(retest.close)
+        stop_buffer = atr[latest_closed_idx] * float(getattr(smc_args, "stop_buffer_atr", 0.05)) if latest_closed_idx < len(atr) else 0.0
+        stop_price = float(event.sweep_extreme) + stop_buffer
+        risk = stop_price - entry_price
+        if entry_price <= 0 or risk <= 0:
+            self._mark_candidate_seen(source_key)
+            return None
+        target_rr = float(self.config.gap_smc_short_target_rr)
+        target_price = entry_price - risk * target_rr
+        if target_price <= 0:
+            self._mark_candidate_seen(source_key)
+            return None
+        leverage = float(self.config.gap_smc_short_leverage)
+        position_size_pct = float(self.config.gap_smc_short_position_size_pct)
+        notional = max(float(getattr(engine, "capital", 0.0) or 0.0), 0.0) * leverage * position_size_pct
+        maintenance = max(float(self.config.gap_smc_short_maintenance_margin_pct), 0.0) / 100.0
+        liquidation_price = entry_price * (1.0 + (1.0 / max(leverage, 1e-9)) - maintenance)
+        liquidation_buffer_pct = (liquidation_price - stop_price) / entry_price * 100.0
+        if liquidation_buffer_pct < float(self.config.gap_smc_short_min_liq_buffer_pct):
+            self._mark_candidate_seen(source_key)
+            return None
+        return {
+            "event_type": "gap_smc_short_expansion",
+            "source_key": source_key,
+            "entry_idx": latest_closed_idx,
+            "direction": Direction.BEAR,
+            "entry_price": entry_price,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "target_rr": target_rr,
+            "max_hold_bars": int(self.config.gap_smc_short_max_hold_bars),
+            "trail_style": str(self.config.gap_smc_short_trail_style or "tight"),
+            "leverage": leverage,
+            "position_size_pct": position_size_pct,
+            "maintenance_margin_pct": float(self.config.gap_smc_short_maintenance_margin_pct),
+            "requested_notional": notional,
+            "source": {
+                "smc_case": self.config.gap_smc_short_case,
+                "flat_days": round(flat_days, 4),
+                "min_flat_days": float(self.config.gap_smc_short_min_flat_days),
+                "sweep_idx": event.sweep_idx,
+                "sweep_time": event.sweep_time,
+                "mss_idx": event.mss_idx,
+                "mss_time": event.mss_time,
+                "time_bucket": event.time_bucket,
+                "mss_lag_bars": (int(event.mss_idx) - int(event.sweep_idx)) if event.mss_idx is not None else None,
+                "liquidation_buffer_pct": liquidation_buffer_pct,
+            },
+        }
+
     def _smc_long_candidate(self, engine: Any, latest_closed_idx: int) -> dict[str, Any] | None:
         if not bool(self.config.enable_smc_long_live):
             return None
@@ -2563,6 +2781,9 @@ class OkxExecutionEngine:
         smc_short_candidate = self._smc_short_candidate(engine, latest_closed_idx)
         if smc_short_candidate is not None:
             candidates.append(smc_short_candidate)
+        gap_smc_short_candidate = self._gap_smc_short_candidate(engine, latest_closed_idx)
+        if gap_smc_short_candidate is not None:
+            candidates.append(gap_smc_short_candidate)
         smc_long_candidate = self._smc_long_candidate(engine, latest_closed_idx)
         if smc_long_candidate is not None:
             candidates.append(smc_long_candidate)
