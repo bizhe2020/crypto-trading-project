@@ -177,6 +177,11 @@ def reference_price_for_close(reason: str, open_trade: dict[str, Any]) -> float 
     return None
 
 
+def close_action_counts_as_trade(payload: dict[str, Any]) -> bool:
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    return not (isinstance(metadata, dict) and bool(metadata.get("ignored_for_realized_pnl")))
+
+
 def apply_manual_position_sync(open_trade: dict[str, Any], payload: dict[str, Any], row: ActionLogRow) -> None:
     snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else None
     position = snapshot.get("position") if isinstance(snapshot, dict) and isinstance(snapshot.get("position"), dict) else None
@@ -231,7 +236,7 @@ def apply_manual_position_sync(open_trade: dict[str, Any], payload: dict[str, An
 def build_live_trades(actions: list[ActionLogRow]) -> tuple[list[LiveTrade], dict[str, int]]:
     open_trade: dict[str, Any] | None = None
     trades: list[LiveTrade] = []
-    diagnostics = {"orphan_closes": 0, "overwritten_opens": 0, "open_without_close": 0}
+    diagnostics = {"orphan_closes": 0, "overwritten_opens": 0, "open_without_close": 0, "ignored_closes": 0}
 
     for row in actions:
         payload = row.payload
@@ -267,6 +272,10 @@ def build_live_trades(actions: list[ActionLogRow]) -> tuple[list[LiveTrade], dic
             continue
 
         if action_type != "CLOSE_POSITION":
+            continue
+
+        if not close_action_counts_as_trade(payload):
+            diagnostics["ignored_closes"] += 1
             continue
 
         if open_trade is None:

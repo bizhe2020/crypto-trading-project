@@ -1096,8 +1096,18 @@ class OkxExecutionEngine:
     def _telegram_count_text(self) -> str:
         snapshot = self._load_snapshot_payload()
         actions = self.store.recent_actions(1000)
-        open_count = sum(1 for item in actions if item.get("action_type") in {ActionType.OPEN_LONG.value, ActionType.OPEN_SHORT.value})
-        close_count = sum(1 for item in actions if item.get("action_type") == ActionType.CLOSE_POSITION.value)
+        open_count = sum(
+            1
+            for item in actions
+            if item.get("action_type") in {ActionType.OPEN_LONG.value, ActionType.OPEN_SHORT.value}
+        )
+        close_count = sum(
+            1
+            for item in actions
+            if item.get("action_type") == ActionType.CLOSE_POSITION.value
+            and isinstance(item.get("payload"), dict)
+            and self._close_action_counts_as_realized(item["payload"])
+        )
         return "\n".join(
             [
                 self._telegram_title("🔢", "交易计数"),

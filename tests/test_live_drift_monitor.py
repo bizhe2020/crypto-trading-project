@@ -199,6 +199,75 @@ class LiveDriftMonitorTest(unittest.TestCase):
         self.assertEqual(metrics["avg_win_pct"], 6.0)
         self.assertEqual(metrics["expectancy_pct"], 6.0)
 
+    def test_build_live_trades_ignores_unrealized_shadow_close_rows(self) -> None:
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        db_path = Path(tmpdir.name) / "state.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE action_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            insert_action(
+                conn,
+                "2026-04-01 00:00",
+                "OPEN_LONG",
+                {
+                    "type": "OPEN_LONG",
+                    "timestamp": "2026-04-01 00:00",
+                    "direction": "BULL",
+                    "entry_price": 10000.0,
+                    "stop_price": 9800.0,
+                    "target_price": 10600.0,
+                    "metadata": {
+                        "signal_entry_price": 10000.0,
+                        "capital_at_entry": 1000.0,
+                        "notional": 2000.0,
+                        "risk_amount": 40.0,
+                    },
+                },
+            )
+            insert_action(
+                conn,
+                "2026-04-01 01:00",
+                "CLOSE_POSITION",
+                {
+                    "type": "CLOSE_POSITION",
+                    "timestamp": "2026-04-01 01:00",
+                    "direction": "BULL",
+                    "exit_price": 9800.0,
+                    "reason": "stop_loss",
+                    "metadata": {"net_pnl": -100.0, "ignored_for_realized_pnl": True},
+                },
+            )
+            insert_action(
+                conn,
+                "2026-04-01 02:00",
+                "CLOSE_POSITION",
+                {
+                    "type": "CLOSE_POSITION",
+                    "timestamp": "2026-04-01 02:00",
+                    "direction": "BULL",
+                    "exit_price": 10600.0,
+                    "reason": "target_rr",
+                    "metadata": {"signal_exit_price": 10600.0, "net_pnl": 120.0},
+                },
+            )
+
+        trades, diagnostics = build_live_trades(load_action_log(db_path))
+
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(diagnostics["ignored_closes"], 1)
+        self.assertEqual(diagnostics["orphan_closes"], 0)
+        self.assertAlmostEqual(trades[0].net_pnl, 120.0)
+
     def test_format_report_includes_health_conclusion_and_capital_advice(self) -> None:
         report = {
             "status": "WATCH",

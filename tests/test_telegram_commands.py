@@ -265,6 +265,38 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["pnl"], 100.0)
 
+    def test_count_excludes_unrealized_shadow_close(self) -> None:
+        engine = self._engine()
+        engine.config.mode = "live"
+        engine.config.enable_shadow_risk_gate = True
+        engine.config.shadow_daily_loss_stop_pct = 1.0
+        engine.store.append_action(
+            "2026-05-07 10:15",
+            "CLOSE_POSITION",
+            {
+                "type": "CLOSE_POSITION",
+                "timestamp": "2026-05-07 10:15",
+                "direction": "BULL",
+                "reason": "stop_loss",
+                "metadata": {"net_pnl": -805.9, "ignored_for_realized_pnl": True},
+            },
+        )
+        engine.store.append_action(
+            "2026-05-07 12:00",
+            "CLOSE_POSITION",
+            {
+                "type": "CLOSE_POSITION",
+                "timestamp": "2026-05-07 12:00",
+                "direction": "BULL",
+                "reason": "external_stop_loss",
+                "metadata": {"source": "external_flat_sync", "net_pnl": 100.0},
+            },
+        )
+
+        reply = engine._telegram_count_text()
+
+        self.assertIn("🔒 最近记录平仓：1", reply)
+
     def test_ob_regime_display_labels_compression_bucket_plainly(self) -> None:
         engine = object.__new__(OkxExecutionEngine)
 
