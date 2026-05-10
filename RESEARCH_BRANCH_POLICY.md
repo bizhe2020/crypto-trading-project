@@ -2,11 +2,11 @@
 
 Current branch roles:
 
-- `main`: deployable production code for the Tokyo bot.
-- `new_strategy_research`: active integration branch for replay/live convergence, candidate selection, and cleanup before promotion to `main`.
+- `new_strategy_research`: canonical branch for research, replay/live convergence, and Tokyo production deployment.
+- `main`: compatibility mirror only. Keep it aligned to `new_strategy_research` when external tooling expects `main`; do not develop separate production logic there.
 - `high_leverage_10x_research`: historical long-running research branch; not the canonical promotion branch anymore.
 
-Tokyo deployment should always be done from `main`.
+Tokyo deployment should be done from `new_strategy_research`.
 
 ## Canonical Workflow Docs
 
@@ -32,14 +32,15 @@ Treat these as production surfaces and review them as promotion changes, not cas
 - `config/config.live*.template.json`
 - live Telegram command/bot UX code
 
-## Promotion Rule
+## Deployment Rule
 
 If a research result should go live:
 
 1. Reproduce it through the replay/audit workflow.
-2. Reduce it to the minimal production diff.
-3. Merge or cherry-pick it into `main`.
-4. Deploy Tokyo only from `main`.
+2. Reduce it to the minimal production diff on `new_strategy_research`.
+3. Push `new_strategy_research`.
+4. Optionally mirror `main` to the same commit for compatibility.
+5. Deploy Tokyo from `new_strategy_research`.
 
 ## Safety Check
 
