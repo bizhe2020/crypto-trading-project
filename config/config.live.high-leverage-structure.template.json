@@ -245,6 +245,7 @@
     }
   ],
   "enable_sota_soft_stop_recovery_overlay_live": false,
+  "sota_soft_stop_live_mode": "audit",
   "sota_soft_stop_net_min": 15,
   "sota_soft_stop_bear_max": 0,
   "sota_soft_stop_max_leverage": 2.0,

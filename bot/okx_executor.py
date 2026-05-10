@@ -238,6 +238,7 @@ class ExecutorConfig:
     enable_long_score_bucket_sizing_live: bool = False
     long_score_bucket_sizing_rules: list[dict[str, Any]] | None = None
     enable_sota_soft_stop_recovery_overlay_live: bool = False
+    sota_soft_stop_live_mode: str = "audit"
     sota_soft_stop_net_min: int = 15
     sota_soft_stop_bear_max: int = 0
     sota_soft_stop_max_leverage: float = 2.0
@@ -765,6 +766,208 @@ class OkxExecutionEngine:
             metadata = payload.get("metadata")
             return metadata if isinstance(metadata, dict) else {}
         return {}
+
+    def _load_sota_soft_stop_state(self) -> dict[str, Any]:
+        raw = self.store.get_value("sota_soft_stop_live_state")
+        if not raw:
+            return {"mode": "sota_soft_stop_live", "active": None, "history": []}
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"mode": "sota_soft_stop_live", "active": None, "history": []}
+        if not isinstance(state, dict):
+            return {"mode": "sota_soft_stop_live", "active": None, "history": []}
+        if not isinstance(state.get("history"), list):
+            state["history"] = []
+        state.setdefault("mode", "sota_soft_stop_live")
+        state.setdefault("active", None)
+        return state
+
+    def _save_sota_soft_stop_state(self, state: dict[str, Any]) -> None:
+        history = state.get("history")
+        if isinstance(history, list):
+            state["history"] = history[-200:]
+        self.store.set_value("sota_soft_stop_live_state", json.dumps(state, ensure_ascii=False))
+
+    def _sota_soft_stop_excluded_buckets(self) -> set[str]:
+        raw = self.config.sota_soft_stop_exclude_score_buckets
+        if raw is None:
+            return set()
+        if isinstance(raw, str):
+            return {item.strip() for item in raw.split(",") if item.strip()}
+        try:
+            return {str(item).strip() for item in raw if str(item).strip()}
+        except TypeError:
+            return set()
+
+    def _score_bucket_name_from_action(self, action: StrategyAction) -> str | None:
+        metadata = action.metadata or {}
+        dynamic = metadata.get("dynamic_high_leverage") if isinstance(metadata.get("dynamic_high_leverage"), dict) else {}
+        bucket = dynamic.get("score_bucket_sizing") if isinstance(dynamic.get("score_bucket_sizing"), dict) else {}
+        if not bucket:
+            bucket = metadata.get("score_bucket_sizing") if isinstance(metadata.get("score_bucket_sizing"), dict) else {}
+        rule = bucket.get("rule") if isinstance(bucket.get("rule"), dict) else {}
+        name = rule.get("name")
+        return str(name) if name else None
+
+    def _sota_soft_stop_score_payload(self, action: StrategyAction) -> dict[str, Any] | None:
+        score_gate = (action.metadata or {}).get("sota_score_gate")
+        if not isinstance(score_gate, dict):
+            return None
+        score = score_gate.get("score")
+        return score if isinstance(score, dict) else None
+
+    def _sota_soft_stop_gate_decision(self, action: StrategyAction, sizing: dict[str, Any] | None = None) -> dict[str, Any]:
+        reasons: list[str] = []
+        if not bool(self.config.enable_sota_soft_stop_recovery_overlay_live):
+            reasons.append("disabled")
+        if str(self.config.sota_soft_stop_live_mode or "audit") != "audit":
+            reasons.append("unsupported_live_mode")
+        if action.type != ActionType.OPEN_LONG:
+            reasons.append("not_open_long")
+        if self._open_action_event_type(action) != "sota_long":
+            reasons.append("not_sota_long")
+        if action.direction != Direction.BULL:
+            reasons.append("not_bull")
+
+        score = self._sota_soft_stop_score_payload(action)
+        if not isinstance(score, dict):
+            reasons.append("missing_score")
+        else:
+            if int(score.get("net_score", 0) or 0) < int(self.config.sota_soft_stop_net_min):
+                reasons.append("net_too_low")
+            if int(score.get("bear_total", 0) or 0) > int(self.config.sota_soft_stop_bear_max):
+                reasons.append("bear_too_high")
+
+        effective_leverage = None
+        metadata = action.metadata or {}
+        dynamic = metadata.get("dynamic_high_leverage") if isinstance(metadata.get("dynamic_high_leverage"), dict) else {}
+        if isinstance(dynamic, dict):
+            effective_leverage = self._safe_float(dynamic.get("effective_leverage"))
+        if effective_leverage is None and sizing is not None and isinstance(sizing.get("dynamic_high_leverage"), dict):
+            effective_leverage = self._safe_float(sizing["dynamic_high_leverage"].get("effective_leverage"))
+        if effective_leverage is None:
+            effective_leverage = self._safe_float(metadata.get("candidate_leverage")) or float(self.config.leverage)
+        if effective_leverage > float(self.config.sota_soft_stop_max_leverage):
+            reasons.append("leverage_too_high")
+
+        bucket_name = self._score_bucket_name_from_action(action)
+        if bucket_name and bucket_name in self._sota_soft_stop_excluded_buckets():
+            reasons.append("excluded_score_bucket")
+
+        entry_price = self._safe_float(action.entry_price)
+        stop_price = self._safe_float(action.stop_price)
+        risk_price = abs(entry_price - stop_price) if entry_price and stop_price else 0.0
+        if not entry_price or not stop_price or risk_price <= 0.0:
+            reasons.append("invalid_entry_or_stop")
+        soft_stop_price = (
+            entry_price - (1.0 + float(self.config.sota_soft_stop_buffer_r)) * risk_price
+            if entry_price and risk_price > 0.0
+            else None
+        )
+        target_price = (
+            entry_price + float(self.config.sota_soft_stop_target_rr) * risk_price
+            if entry_price and risk_price > 0.0
+            else None
+        )
+        return {
+            "enabled": bool(self.config.enable_sota_soft_stop_recovery_overlay_live),
+            "mode": str(self.config.sota_soft_stop_live_mode or "audit"),
+            "eligible": len(reasons) == 0,
+            "reasons": reasons,
+            "score": score,
+            "effective_leverage": effective_leverage,
+            "score_bucket": bucket_name,
+            "entry_price": entry_price,
+            "initial_stop_price": stop_price,
+            "risk_price": risk_price,
+            "soft_stop_price": soft_stop_price,
+            "target_price": target_price,
+            "max_extension_bars": int(self.config.sota_soft_stop_max_extension_bars),
+            "buffer_r": float(self.config.sota_soft_stop_buffer_r),
+            "target_rr": float(self.config.sota_soft_stop_target_rr),
+        }
+
+    def _sota_soft_stop_prepare_open(self, action: StrategyAction, sizing: dict[str, Any]) -> dict[str, Any]:
+        decision = self._sota_soft_stop_gate_decision(action, sizing)
+        metadata = dict(action.metadata or {})
+        metadata["sota_soft_stop_live"] = decision
+        action.metadata = metadata
+        return decision
+
+    def _sota_soft_stop_after_open(
+        self,
+        action: StrategyAction,
+        sizing: dict[str, Any],
+        observed: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        decision = self._sota_soft_stop_gate_decision(action, sizing)
+        metadata = dict(action.metadata or {})
+        metadata["sota_soft_stop_live"] = decision
+        action.metadata = metadata
+        state = self._load_sota_soft_stop_state()
+        event = {
+            "time": action.timestamp,
+            "event": "open_audit",
+            "eligible": bool(decision.get("eligible")),
+            "reasons": decision.get("reasons", []),
+            "direction": action.direction,
+            "entry_price": action.entry_price,
+            "initial_stop_price": action.stop_price,
+            "soft_stop_price": decision.get("soft_stop_price"),
+            "target_price": decision.get("target_price"),
+            "effective_leverage": decision.get("effective_leverage"),
+            "score": decision.get("score"),
+            "observed_contracts": observed.get("contracts") if isinstance(observed, dict) else None,
+            "observed_notional_usdt": observed.get("notional_usdt") if isinstance(observed, dict) else None,
+        }
+        if bool(decision.get("eligible")):
+            state["active"] = {
+                **event,
+                "status": "audit_only",
+                "max_extension_bars": decision.get("max_extension_bars"),
+                "buffer_r": decision.get("buffer_r"),
+                "target_rr": decision.get("target_rr"),
+            }
+        else:
+            state["active"] = None
+        history = state.get("history") if isinstance(state.get("history"), list) else []
+        history.append(event)
+        state["history"] = history
+        self._save_sota_soft_stop_state(state)
+        self.store.append_action(action.timestamp, "SOTA_SOFT_STOP_AUDIT", event)
+        return decision
+
+    def _sota_soft_stop_after_close(self, action: StrategyAction) -> None:
+        state = self._load_sota_soft_stop_state()
+        active = state.get("active") if isinstance(state.get("active"), dict) else None
+        if active is None:
+            return
+        event = {
+            "time": action.timestamp,
+            "event": "close_audit",
+            "entry_time": active.get("time"),
+            "close_reason": action.reason,
+            "exit_price": action.exit_price,
+            "soft_stop_price": active.get("soft_stop_price"),
+            "metadata": action.metadata if isinstance(action.metadata, dict) else {},
+        }
+        history = state.get("history") if isinstance(state.get("history"), list) else []
+        history.append(event)
+        state["history"] = history
+        state["active"] = None
+        self._save_sota_soft_stop_state(state)
+        self.store.append_action(action.timestamp, "SOTA_SOFT_STOP_AUDIT", event)
+
+    def _sota_soft_stop_open_line(self, decision: dict[str, Any] | None) -> str | None:
+        if not isinstance(decision, dict):
+            return None
+        if bool(decision.get("eligible")):
+            return f"Soft-stop: AUDIT eligible / disaster {self._format_optional_price(decision.get('soft_stop_price'))}"
+        reasons = decision.get("reasons")
+        if isinstance(reasons, list) and reasons:
+            return "Soft-stop: AUDIT skip " + ",".join(str(item) for item in reasons[:3])
+        return "Soft-stop: AUDIT skip"
 
     def _current_position_execution_context(
         self,
@@ -1544,7 +1747,7 @@ class OkxExecutionEngine:
         excluded = self.config.sota_soft_stop_exclude_score_buckets or []
         excluded_text = ",".join(str(item) for item in excluded) if excluded else "-"
         return (
-            "SHADOW only "
+            f"{str(self.config.sota_soft_stop_live_mode or 'audit').upper()} "
             f"net>={int(self.config.sota_soft_stop_net_min)} / "
             f"bear<={int(self.config.sota_soft_stop_bear_max)} / "
             f"lev<={float(self.config.sota_soft_stop_max_leverage):.1f}x / "
@@ -2992,14 +3195,20 @@ class OkxExecutionEngine:
         high_leverage_decision = self._high_leverage_guard_pre_open(action, sizing)
         if high_leverage_decision is not None:
             return high_leverage_decision
+        soft_stop_decision = None
+        if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT} and bool(self.config.enable_sota_soft_stop_recovery_overlay_live):
+            soft_stop_decision = self._sota_soft_stop_prepare_open(action, sizing)
 
         if self.config.mode == "paper":
             self.record_action(action)
             if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
                 self._shadow_gate_mark_real_position(True, action, "paper_open_accepted")
+                if bool(self.config.enable_sota_soft_stop_recovery_overlay_live):
+                    soft_stop_decision = self._sota_soft_stop_after_open(action, sizing)
             if action.type == ActionType.CLOSE_POSITION:
                 self._shadow_gate_after_close(action, engine)
                 self._dynamic_high_leverage_after_close(action, engine)
+                self._sota_soft_stop_after_close(action)
             return {
                 "status": "paper_recorded",
                 "action": action.type.value,
@@ -3011,6 +3220,7 @@ class OkxExecutionEngine:
                 "position_size_pct": self.config.position_size_pct,
                 "dynamic_high_leverage": sizing.get("dynamic_high_leverage"),
                 "overlay_skipped_dynamic_high_leverage": overlay_skipped_dynamic,
+                "sota_soft_stop_live": soft_stop_decision,
             }
 
         if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
@@ -3048,6 +3258,8 @@ class OkxExecutionEngine:
                 )
                 return {"status": "submitted_but_unconfirmed", "order": order, "observed_position": observed, **sizing}
             self._shadow_gate_mark_real_position(True, action, "open_confirmed")
+            if bool(self.config.enable_sota_soft_stop_recovery_overlay_live):
+                soft_stop_decision = self._sota_soft_stop_after_open(action, sizing, observed)
             self.record_action(action)
             dynamic_info = sizing.get("dynamic_high_leverage") if isinstance(sizing.get("dynamic_high_leverage"), dict) else {}
             open_lines = [
@@ -3073,6 +3285,9 @@ class OkxExecutionEngine:
                         f"{self._format_optional_usdt(sizing.get('risk_based_notional_usdt'), digits=0)} "
                         f"-> {self._format_optional_usdt(observed.get('notional_usdt'), digits=0)}"
                     )
+            soft_stop_line = self._sota_soft_stop_open_line(soft_stop_decision)
+            if soft_stop_line:
+                open_lines.append(soft_stop_line)
             open_lines.extend(
                 [
                     f"入场: {action.entry_price:.1f}" if action.entry_price is not None else "入场: -",
@@ -3123,6 +3338,7 @@ class OkxExecutionEngine:
             self.record_action(action)
             self._shadow_gate_after_close(action, engine)
             self._dynamic_high_leverage_after_close(action, engine)
+            self._sota_soft_stop_after_close(action)
             self._send_telegram(
                 "\n".join(
                     [
@@ -3930,6 +4146,11 @@ class OkxExecutionEngine:
         state["last_decision"] = decision
         state["last_update_time"] = action.timestamp
         self._save_dynamic_high_leverage_state(state)
+        metadata = dict(action.metadata or {})
+        metadata["dynamic_high_leverage"] = decision
+        if score_bucket_decision is not None:
+            metadata["score_bucket_sizing"] = score_bucket_decision
+        action.metadata = metadata
 
         if diagnostics["stop_distance_pct"] > max_stop_distance:
             if self._shadow_gate_enabled():
@@ -3976,7 +4197,6 @@ class OkxExecutionEngine:
                 "reason": "invalid_reference_price",
                 "decision": decision,
             }
-        metadata = action.metadata or {}
         requested_notional = (
             self._safe_float(sizing.get("risk_based_notional_usdt"))
             or self._safe_float(metadata.get("risk_based_notional"))

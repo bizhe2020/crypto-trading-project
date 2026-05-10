@@ -314,6 +314,126 @@ class LiveCandidateArbitrationTest(unittest.TestCase):
         self.assertAlmostEqual(dynamic["effective_leverage"], 4.0)
         self.assertFalse(dynamic["score_bucket_sizing"]["applied"])
 
+    def test_sota_soft_stop_audit_marks_eligible_low_leverage_sota_open(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_dynamic_high_leverage_structure=True,
+            dynamic_base_leverage=2.0,
+            dynamic_max_effective_leverage=2.0,
+            enable_sota_soft_stop_recovery_overlay_live=True,
+            sota_soft_stop_live_mode="audit",
+            sota_soft_stop_net_min=15,
+            sota_soft_stop_bear_max=0,
+            sota_soft_stop_max_leverage=2.0,
+            sota_soft_stop_buffer_r=1.0,
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        action = StrategyAction(
+            type=ActionType.OPEN_LONG,
+            timestamp="2023-11-14 22:13",
+            direction=Direction.BULL,
+            entry_price=1000.0,
+            stop_price=990.0,
+            target_price=1040.0,
+            metadata={
+                "capital_at_entry": 1000.0,
+                "notional": 1000.0,
+                "risk_based_notional": 1000.0,
+                "candidate_event_type": "sota_long",
+                "sota_score_gate": {
+                    "score": {
+                        "net_score": 16,
+                        "bull_total": 16,
+                        "bear_total": 0,
+                        "conflict": False,
+                    }
+                },
+            },
+        )
+
+        result = executor.execute_action(action, engine)
+
+        self.assertEqual(result["status"], "paper_recorded")
+        soft_stop = result["sota_soft_stop_live"]
+        self.assertTrue(soft_stop["eligible"])
+        self.assertAlmostEqual(soft_stop["soft_stop_price"], 980.0)
+        state = executor._load_sota_soft_stop_state()
+        self.assertEqual(state["active"]["status"], "audit_only")
+        self.assertEqual(state["active"]["soft_stop_price"], 980.0)
+        self.assertEqual(executor.store.recent_actions(1)[0]["action_type"], "SOTA_SOFT_STOP_AUDIT")
+
+    def test_sota_soft_stop_audit_excludes_boosted_score_bucket(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_dynamic_high_leverage_structure=True,
+            dynamic_base_leverage=2.0,
+            dynamic_max_effective_leverage=20.0,
+            enable_long_score_bucket_sizing_live=True,
+            long_score_bucket_sizing_rules=[
+                {
+                    "name": "bear_total_6_20x_boost",
+                    "bear_eq": 6,
+                    "target_effective_leverage": 20.0,
+                    "max_effective_leverage": 20.0,
+                }
+            ],
+            enable_sota_soft_stop_recovery_overlay_live=True,
+            sota_soft_stop_live_mode="audit",
+            sota_soft_stop_net_min=15,
+            sota_soft_stop_bear_max=6,
+            sota_soft_stop_max_leverage=20.0,
+            sota_soft_stop_exclude_score_buckets=["bear_total_6_20x_boost"],
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        action = StrategyAction(
+            type=ActionType.OPEN_LONG,
+            timestamp="2023-11-14 22:13",
+            direction=Direction.BULL,
+            entry_price=1000.0,
+            stop_price=990.0,
+            target_price=1040.0,
+            metadata={
+                "capital_at_entry": 1000.0,
+                "notional": 1000.0,
+                "risk_based_notional": 1000.0,
+                "candidate_event_type": "sota_long",
+                "sota_score_gate": {
+                    "score": {
+                        "net_score": 16,
+                        "bull_total": 16,
+                        "bear_total": 6,
+                        "conflict": False,
+                    }
+                },
+            },
+        )
+
+        result = executor.execute_action(action, engine)
+
+        self.assertEqual(result["status"], "paper_recorded")
+        soft_stop = result["sota_soft_stop_live"]
+        self.assertFalse(soft_stop["eligible"])
+        self.assertIn("excluded_score_bucket", soft_stop["reasons"])
+        self.assertIsNone(executor._load_sota_soft_stop_state()["active"])
+
     def test_sota_score_gate_rejects_open_candidate(self) -> None:
         config = ExecutorConfig(
             mode="paper",
