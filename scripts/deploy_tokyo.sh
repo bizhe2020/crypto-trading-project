@@ -20,6 +20,7 @@ export SSHPASS="$TOKYO_PASS"
 RSYNC_RSH="sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no"
 
 rsync -az \
+  --exclude '.git' \
   --exclude '.git/' \
   --exclude '.venv/' \
   --exclude '__pycache__/' \
