@@ -40,6 +40,16 @@
   "api_key": "6ebc0b7e-9f3a-4d81-bebd-bfc460e0f05b",
   "api_secret": "A8FAC74DE31F1CFF67E32C4999CD7EF8",
   "api_passphrase": "Bz3397288#",
+  "enable_sota_soft_stop_recovery_overlay_live": false,
+  "sota_soft_stop_net_min": 15,
+  "sota_soft_stop_bear_max": 0,
+  "sota_soft_stop_max_leverage": 2.0,
+  "sota_soft_stop_buffer_r": 1.0,
+  "sota_soft_stop_target_rr": 0.0,
+  "sota_soft_stop_max_extension_bars": 4,
+  "sota_soft_stop_exclude_score_buckets": [
+    "bear_total_6_20x_boost"
+  ],
   "enable_regime_directional_risk": true,
   "bull_strong_long_risk_per_trade": 0.06,
   "bull_strong_short_risk_per_trade": 0.01,

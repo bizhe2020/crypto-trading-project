@@ -86,6 +86,14 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional JSON array/dict for long score bucket sizing rules.",
     )
+    parser.add_argument("--enable-sota-soft-stop-recovery-overlay", action="store_true")
+    parser.add_argument("--sota-soft-stop-net-min", type=int, default=None)
+    parser.add_argument("--sota-soft-stop-bear-max", type=int, default=None)
+    parser.add_argument("--sota-soft-stop-max-leverage", type=float, default=None)
+    parser.add_argument("--sota-soft-stop-buffer-r", type=float, default=None)
+    parser.add_argument("--sota-soft-stop-target-rr", type=float, default=None)
+    parser.add_argument("--sota-soft-stop-max-extension-bars", type=int, default=None)
+    parser.add_argument("--sota-soft-stop-exclude-score-buckets", default=None)
     parser.add_argument("--stage-trigger-rr-mode", default="close", choices=RR_MODE_CHOICES)
     parser.add_argument("--time-trailing-rr-mode", default="extreme", choices=RR_MODE_CHOICES)
     parser.add_argument("--atr-activation-rr-mode", default="extreme", choices=RR_MODE_CHOICES)
@@ -119,6 +127,261 @@ def apply_trailing_rr_modes(
 
 def event_key(event: dict[str, Any]) -> str:
     return f"{event.get('event_type')}|{event.get('entry_idx')}|{event.get('exit_idx')}"
+
+
+def sota_event_key(event: dict[str, Any]) -> str:
+    return f"sota_long|{int(event.get('entry_idx', 0) or 0)}|{int(event.get('exit_idx', 0) or 0)}"
+
+
+def timestamp_for_candle(candle: Any) -> str:
+    return str(pd.Timestamp(candle.ts, unit="s", tz="UTC"))
+
+
+def score_bucket_name(event: dict[str, Any]) -> str:
+    decision = event.get("long_score_bucket_sizing")
+    if not isinstance(decision, dict):
+        return ""
+    rule = decision.get("rule")
+    if not isinstance(rule, dict):
+        return ""
+    return str(rule.get("name") or "")
+
+
+def stop_zone(direction: str, entry_price: float, final_stop: float) -> str:
+    if entry_price <= 0.0 or final_stop <= 0.0:
+        return "unknown"
+    if direction == "BULL":
+        if final_stop > entry_price:
+            return "profit_lock"
+        if abs(final_stop - entry_price) / entry_price <= 0.0005:
+            return "breakeven"
+        return "loss_stop"
+    if final_stop < entry_price:
+        return "profit_lock"
+    if abs(final_stop - entry_price) / entry_price <= 0.0005:
+        return "breakeven"
+    return "loss_stop"
+
+
+def gross_unit_return(entry_price: float, exit_price: float, direction: str) -> float:
+    if entry_price <= 0.0 or exit_price <= 0.0:
+        return 0.0
+    if direction == "BULL":
+        return exit_price / entry_price - 1.0
+    return entry_price / exit_price - 1.0
+
+
+def inferred_roundtrip_cost(event: dict[str, Any]) -> float:
+    leverage = float(event.get("source_effective_leverage", 0.0) or 0.0)
+    entry_price = float(event.get("entry_price", 0.0) or 0.0)
+    final_stop = float(event.get("final_stop_price", 0.0) or event.get("exit_price", 0.0) or 0.0)
+    direction = str(event.get("direction") or "BULL")
+    if leverage <= 0.0 or entry_price <= 0.0 or final_stop <= 0.0:
+        return 0.002
+    unit_realized = float(event.get("return", 0.0) or 0.0) / leverage
+    gross = gross_unit_return(entry_price, final_stop, direction)
+    return min(max(gross - unit_realized, 0.0), 0.01)
+
+
+def leveraged_return(event: dict[str, Any], exit_price: float) -> float:
+    leverage = float(event.get("source_effective_leverage", 0.0) or 0.0)
+    entry_price = float(event.get("entry_price", 0.0) or 0.0)
+    direction = str(event.get("direction") or "BULL")
+    if leverage <= 0.0 or entry_price <= 0.0 or exit_price <= 0.0:
+        return float(event.get("return", 0.0) or 0.0)
+    return (gross_unit_return(entry_price, exit_price, direction) - inferred_roundtrip_cost(event)) * leverage
+
+
+def _excluded_soft_stop_buckets(raw: str) -> set[str]:
+    return {item.strip() for item in str(raw or "").split(",") if item.strip()}
+
+
+def soft_stop_gate_matches(event: dict[str, Any], args: argparse.Namespace) -> bool:
+    if str(event.get("event_type") or "") != "sota_long":
+        return False
+    if str(event.get("direction") or "") != "BULL":
+        return False
+    if str(event.get("exit_reason") or "") != "stop_loss":
+        return False
+    if float(event.get("return", 0.0) or 0.0) > 0.0:
+        return False
+    if float(event.get("source_effective_leverage", 0.0) or 0.0) > float(args.sota_soft_stop_max_leverage):
+        return False
+    if int(event.get("net_score", 0) or 0) < int(args.sota_soft_stop_net_min):
+        return False
+    if int(event.get("bear_total", 0) or 0) > int(args.sota_soft_stop_bear_max):
+        return False
+    if score_bucket_name(event) in _excluded_soft_stop_buckets(str(args.sota_soft_stop_exclude_score_buckets)):
+        return False
+
+    entry_price = float(event.get("entry_price", 0.0) or 0.0)
+    final_stop = float(event.get("final_stop_price", 0.0) or event.get("exit_price", 0.0) or 0.0)
+    return stop_zone(str(event.get("direction") or ""), entry_price, final_stop) in {"loss_stop", "breakeven"}
+
+
+def simulate_sota_soft_stop(
+    event: dict[str, Any],
+    candles: list[Any],
+    *,
+    buffer_r: float,
+    target_rr: float,
+    max_extension_bars: int,
+) -> dict[str, Any]:
+    direction = str(event.get("direction") or "BULL")
+    if direction != "BULL":
+        return dict(event)
+
+    entry_idx = int(event.get("entry_idx", 0) or 0)
+    original_exit_idx = int(event.get("exit_idx", entry_idx) or entry_idx)
+    start_idx = original_exit_idx
+    end_idx = min(original_exit_idx + int(max_extension_bars), len(candles) - 1)
+    if start_idx > end_idx or start_idx >= len(candles):
+        return dict(event)
+
+    entry_price = float(event.get("entry_price", 0.0) or 0.0)
+    initial_stop = float(event.get("initial_stop_price", 0.0) or 0.0)
+    risk_price = abs(entry_price - initial_stop)
+    if risk_price <= 0.0:
+        stop_distance_pct = float(event.get("stop_distance_pct", 0.0) or 0.0)
+        risk_price = abs(entry_price) * stop_distance_pct / 100.0
+    if entry_price <= 0.0 or risk_price <= 0.0:
+        return dict(event)
+
+    soft_stop_price = entry_price - (1.0 + float(buffer_r)) * risk_price
+    target_price = entry_price + float(target_rr) * risk_price
+    selected_idx = end_idx
+    selected_price = float(candles[end_idx].c)
+    selected_reason = "soft_stop_timeout"
+
+    for idx in range(start_idx, end_idx + 1):
+        candle = candles[idx]
+        if float(candle.l) <= soft_stop_price:
+            selected_idx = idx
+            selected_price = soft_stop_price
+            selected_reason = "soft_stop_extra_stop"
+            break
+        if idx == original_exit_idx:
+            continue
+        if float(candle.h) >= target_price:
+            selected_idx = idx
+            selected_price = target_price
+            selected_reason = f"soft_stop_target_{float(target_rr):g}r"
+            break
+
+    updated = dict(event)
+    old_return = float(event.get("return", 0.0) or 0.0)
+    new_return = leveraged_return(event, selected_price)
+    updated["exit_idx"] = selected_idx
+    updated["exit_time"] = timestamp_for_candle(candles[selected_idx])
+    updated["return"] = new_return
+    updated["return_pct"] = round(new_return * 100.0, 4)
+    updated["exit_reason"] = selected_reason
+    updated["sota_soft_stop_recovery_overlay"] = {
+        "applied": True,
+        "buffer_r": float(buffer_r),
+        "target_rr": float(target_rr),
+        "max_extension_bars": int(max_extension_bars),
+        "original_exit_idx": original_exit_idx,
+        "original_exit_time": event.get("exit_time"),
+        "original_return_pct": round(old_return * 100.0, 4),
+        "new_exit_idx": selected_idx,
+        "new_exit_time": updated["exit_time"],
+        "new_return_pct": round(new_return * 100.0, 4),
+        "risk_price": round(risk_price, 6),
+        "soft_stop_price": round(soft_stop_price, 6),
+        "target_price": round(target_price, 6),
+        "exit_price": round(selected_price, 6),
+        "improved": new_return > old_return,
+    }
+    return updated
+
+
+def apply_sota_soft_stop_recovery_overlay(
+    events: list[dict[str, Any]],
+    full_sota_by_key: dict[str, dict[str, Any]],
+    candles: list[Any],
+    args: argparse.Namespace,
+    *,
+    enabled: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rule = {
+        "enabled": bool(enabled),
+        "net_min": int(args.sota_soft_stop_net_min),
+        "bear_max": int(args.sota_soft_stop_bear_max),
+        "max_leverage": float(args.sota_soft_stop_max_leverage),
+        "buffer_r": float(args.sota_soft_stop_buffer_r),
+        "target_rr": float(args.sota_soft_stop_target_rr),
+        "max_extension_bars": int(args.sota_soft_stop_max_extension_bars),
+        "exclude_score_buckets": sorted(_excluded_soft_stop_buckets(str(args.sota_soft_stop_exclude_score_buckets))),
+        "stop_zones": ["loss_stop", "breakeven"],
+    }
+    diagnostics: dict[str, Any] = {
+        "enabled": bool(enabled),
+        "rule": rule,
+        "selected": 0,
+        "improved": 0,
+        "worsened_or_equal": 0,
+        "missing_full_event": 0,
+        "exit_reasons": {},
+        "samples": [],
+    }
+    if not enabled:
+        return events, diagnostics
+
+    adjusted: list[dict[str, Any]] = []
+    exit_reasons: dict[str, int] = {}
+    for event in events:
+        if str(event.get("event_type") or "") != "sota_long":
+            adjusted.append(dict(event))
+            continue
+        full = full_sota_by_key.get(sota_event_key(event))
+        if full is None:
+            diagnostics["missing_full_event"] += 1
+            adjusted.append(dict(event))
+            continue
+        merged = dict(full)
+        merged.update(event)
+        merged["event_type"] = "sota_long"
+        if not soft_stop_gate_matches(merged, args):
+            adjusted.append(dict(event))
+            continue
+
+        updated = simulate_sota_soft_stop(
+            merged,
+            candles,
+            buffer_r=float(args.sota_soft_stop_buffer_r),
+            target_rr=float(args.sota_soft_stop_target_rr),
+            max_extension_bars=int(args.sota_soft_stop_max_extension_bars),
+        )
+        diagnostics["selected"] += 1
+        exit_reason = str(updated.get("exit_reason") or "unknown")
+        exit_reasons[exit_reason] = exit_reasons.get(exit_reason, 0) + 1
+        if float(updated.get("return", 0.0) or 0.0) > float(event.get("return", 0.0) or 0.0):
+            diagnostics["improved"] += 1
+        else:
+            diagnostics["worsened_or_equal"] += 1
+        if len(diagnostics["samples"]) < 12:
+            overlay = updated.get("sota_soft_stop_recovery_overlay") or {}
+            diagnostics["samples"].append(
+                {
+                    "event_key": sota_event_key(event),
+                    "entry_time": event.get("entry_time"),
+                    "old_exit_time": event.get("exit_time"),
+                    "new_exit_time": updated.get("exit_time"),
+                    "old_return_pct": overlay.get("original_return_pct"),
+                    "new_return_pct": overlay.get("new_return_pct"),
+                    "new_exit_reason": updated.get("exit_reason"),
+                    "net_score": merged.get("net_score"),
+                    "bull_total": merged.get("bull_total"),
+                    "bear_total": merged.get("bear_total"),
+                    "regime_label": merged.get("regime_label"),
+                    "source_effective_leverage": merged.get("source_effective_leverage"),
+                }
+            )
+        adjusted.append(updated)
+
+    diagnostics["exit_reasons"] = exit_reasons
+    return adjusted, diagnostics
 
 
 def priority_value(event: dict[str, Any]) -> int:
@@ -442,6 +705,52 @@ def parse_score_bucket_rules(raw: str) -> Any:
     return json.loads(raw)
 
 
+def resolve_sota_soft_stop_args(args: argparse.Namespace, payload: dict[str, Any]) -> tuple[bool, argparse.Namespace]:
+    enabled = bool(args.enable_sota_soft_stop_recovery_overlay) or bool(
+        payload.get("enable_sota_soft_stop_recovery_overlay_live", False)
+    )
+    args.sota_soft_stop_net_min = int(
+        args.sota_soft_stop_net_min
+        if args.sota_soft_stop_net_min is not None
+        else payload.get("sota_soft_stop_net_min", 15)
+    )
+    args.sota_soft_stop_bear_max = int(
+        args.sota_soft_stop_bear_max
+        if args.sota_soft_stop_bear_max is not None
+        else payload.get("sota_soft_stop_bear_max", 0)
+    )
+    args.sota_soft_stop_max_leverage = float(
+        args.sota_soft_stop_max_leverage
+        if args.sota_soft_stop_max_leverage is not None
+        else payload.get("sota_soft_stop_max_leverage", 2.0)
+    )
+    args.sota_soft_stop_buffer_r = float(
+        args.sota_soft_stop_buffer_r
+        if args.sota_soft_stop_buffer_r is not None
+        else payload.get("sota_soft_stop_buffer_r", 1.0)
+    )
+    args.sota_soft_stop_target_rr = float(
+        args.sota_soft_stop_target_rr
+        if args.sota_soft_stop_target_rr is not None
+        else payload.get("sota_soft_stop_target_rr", 0.0)
+    )
+    args.sota_soft_stop_max_extension_bars = int(
+        args.sota_soft_stop_max_extension_bars
+        if args.sota_soft_stop_max_extension_bars is not None
+        else payload.get("sota_soft_stop_max_extension_bars", 4)
+    )
+    raw_excluded = (
+        args.sota_soft_stop_exclude_score_buckets
+        if args.sota_soft_stop_exclude_score_buckets is not None
+        else payload.get("sota_soft_stop_exclude_score_buckets", "bear_total_6_20x_boost")
+    )
+    if isinstance(raw_excluded, list):
+        args.sota_soft_stop_exclude_score_buckets = ",".join(str(item) for item in raw_excluded)
+    else:
+        args.sota_soft_stop_exclude_score_buckets = str(raw_excluded or "")
+    return enabled, args
+
+
 def apply_sota_score_gate(
     prepared: Any,
     sota_events: list[dict[str, Any]],
@@ -503,6 +812,7 @@ def apply_sota_score_gate(
 def main() -> None:
     args = parse_args()
     base_payload = load_config_payload(Path(args.config))
+    sota_soft_stop_enabled, args = resolve_sota_soft_stop_args(args, base_payload)
     payload, pressure_params = apply_pressure_params(base_payload, Path(args.pressure_params))
     payload, trailing_rr_modes = apply_trailing_rr_modes(
         payload,
@@ -532,6 +842,7 @@ def main() -> None:
         equity_drawdown_cooldown_days=int(args.equity_drawdown_cooldown_days),
     )
     shadow_events = shadow["events"]
+    full_sota_by_key = {sota_event_key(event): dict(event) for event in shadow_events}
     base_shadow_summary = event_stream_summary(shadow_events, initial_capital, prepared.end)
     raw_base_events = [standard_sota_event(event) for event in shadow_events]
     base_events, sota_score_gate = apply_sota_score_gate(
@@ -547,6 +858,13 @@ def main() -> None:
         base_events,
         enabled=bool(args.enable_long_score_bucket_sizing),
         rules=parse_score_bucket_rules(str(args.long_score_bucket_sizing_rules_json)),
+    )
+    base_events, sota_soft_stop_recovery_overlay = apply_sota_soft_stop_recovery_overlay(
+        base_events,
+        full_sota_by_key,
+        prepared.c15m,
+        args,
+        enabled=bool(sota_soft_stop_enabled),
     )
     gated_shadow_summary = event_stream_summary(base_events, initial_capital, prepared.end)
 
@@ -612,6 +930,7 @@ def main() -> None:
             "gap_smc_short": gap_smc_summary,
             "sota_score_gate": sota_score_gate,
             "long_score_bucket_sizing": long_score_bucket_sizing,
+            "sota_soft_stop_recovery_overlay": sota_soft_stop_recovery_overlay,
             "paper_log_output": str(Path(args.paper_log_output).resolve()),
         },
         "baseline_shadow_sota": compact_result(base_shadow_summary, 0),
@@ -623,6 +942,7 @@ def main() -> None:
             "gap_smc_short_candidates": len(gap_smc_events),
             "sota_score_gate": sota_score_gate,
             "long_score_bucket_sizing": long_score_bucket_sizing,
+            "sota_soft_stop_recovery_overlay": sota_soft_stop_recovery_overlay,
             "smc_summary": smc_summary,
             "gap_smc_summary": gap_smc_summary,
         },

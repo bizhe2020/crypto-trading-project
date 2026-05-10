@@ -171,6 +171,7 @@ class TelegramCommandTests(unittest.TestCase):
         ]
         engine.config.enable_smc_short_live = True
         engine.config.smc_case = "v2_medium_dispbody05_otherlag4_10x"
+        engine.config.enable_sota_soft_stop_recovery_overlay_live = True
         engine.config.enable_pressure_level_trailing = True
         engine.store.set_value(
             "strategy_snapshot",
@@ -220,6 +221,7 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertIn("主链: SOTA Long > SMC Short", report)
         self.assertIn("SOTA gate: ON net>=3 / bull>=8 / bear<=6 / any", report)
         self.assertIn("Long bucket: ON 6/11/5冲突 2.5x cap20", report)
+        self.assertIn("SOTA soft-stop: SHADOW only net>=15 / bear<=0 / lev<=2.0x / buf 1.00R / 4 bars", report)
         self.assertIn("SMC short: ON v2_medium_dispbody05_otherlag4_10x / 10.0x / RR 2.00", report)
         self.assertIn("当前策略仓位: 🟢 多头 / SOTA Long", report)
         self.assertIn("压仓: 基础 + Score桶 6/11/5冲突 2.5x cap20", report)

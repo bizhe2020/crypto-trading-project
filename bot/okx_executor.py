@@ -237,6 +237,14 @@ class ExecutorConfig:
     sota_score_conflict_mode: str = "any"
     enable_long_score_bucket_sizing_live: bool = False
     long_score_bucket_sizing_rules: list[dict[str, Any]] | None = None
+    enable_sota_soft_stop_recovery_overlay_live: bool = False
+    sota_soft_stop_net_min: int = 15
+    sota_soft_stop_bear_max: int = 0
+    sota_soft_stop_max_leverage: float = 2.0
+    sota_soft_stop_buffer_r: float = 1.0
+    sota_soft_stop_target_rr: float = 0.0
+    sota_soft_stop_max_extension_bars: int = 4
+    sota_soft_stop_exclude_score_buckets: list[str] | None = None
     enable_smc_short_live: bool = False
     smc_case: str = "v2_medium_dispbody05_otherlag4_10x"
     smc_target_rr: float = 2.0
@@ -1143,6 +1151,7 @@ class OkxExecutionEngine:
             f"主链: {self._strategy_priority_text()}",
             f"SOTA gate: {self._score_gate_status_text()}",
             f"Bucket sizing: {self._long_score_bucket_status_text()}",
+            f"SOTA soft-stop: {self._sota_soft_stop_status_text()}",
             f"SMC short: {self._smc_status_text('short')}",
             f"市场加载: {market_loaded}",
             f"快照加载: {snapshot_loaded}",
@@ -1529,6 +1538,21 @@ class OkxExecutionEngine:
         suffix = f" +{extra}" if extra > 0 else ""
         return "ON " + "; ".join(rendered) + suffix
 
+    def _sota_soft_stop_status_text(self) -> str:
+        if not bool(self.config.enable_sota_soft_stop_recovery_overlay_live):
+            return "OFF"
+        excluded = self.config.sota_soft_stop_exclude_score_buckets or []
+        excluded_text = ",".join(str(item) for item in excluded) if excluded else "-"
+        return (
+            "SHADOW only "
+            f"net>={int(self.config.sota_soft_stop_net_min)} / "
+            f"bear<={int(self.config.sota_soft_stop_bear_max)} / "
+            f"lev<={float(self.config.sota_soft_stop_max_leverage):.1f}x / "
+            f"buf {float(self.config.sota_soft_stop_buffer_r):.2f}R / "
+            f"{int(self.config.sota_soft_stop_max_extension_bars)} bars / "
+            f"exclude {excluded_text}"
+        )
+
     def _smc_status_text(self, side: str) -> str:
         if side == "short":
             if not bool(self.config.enable_smc_short_live):
@@ -1688,6 +1712,7 @@ class OkxExecutionEngine:
                 f"单仓仲裁: {'ON' if self._live_candidate_arbitration_enabled() else 'OFF'} / max_pos={self.config.max_open_positions}",
                 f"SOTA gate: {self._score_gate_status_text()}",
                 f"Long bucket: {self._long_score_bucket_status_text()}",
+                f"SOTA soft-stop: {self._sota_soft_stop_status_text()}",
                 f"SMC short: {self._smc_status_text('short')}",
             ]
             if bool(self.config.enable_smc_long_live):
