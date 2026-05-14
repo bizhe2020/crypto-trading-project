@@ -215,6 +215,7 @@ class StrategyConfig:
     taker_fee_rate: float = 0.0005
     slippage_bps: float = 2.0
     replay_sync_entry_to_signal_price: bool = False
+    require_non_bearish_structure_for_long: bool = False
 
 
 @dataclass

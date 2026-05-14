@@ -210,6 +210,12 @@ def standard_sota_event(event: dict[str, Any]) -> dict[str, Any]:
         "source_effective_leverage": event.get("effective_leverage"),
         "source_failed_breakout_guard_applied": bool(event.get("failed_breakout_guard_applied")),
         "source_quality_score": quality_snapshot(event)["quality_score"],
+        "regime_label": event.get("regime_label"),
+        "feature_adx": float(event.get("feature_adx", 0.0) or 0.0),
+        "feature_momentum": float(event.get("feature_momentum", 0.0) or 0.0),
+        "feature_ema_gap": float(event.get("feature_ema_gap", 0.0) or 0.0),
+        "feature_bullish_structure": bool(event.get("feature_bullish_structure", False)),
+        "feature_bearish_structure": bool(event.get("feature_bearish_structure", False)),
     }
 
 

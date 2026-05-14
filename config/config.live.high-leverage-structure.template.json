@@ -226,6 +226,7 @@
   "sota_score_bull_min": 8,
   "sota_score_bear_max": 6,
   "sota_score_conflict_mode": "any",
+  "require_non_bearish_structure_for_long_live": true,
   "enable_long_score_bucket_sizing_live": true,
   "long_score_bucket_sizing_rules": [
     {

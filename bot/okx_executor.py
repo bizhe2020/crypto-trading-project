@@ -25,6 +25,7 @@ from strategy.scalp_robust_v2_core import (
     build_precomputed_state_confirmed_4h,
     dataframe_to_candles,
 )
+from scripts.sota_long_filters import apply_sota_structure_gate
 
 
 @dataclass
@@ -235,6 +236,7 @@ class ExecutorConfig:
     sota_score_bull_min: int = 8
     sota_score_bear_max: int = 6
     sota_score_conflict_mode: str = "any"
+    require_non_bearish_structure_for_long_live: bool = False
     enable_long_score_bucket_sizing_live: bool = False
     long_score_bucket_sizing_rules: list[dict[str, Any]] | None = None
     enable_sota_soft_stop_recovery_overlay_live: bool = False
@@ -412,6 +414,7 @@ class ExecutorConfig:
             taker_fee_rate=self.taker_fee_rate,
             slippage_bps=self.slippage_bps,
             replay_sync_entry_to_signal_price=self.replay_sync_entry_to_signal_price,
+            require_non_bearish_structure_for_long=self.require_non_bearish_structure_for_long_live,
         )
 
 class OkxExecutionEngine:
@@ -1825,6 +1828,9 @@ class OkxExecutionEngine:
         score_gate_rejected = payload.get("score_gate_rejected")
         if isinstance(score_gate_rejected, list) and score_gate_rejected:
             lines.append(f"Score gate拒绝: {len(score_gate_rejected)}")
+        structure_gate_rejected = payload.get("structure_gate_rejected")
+        if isinstance(structure_gate_rejected, list) and structure_gate_rejected:
+            lines.append(f"Structure gate拒绝: {len(structure_gate_rejected)}")
         return lines
 
     def _current_strategy_position_lines(self, snapshot: dict[str, Any], dyn: dict[str, Any]) -> list[str]:
@@ -2356,6 +2362,46 @@ class OkxExecutionEngine:
                 decision["decision"] = "rejected"
                 decision["reason"] = "sota_score_gate"
                 rejected.append(decision)
+        return accepted, rejected
+
+    def _apply_sota_structure_gate_to_open_actions(
+        self,
+        open_actions: list[StrategyAction],
+    ) -> tuple[list[StrategyAction], list[dict[str, Any]]]:
+        if not bool(self.config.require_non_bearish_structure_for_long_live):
+            return open_actions, []
+        accepted: list[StrategyAction] = []
+        rejected: list[dict[str, Any]] = []
+        for action in open_actions:
+            event_type = self._open_action_event_type(action)
+            if event_type != "sota_long" or action.type != ActionType.OPEN_LONG:
+                accepted.append(action)
+                continue
+            metadata = dict(action.metadata or {})
+            payload = {
+                "feature_bearish_structure": bool(metadata.get("feature_bearish_structure", False)),
+            }
+            _filtered, decision = apply_sota_structure_gate([payload], enabled=True)
+            metadata["sota_structure_gate"] = {
+                "accepted": decision["filtered_candidates"] > 0,
+                "rule": decision["rule"],
+                "feature_bearish_structure": payload["feature_bearish_structure"],
+            }
+            action.metadata = metadata
+            if decision["filtered_candidates"] > 0:
+                accepted.append(action)
+            else:
+                rejected.append(
+                    {
+                        "enabled": True,
+                        "accepted": False,
+                        "rule": decision["rule"],
+                        "reason": "sota_structure_gate",
+                        "feature_bearish_structure": payload["feature_bearish_structure"],
+                        "candidate": self._action_candidate_summary(action, "sota_long"),
+                        "decision": "rejected",
+                    }
+                )
         return accepted, rejected
 
     def _apply_long_score_bucket_sizing(
@@ -3000,6 +3046,7 @@ class OkxExecutionEngine:
             raw_open_actions,
             latest_closed_idx,
         )
+        open_actions, structure_gate_rejected = self._apply_sota_structure_gate_to_open_actions(open_actions)
         close_actions = [action for action in actions if action.type == ActionType.CLOSE_POSITION]
         candidates: list[dict[str, Any]] = []
         for action in open_actions:
@@ -3033,8 +3080,9 @@ class OkxExecutionEngine:
                 "decision": "no_candidates",
                 "candidates": [],
                 "score_gate_rejected": score_gate_rejected,
+                "structure_gate_rejected": structure_gate_rejected,
             }
-            if score_gate_rejected:
+            if score_gate_rejected or structure_gate_rejected:
                 self.store.append_action(engine._timestamp_for_idx(latest_closed_idx), "LIVE_CANDIDATE_ARBITRATION", decision)
             return output_actions, decision
 
@@ -3083,6 +3131,7 @@ class OkxExecutionEngine:
             ] + score_gate_rejected,
             "priority": self._live_candidate_priority(),
             "score_gate_rejected": score_gate_rejected,
+            "structure_gate_rejected": structure_gate_rejected,
         }
         self.store.append_action(selected_action.timestamp, "LIVE_CANDIDATE_ARBITRATION", decision)
         return output_actions, decision

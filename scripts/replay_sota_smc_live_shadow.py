@@ -34,6 +34,7 @@ from scripts.live_shadow_utils import (  # noqa: E402
     standard_sota_event,
 )
 from scripts.score_bucket_sizing_utils import apply_score_bucket_sizing_to_events  # noqa: E402
+from scripts.sota_long_filters import apply_sota_structure_gate  # noqa: E402
 from scripts.report_smc_trade_context import daily_candles_from_4h  # noqa: E402
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay  # noqa: E402
 from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS, replay_shadow_events  # noqa: E402
@@ -80,6 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sota-score-bull-min", type=int, default=8)
     parser.add_argument("--sota-score-bear-max", type=int, default=6)
     parser.add_argument("--sota-score-conflict-mode", default="any", choices=("any", "conflict", "clean"))
+    parser.add_argument("--require-non-bearish-structure-for-long", action="store_true")
     parser.add_argument("--enable-long-score-bucket-sizing", action="store_true")
     parser.add_argument(
         "--long-score-bucket-sizing-rules-json",
@@ -97,6 +99,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stage-trigger-rr-mode", default="close", choices=RR_MODE_CHOICES)
     parser.add_argument("--time-trailing-rr-mode", default="extreme", choices=RR_MODE_CHOICES)
     parser.add_argument("--atr-activation-rr-mode", default="extreme", choices=RR_MODE_CHOICES)
+    parser.add_argument("--enable-auto-time-based-trailing", default=None)
     parser.add_argument("--daily-loss-stop-pct", type=float, default=6.0)
     parser.add_argument("--equity-drawdown-stop-pct", type=float, default=12.0)
     parser.add_argument("--equity-drawdown-cooldown-days", type=int, default=2)
@@ -123,6 +126,25 @@ def apply_trailing_rr_modes(
         "time_trailing_rr_mode": time_trailing_rr_mode,
         "atr_activation_rr_mode": atr_activation_rr_mode,
     }
+
+
+def _parse_optional_bool(raw: Any) -> bool | None:
+    if raw is None:
+        return None
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"invalid bool value: {raw}")
+
+
+def apply_auto_tit_override(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    updated = dict(payload)
+    enable_auto_tit = _parse_optional_bool(args.enable_auto_time_based_trailing)
+    if enable_auto_tit is not None:
+        updated["enable_auto_time_based_trailing"] = enable_auto_tit
+    return updated
 
 
 def event_key(event: dict[str, Any]) -> str:
@@ -820,6 +842,7 @@ def main() -> None:
         time_trailing_rr_mode=str(args.time_trailing_rr_mode),
         atr_activation_rr_mode=str(args.atr_activation_rr_mode),
     )
+    payload = apply_auto_tit_override(payload, args)
     payload["replay_sync_entry_to_signal_price"] = bool(args.replay_sync_entry_to_signal_price)
     prepared = load_prepared_data(
         data_15m_path=Path(args.data_15m),
@@ -853,6 +876,10 @@ def main() -> None:
         bull_min=int(args.sota_score_bull_min),
         bear_max=int(args.sota_score_bear_max),
         conflict_mode=str(args.sota_score_conflict_mode),
+    )
+    base_events, sota_structure_gate = apply_sota_structure_gate(
+        base_events,
+        enabled=bool(args.require_non_bearish_structure_for_long),
     )
     base_events, long_score_bucket_sizing = apply_score_bucket_sizing_to_events(
         base_events,
@@ -929,6 +956,7 @@ def main() -> None:
             "smc_allocation": args.smc_allocation,
             "gap_smc_short": gap_smc_summary,
             "sota_score_gate": sota_score_gate,
+            "sota_structure_gate": sota_structure_gate,
             "long_score_bucket_sizing": long_score_bucket_sizing,
             "sota_soft_stop_recovery_overlay": sota_soft_stop_recovery_overlay,
             "paper_log_output": str(Path(args.paper_log_output).resolve()),
@@ -941,6 +969,7 @@ def main() -> None:
             "smc_candidates": len(smc_events),
             "gap_smc_short_candidates": len(gap_smc_events),
             "sota_score_gate": sota_score_gate,
+            "sota_structure_gate": sota_structure_gate,
             "long_score_bucket_sizing": long_score_bucket_sizing,
             "sota_soft_stop_recovery_overlay": sota_soft_stop_recovery_overlay,
             "smc_summary": smc_summary,
