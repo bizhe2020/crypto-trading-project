@@ -230,6 +230,14 @@
   "enable_long_score_bucket_sizing_live": true,
   "long_score_bucket_sizing_rules": [
     {
+      "name": "n3_b9_b6_conflict_target12",
+      "net_eq": 3,
+      "bull_eq": 9,
+      "bear_eq": 6,
+      "conflict_mode": "conflict",
+      "target_effective_leverage": 12.0
+    },
+    {
       "name": "bear_total_6_20x_boost",
       "bear_eq": 6,
       "leverage_multiplier": 3.0,
