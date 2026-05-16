@@ -1384,6 +1384,7 @@ class OkxExecutionEngine:
                 load_action_log,
                 load_json,
             )
+            from scripts.fallback_trigger_report import build_report_from_paths, format_summary_lines
 
             baseline_path = self._resolve_runtime_path(self.config.telegram_drift_baseline_path)
             baseline = load_json(baseline_path)
@@ -1400,7 +1401,18 @@ class OkxExecutionEngine:
                 window_days=int(self.config.telegram_drift_window_days),
                 recent_trades=int(self.config.telegram_drift_recent_trades),
             )
-            return format_report(report)
+            message = format_report(report)
+            try:
+                fallback_report = build_report_from_paths(
+                    config_path=(self.config_path or Path("runtime_config")).resolve(),
+                    state_db=state_db,
+                    baseline_path=baseline_path,
+                    recent_trades=int(self.config.telegram_drift_recent_trades),
+                )
+                message = "\n".join([message, "", *format_summary_lines(fallback_report)])
+            except Exception:
+                pass
+            return message
         except Exception as exc:
             return "\n".join(
                 [

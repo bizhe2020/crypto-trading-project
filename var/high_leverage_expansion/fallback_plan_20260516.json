@@ -1,0 +1,67 @@
+{
+  "as_of": "2026-05-16",
+  "main_frozen_live_core": {
+    "description": "Current 2022+ live-focused frozen core",
+    "smc_short_enabled": true,
+    "gap_smc_short_enabled": true,
+    "long_score_bucket_sizing_enabled": true,
+    "shadow_gate": {
+      "daily_loss_stop_pct": 6.0,
+      "equity_drawdown_stop_pct": 12.0,
+      "equity_drawdown_cooldown_days": 2,
+      "consecutive_loss_stop": 4
+    }
+  },
+  "fallback_a_short_off": {
+    "description": "Disable SMC short first; keep the rest intact",
+    "changes": {
+      "enable_smc_short_live": false
+    }
+  },
+  "fallback_b_short_off_conflict_boost_defense": {
+    "description": "Disable SMC short and reduce conflict boost bucket leverage in hostile bull-overheat conditions",
+    "changes": {
+      "enable_smc_short_live": false,
+      "long_score_bucket_overrides": [
+        {
+          "name": "n3_b9_b6_conflict_target12",
+          "target_effective_leverage": 2.0
+        },
+        {
+          "name": "bear_total_6_20x_boost",
+          "max_effective_leverage": 2.0,
+          "leverage_multiplier": 1.0
+        },
+        {
+          "name": "nbb_6_11_5_conflict_2p5_cap20",
+          "max_effective_leverage": 2.0,
+          "leverage_multiplier": 1.0
+        }
+      ]
+    }
+  },
+  "fallback_c_long_core_only": {
+    "description": "Disable short overlays and long boost amplification; keep only the long core",
+    "changes": {
+      "enable_smc_short_live": false,
+      "enable_gap_smc_short_live": false,
+      "enable_long_score_bucket_sizing_live": false
+    }
+  },
+  "monitoring_focus": [
+    "smc_short_win_rate",
+    "smc_short_return_sum",
+    "smc_short_loss_clustering",
+    "sota_long_win_rate",
+    "sota_long_avg_return",
+    "high_growth_long_return_sum",
+    "stop_loss_share",
+    "conflict_bucket_return_sum",
+    "live_vs_replay_drift"
+  ],
+  "trigger_order": [
+    "fallback_a_short_off",
+    "fallback_b_short_off_conflict_boost_defense",
+    "fallback_c_long_core_only"
+  ]
+}

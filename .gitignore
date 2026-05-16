@@ -27,6 +27,11 @@ config/config.live*.json
 !config/config.live.5x-3pct.json
 !config/config.live.5x-3pct.template.json
 !config/config.live.high-leverage-structure.template.json
+!config/config.live.high-leverage-structure.fallback-a.template.json
+!config/config.live.high-leverage-structure.fallback-b.template.json
+!config/config.live.high-leverage-structure.fallback-c.template.json
+!var/high_leverage_expansion/frozen_live_core_20260515.json
+!var/high_leverage_expansion/fallback_plan_20260516.json
 config/*.bak*
 live_bot*.log
 backup/

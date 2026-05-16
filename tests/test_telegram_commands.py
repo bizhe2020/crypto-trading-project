@@ -136,6 +136,40 @@ class TelegramCommandTests(unittest.TestCase):
         self.assertEqual(engine._telegram_command_reply("/health"), "DRIFT_REPORT")
         self.assertEqual(engine._telegram_command_reply("/体检"), "DRIFT_REPORT")
 
+    def test_drift_report_includes_fallback_summary(self) -> None:
+        engine = self._engine()
+        engine.config_path = Path("/tmp/runtime/config.json")
+
+        fallback_report = {
+            "summary": {
+                "trade_count": 9,
+                "long_trade_count": 6,
+                "short_trade_count": 3,
+                "stop_like_share_pct": 77.78,
+            },
+            "decision": {
+                "recommendation": "fallback_a_short_off",
+                "reasons": ["short win rate very low: 0.00%", "short loss streak high: 3"],
+            },
+        }
+
+        with patch("scripts.live_drift_monitor.load_json", return_value={"expected": {}, "thresholds": {}}), patch(
+            "scripts.live_drift_monitor.load_action_log", return_value=[]
+        ), patch("scripts.live_drift_monitor.build_live_trades", return_value=([], {})), patch(
+            "scripts.live_drift_monitor.build_report",
+            return_value={"status": "NO_TRADES", "window": {"window_days": 30, "recent_trades_floor": 20}, "recent": {"trade_count": 0, "total_return_pct": None, "win_rate_pct": None, "profit_factor": None, "payoff_ratio": None, "expectancy_pct": None, "trades_per_month": None, "trades_per_year": None, "avg_entry_slippage_bps": None, "avg_exit_slippage_bps": None, "avg_stop_target_deviation_bps": None, "stop_target_reference_count": 0}, "all": {"trade_count": 0, "total_return_pct": None}, "baseline_comparison": {}, "flags": []},
+        ), patch("scripts.live_drift_monitor.format_report", return_value="DRIFT_CORE"), patch(
+            "scripts.fallback_trigger_report.build_report_from_paths",
+            return_value=fallback_report,
+        ):
+            report = engine._build_drift_report_message()
+
+        self.assertIn("DRIFT_CORE", report)
+        self.assertIn("🛟 Fallback 建议", report)
+        self.assertIn("Fallback A / 关 SMC short", report)
+        self.assertIn("样本: 总 9 / 多 6 / 空 3", report)
+        self.assertIn("short win rate very low: 0.00%", report)
+
     def test_ob_aliases_reply_with_ob_report(self) -> None:
         engine = self._engine()
         engine._build_strategy_status_message = lambda: "STRATEGY_REPORT"  # type: ignore[method-assign]
