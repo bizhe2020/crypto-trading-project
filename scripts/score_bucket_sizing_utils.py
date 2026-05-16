@@ -40,6 +40,53 @@ def _matches_numeric(score: dict[str, Any], field: str, prefix: str, rule: dict[
     return True
 
 
+def _feature_value(score: dict[str, Any], feature: str) -> Any:
+    if feature in score:
+        return score.get(feature)
+    return score.get(f"feature_{feature}")
+
+
+def _matches_feature_equals(score: dict[str, Any], feature: str, expected: Any) -> bool:
+    actual = _feature_value(score, feature)
+    if isinstance(expected, bool):
+        return bool(actual) is expected
+    if expected is None:
+        return actual is None
+    return str(actual) == str(expected)
+
+
+def _matches_features(score: dict[str, Any], rule: dict[str, Any]) -> bool:
+    feature_equals = rule.get("feature_equals")
+    if isinstance(feature_equals, dict):
+        for feature, expected in feature_equals.items():
+            if not _matches_feature_equals(score, str(feature), expected):
+                return False
+
+    required_true = rule.get("required_true_features")
+    if isinstance(required_true, str):
+        required_true = [required_true]
+    if required_true:
+        try:
+            for feature in required_true:
+                if not bool(_feature_value(score, str(feature))):
+                    return False
+        except TypeError:
+            return False
+
+    required_false = rule.get("required_false_features")
+    if isinstance(required_false, str):
+        required_false = [required_false]
+    if required_false:
+        try:
+            for feature in required_false:
+                if bool(_feature_value(score, str(feature))):
+                    return False
+        except TypeError:
+            return False
+
+    return True
+
+
 def score_bucket_rule_matches(score: dict[str, Any], rule: dict[str, Any]) -> bool:
     if not _matches_numeric(score, "net_score", "net", rule):
         return False
@@ -60,6 +107,20 @@ def score_bucket_rule_matches(score: dict[str, Any], rule: dict[str, Any]) -> bo
         allowed = {str(item) for item in allowed_risk_modes if str(item)}
         if str(score.get("risk_mode") or "") not in allowed:
             return False
+
+    allowed_regime_labels = rule.get("regime_labels")
+    if isinstance(allowed_regime_labels, str):
+        allowed_regime_labels = [allowed_regime_labels]
+    if allowed_regime_labels:
+        try:
+            allowed = {str(item) for item in allowed_regime_labels if str(item)}
+        except TypeError:
+            return False
+        if str(score.get("regime_label") or "") not in allowed:
+            return False
+
+    if not _matches_features(score, rule):
+        return False
 
     return True
 
@@ -86,44 +147,79 @@ def apply_score_bucket_leverage(
         decision["reason"] = "invalid_source_leverage"
         return base_leverage, decision
 
+    current_leverage = base_leverage
+    last_decision: dict[str, Any] | None = None
+    matched_any = False
+    applied_any = False
+    applied_rules: list[dict[str, Any]] = []
     for rule in normalize_score_bucket_rules(rules):
         if not score_bucket_rule_matches(score, rule):
             continue
+        matched_any = True
 
         target = rule.get("target_effective_leverage")
         multiplier = float(rule.get("leverage_multiplier", rule.get("multiplier", 1.0)) or 1.0)
         if target is not None:
             selected = float(target)
         else:
-            selected = base_leverage * multiplier
+            selected = current_leverage * multiplier
 
         max_effective = rule.get("max_effective_leverage")
         if max_effective is not None:
             selected = min(selected, float(max_effective))
         selected = max(0.0, selected)
 
-        decision.update(
-            {
-                "matched": True,
-                "rule": rule,
-                "target_effective_leverage": round(selected, 6),
-                "leverage_multiplier": round(selected / base_leverage, 6) if base_leverage > 0 else 0.0,
-                "score": {
-                    "net_score": _score_int(score, "net_score"),
-                    "bull_total": _score_int(score, "bull_total"),
-                    "bear_total": _score_int(score, "bear_total"),
-                    "conflict": bool(score.get("conflict")),
-                    "risk_mode": score.get("risk_mode"),
-                },
+        rule_decision = {
+            "matched": True,
+            "rule": rule,
+            "source_effective_leverage": round(current_leverage, 6),
+            "target_effective_leverage": round(selected, 6),
+            "leverage_multiplier": round(selected / current_leverage, 6) if current_leverage > 0 else 0.0,
+            "score": {
+                "net_score": _score_int(score, "net_score"),
+                "bull_total": _score_int(score, "bull_total"),
+                "bear_total": _score_int(score, "bear_total"),
+                "conflict": bool(score.get("conflict")),
+                "risk_mode": score.get("risk_mode"),
+                "regime_label": score.get("regime_label"),
             }
-        )
-        if selected <= base_leverage + 1e-9:
-            decision["reason"] = "matched_without_increase"
-            return base_leverage, decision
+            | {
+                key: score.get(key)
+                for key in sorted(score)
+                if str(key).startswith("feature_")
+            },
+        }
+        if selected <= current_leverage + 1e-9:
+            rule_decision["applied"] = False
+            rule_decision["reason"] = "matched_without_increase"
+            last_decision = rule_decision
+            if not bool(rule.get("continue")):
+                break
+            continue
 
-        decision["applied"] = True
-        decision["reason"] = f"score_bucket:{rule.get('name') or 'unnamed'}"
-        return selected, decision
+        rule_decision["applied"] = True
+        rule_decision["reason"] = f"score_bucket:{rule.get('name') or 'unnamed'}"
+        current_leverage = selected
+        applied_any = True
+        applied_rules.append(rule_decision)
+        last_decision = rule_decision
+        if not bool(rule.get("continue")):
+            break
+
+    if matched_any:
+        decision.update(last_decision or {})
+        decision["matched"] = True
+        decision["applied"] = applied_any
+        decision["source_effective_leverage"] = round(base_leverage, 6)
+        decision["target_effective_leverage"] = round(current_leverage, 6)
+        decision["leverage_multiplier"] = round(current_leverage / base_leverage, 6) if base_leverage > 0 else 0.0
+        if applied_rules:
+            decision["applied_rules"] = applied_rules
+            decision["rule"] = applied_rules[-1]["rule"]
+            decision["reason"] = "+".join(str(item.get("reason") or "score_bucket") for item in applied_rules)
+            return current_leverage, decision
+        decision["reason"] = "matched_without_increase"
+        return base_leverage, decision
 
     decision["matched"] = False
     decision["reason"] = "no_matching_rule"
@@ -152,7 +248,9 @@ def apply_score_bucket_sizing_to_events(
             "bear_total": updated.get("bear_total"),
             "conflict": updated.get("conflict"),
             "risk_mode": updated.get("risk_mode"),
+            "regime_label": updated.get("regime_label"),
         }
+        score.update({key: value for key, value in updated.items() if str(key).startswith("feature_")})
         target_leverage, decision = apply_score_bucket_leverage(
             effective_leverage=source_leverage,
             score=score,

@@ -26,6 +26,7 @@ from strategy.scalp_robust_v2_core import (
     dataframe_to_candles,
 )
 from scripts.sota_long_filters import apply_sota_structure_gate
+from scripts.sota_liquidity_context import flatten_context_features, liquidity_context_for_entry
 
 
 @dataclass
@@ -257,6 +258,7 @@ class ExecutorConfig:
     smc_position_size_pct: float = 1.0
     smc_min_liq_buffer_pct: float = 1.2
     smc_maintenance_margin_pct: float = 0.5
+    smc_min_entry_idx: int = 0
     enable_gap_smc_short_live: bool = False
     gap_smc_short_case: str = "gap_expansion_21d_other_3x"
     gap_smc_short_min_flat_days: float = 21.0
@@ -267,6 +269,7 @@ class ExecutorConfig:
     gap_smc_short_position_size_pct: float = 1.0
     gap_smc_short_min_liq_buffer_pct: float = 1.2
     gap_smc_short_maintenance_margin_pct: float = 0.5
+    gap_smc_short_min_entry_idx: int = 0
     enable_smc_long_live: bool = False
     smc_long_case: str = "fvg_hist_total_rr15_10x_half"
     smc_long_target_rr: float = 1.5
@@ -1693,6 +1696,10 @@ class OkxExecutionEngine:
             "bear_total_6_20x_boost": "bear=6 20x",
             "nbb_6_11_5_conflict_2p5_cap20": "6/11/5冲突 2.5x cap20",
             "bear_total_6_light_boost": "bear=6轻放大",
+            "fvg_near_bear6_target12": "fvg近场 bear=6 12x",
+            "fvg_near_bear5_target8": "fvg近场 bear=5 8x",
+            "fvg_near_bear3_target3": "fvg近场 bear=3 3x",
+            "fvg_hg_net8_target4": "fvg高增长 net=8 4x",
         }
         return labels.get(str(name or ""), str(name or "-"))
 
@@ -1735,6 +1742,27 @@ class OkxExecutionEngine:
         conflict_mode = str(rule.get("conflict_mode") or "any")
         if conflict_mode != "any":
             criteria.append(conflict_mode)
+        required_true = rule.get("required_true_features")
+        if isinstance(required_true, str):
+            required_true = [required_true]
+        if required_true:
+            try:
+                criteria.extend(str(item) for item in required_true if str(item))
+            except TypeError:
+                pass
+        feature_equals = rule.get("feature_equals")
+        if isinstance(feature_equals, dict):
+            criteria.extend(f"{key}={value}" for key, value in feature_equals.items())
+        regime_labels = rule.get("regime_labels")
+        if isinstance(regime_labels, str):
+            regime_labels = [regime_labels]
+        if regime_labels:
+            try:
+                criteria.extend(f"regime={item}" for item in regime_labels if str(item))
+            except TypeError:
+                pass
+        if bool(rule.get("continue")):
+            criteria.append("continue")
         leverage = (
             f"target {float(rule['target_effective_leverage']):.2f}x"
             if rule.get("target_effective_leverage") is not None
@@ -2307,6 +2335,9 @@ class OkxExecutionEngine:
             "source": metadata.get("source"),
             "source_key": metadata.get("source_key"),
             "entry_idx": metadata.get("index"),
+            "sota_liquidity_context": metadata.get("sota_liquidity_context"),
+            "feature_recent_fvg_near_entry": metadata.get("feature_recent_fvg_near_entry"),
+            "feature_recent_sweep_status": metadata.get("feature_recent_sweep_status"),
         }
 
     def _sota_score_gate_rule(self) -> dict[str, Any]:
@@ -2344,6 +2375,16 @@ class OkxExecutionEngine:
             "candidate": self._action_candidate_summary(action, "sota_long"),
         }
 
+    def _sota_liquidity_context_for_idx(self, engine: Any, entry_idx: int, direction: str) -> dict[str, Any]:
+        lookback = 360
+        start_idx = max(0, int(entry_idx) - lookback)
+        candles = engine.c15m[start_idx : int(entry_idx) + 1]
+        return liquidity_context_for_entry(
+            candles,
+            len(candles) - 1,
+            str(direction),
+        )
+
     def _apply_sota_score_gate_to_open_actions(
         self,
         engine: Any,
@@ -2361,6 +2402,9 @@ class OkxExecutionEngine:
                 continue
             metadata = dict(action.metadata or {})
             entry_idx = int(metadata.get("index", latest_closed_idx) or latest_closed_idx)
+            liquidity_context = self._sota_liquidity_context_for_idx(engine, entry_idx, action.direction)
+            metadata["sota_liquidity_context"] = liquidity_context
+            metadata.update(flatten_context_features(liquidity_context))
             decision = self._sota_score_gate_decision(engine, action, entry_idx)
             metadata["sota_score_gate"] = {
                 "accepted": bool(decision["accepted"]),
@@ -2441,7 +2485,16 @@ class OkxExecutionEngine:
 
         adjusted, decision = apply_score_bucket_leverage(
             effective_leverage=float(effective_leverage),
-            score={**score_payload, "risk_mode": risk_mode},
+            score={
+                **score_payload,
+                "risk_mode": risk_mode,
+                "regime_label": metadata.get("regime_label"),
+                **{
+                    key: value
+                    for key, value in metadata.items()
+                    if str(key).startswith("feature_")
+                },
+            },
             enabled=True,
             rules=self.config.long_score_bucket_sizing_rules,
         )
@@ -2750,6 +2803,8 @@ class OkxExecutionEngine:
     def _smc_short_candidate(self, engine: Any, latest_closed_idx: int) -> dict[str, Any] | None:
         if not bool(self.config.enable_smc_short_live):
             return None
+        if int(latest_closed_idx) < int(self.config.smc_min_entry_idx):
+            return None
         try:
             from scripts.report_pa_ict_liquidity_features import atr_series, scan_events
             from scripts.research_smc_standalone_v1 import build_event_scan_args
@@ -2862,6 +2917,8 @@ class OkxExecutionEngine:
 
     def _gap_smc_short_candidate(self, engine: Any, latest_closed_idx: int) -> dict[str, Any] | None:
         if not bool(self.config.enable_gap_smc_short_live):
+            return None
+        if int(latest_closed_idx) < int(self.config.gap_smc_short_min_entry_idx):
             return None
         if getattr(engine, "position", None) is not None:
             return None

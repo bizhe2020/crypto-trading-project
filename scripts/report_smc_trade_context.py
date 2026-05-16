@@ -325,11 +325,16 @@ def event_support_context(events_by_direction: dict[str, list[Any]], direction: 
     mss_available = event.mss_idx is not None and int(event.mss_idx) <= entry_idx
     fvg_available = event.fvg is not None and int(event.fvg.idx) <= entry_idx
     retest_available = event.retest is not None and int(event.retest.idx) <= entry_idx
+    status = "sweep_only"
+    if mss_available:
+        status = "mss_with_fvg" if fvg_available else "mss_no_fvg"
+    if retest_available:
+        status = "confirmed_retest" if bool(event.retest.confirmed) else "unconfirmed_retest"
     return {
         "recent_sweep": True,
         "recent_sweep_mss": bool(mss_available),
         "sweep_lag_bars": int(lag),
-        "event_status": event.status,
+        "event_status": status,
         "event_has_fvg": bool(fvg_available),
         "event_retest_confirmed": bool(retest_available and event.retest and event.retest.confirmed),
         "swept_level": round(float(event.swept_level), 2),

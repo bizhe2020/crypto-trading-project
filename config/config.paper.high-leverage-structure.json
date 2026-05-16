@@ -205,6 +205,7 @@
   },
   "taker_fee_rate": 0.0005,
   "slippage_bps": 5.0,
+  "confirmed_4h_only": true,
   "replay_sync_entry_to_signal_price": true,
   "enable_exchange_brackets": true,
   "exchange_trigger_price_type": "mark",
@@ -241,7 +242,17 @@
       "name": "bear_total_6_20x_boost",
       "bear_eq": 6,
       "leverage_multiplier": 3.0,
-      "max_effective_leverage": 20.0
+      "max_effective_leverage": 20.0,
+      "continue": true
+    },
+    {
+      "name": "fvg_near_bear6_target12",
+      "bear_eq": 6,
+      "target_effective_leverage": 12.0,
+      "required_true_features": [
+        "recent_fvg_near_entry"
+      ],
+      "continue": true
     },
     {
       "name": "nbb_6_11_5_conflict_2p5_cap20",
@@ -250,7 +261,37 @@
       "bear_eq": 5,
       "conflict_mode": "conflict",
       "leverage_multiplier": 2.5,
-      "max_effective_leverage": 20.0
+      "max_effective_leverage": 20.0,
+      "continue": true
+    },
+    {
+      "name": "fvg_near_bear5_target8",
+      "bear_eq": 5,
+      "target_effective_leverage": 8.0,
+      "required_true_features": [
+        "recent_fvg_near_entry"
+      ],
+      "continue": true
+    },
+    {
+      "name": "fvg_near_bear3_target3",
+      "bear_eq": 3,
+      "target_effective_leverage": 3.0,
+      "required_true_features": [
+        "recent_fvg_near_entry"
+      ],
+      "continue": true
+    },
+    {
+      "name": "fvg_hg_net8_target4",
+      "net_eq": 8,
+      "regime_labels": [
+        "high_growth"
+      ],
+      "target_effective_leverage": 4.0,
+      "required_true_features": [
+        "recent_fvg_near_entry"
+      ]
     }
   ],
   "enable_sota_soft_stop_recovery_overlay_live": false,
@@ -273,6 +314,7 @@
   "smc_position_size_pct": 1.0,
   "smc_min_liq_buffer_pct": 1.2,
   "smc_maintenance_margin_pct": 0.5,
+  "smc_min_entry_idx": 500,
   "enable_gap_smc_short_live": true,
   "gap_smc_short_case": "gap_expansion_21d_other_3x",
   "gap_smc_short_min_flat_days": 21.0,
@@ -283,6 +325,7 @@
   "gap_smc_short_position_size_pct": 1.0,
   "gap_smc_short_min_liq_buffer_pct": 1.2,
   "gap_smc_short_maintenance_margin_pct": 0.5,
+  "gap_smc_short_min_entry_idx": 0,
   "enable_smc_long_live": false,
   "smc_long_case": "fvg_hist_total_rr15_10x_half",
   "smc_long_target_rr": 1.5,

@@ -245,6 +245,7 @@ def smc_case_namespace(args: argparse.Namespace, case_params: dict[str, Any]) ->
         "position_size_pct": 1.0,
         "maintenance_margin_pct": 0.5,
         "min_liq_buffer_pct": 1.2,
+        "min_entry_idx": 0,
         "initial_capital": 1000.0,
         "output": "",
     }
@@ -282,6 +283,9 @@ def build_smc_events(
         d1_lows,
         smc_args,
     )
+    min_entry_idx = int(getattr(case_args, "min_entry_idx", 0) or 0)
+    if min_entry_idx > 0:
+        rows = [row for row in rows if int(row["entry_idx"]) >= min_entry_idx]
     if int(getattr(case_args, "global_min_mss_lag_bars", 0)) > 0:
         floor = int(case_args.global_min_mss_lag_bars)
         rows = [row for row in rows if row["mss_lag_bars"] is None or int(row["mss_lag_bars"]) >= floor]

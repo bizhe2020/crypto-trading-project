@@ -266,6 +266,277 @@ class LiveCandidateArbitrationTest(unittest.TestCase):
         self.assertTrue(dynamic["score_bucket_sizing"]["applied"])
         self.assertIn("score_bucket:bear_total_6_light_boost", dynamic["leverage_reasons"])
 
+    def test_long_score_bucket_sizing_can_chain_feature_context_rule(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_dynamic_high_leverage_structure=True,
+            dynamic_base_leverage=2.0,
+            dynamic_high_growth_leverage=2.0,
+            dynamic_max_effective_leverage=20.0,
+            enable_long_score_bucket_sizing_live=True,
+            long_score_bucket_sizing_rules=[
+                {
+                    "name": "bear_total_6_20x_boost",
+                    "bear_eq": 6,
+                    "leverage_multiplier": 3.0,
+                    "max_effective_leverage": 20.0,
+                    "continue": True,
+                },
+                {
+                    "name": "fvg_near_bear6_target12",
+                    "bear_eq": 6,
+                    "target_effective_leverage": 12.0,
+                    "required_true_features": ["recent_fvg_near_entry"],
+                },
+            ],
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        action = StrategyAction(
+            type=ActionType.OPEN_LONG,
+            timestamp="2023-11-14 22:13",
+            direction=Direction.BULL,
+            entry_price=1000.0,
+            stop_price=985.0,
+            target_price=1040.0,
+            metadata={
+                "capital_at_entry": 1000.0,
+                "notional": 1000.0,
+                "risk_based_notional": 1000.0,
+                "candidate_event_type": "sota_long",
+                "feature_recent_fvg_near_entry": True,
+                "sota_score_gate": {
+                    "score": {
+                        "net_score": 4,
+                        "bull_total": 10,
+                        "bear_total": 6,
+                        "conflict": True,
+                    }
+                },
+            },
+        )
+
+        result = executor.execute_action(action, engine)
+
+        self.assertEqual(result["status"], "paper_recorded")
+        dynamic = result["dynamic_high_leverage"]
+        self.assertAlmostEqual(dynamic["effective_leverage"], 12.0)
+        decision = dynamic["score_bucket_sizing"]
+        self.assertTrue(decision["applied"])
+        self.assertEqual(decision["rule"]["name"], "fvg_near_bear6_target12")
+        self.assertEqual(len(decision["applied_rules"]), 2)
+        self.assertTrue(any("score_bucket:fvg_near_bear6_target12" in reason for reason in dynamic["leverage_reasons"]))
+
+    def test_long_score_bucket_feature_rule_requires_matching_feature(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_dynamic_high_leverage_structure=True,
+            dynamic_base_leverage=2.0,
+            dynamic_high_growth_leverage=2.0,
+            dynamic_max_effective_leverage=20.0,
+            enable_long_score_bucket_sizing_live=True,
+            long_score_bucket_sizing_rules=[
+                {
+                    "name": "bear_total_6_20x_boost",
+                    "bear_eq": 6,
+                    "leverage_multiplier": 3.0,
+                    "max_effective_leverage": 20.0,
+                    "continue": True,
+                },
+                {
+                    "name": "fvg_near_bear6_target12",
+                    "bear_eq": 6,
+                    "target_effective_leverage": 12.0,
+                    "required_true_features": ["recent_fvg_near_entry"],
+                },
+            ],
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        action = StrategyAction(
+            type=ActionType.OPEN_LONG,
+            timestamp="2023-11-14 22:13",
+            direction=Direction.BULL,
+            entry_price=1000.0,
+            stop_price=985.0,
+            target_price=1040.0,
+            metadata={
+                "capital_at_entry": 1000.0,
+                "notional": 1000.0,
+                "risk_based_notional": 1000.0,
+                "candidate_event_type": "sota_long",
+                "feature_recent_fvg_near_entry": False,
+                "sota_score_gate": {
+                    "score": {
+                        "net_score": 4,
+                        "bull_total": 10,
+                        "bear_total": 6,
+                        "conflict": True,
+                    }
+                },
+            },
+        )
+
+        result = executor.execute_action(action, engine)
+
+        self.assertEqual(result["status"], "paper_recorded")
+        dynamic = result["dynamic_high_leverage"]
+        self.assertAlmostEqual(dynamic["effective_leverage"], 6.0)
+        decision = dynamic["score_bucket_sizing"]
+        self.assertTrue(decision["applied"])
+        self.assertEqual(decision["rule"]["name"], "bear_total_6_20x_boost")
+        self.assertEqual(len(decision["applied_rules"]), 1)
+
+    def test_long_score_bucket_sizing_can_match_regime_label(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_dynamic_high_leverage_structure=True,
+            dynamic_base_leverage=2.0,
+            dynamic_high_growth_leverage=2.0,
+            dynamic_max_effective_leverage=20.0,
+            enable_long_score_bucket_sizing_live=True,
+            long_score_bucket_sizing_rules=[
+                {
+                    "name": "fvg_high_growth_net8_target4",
+                    "net_eq": 8,
+                    "regime_labels": ["high_growth"],
+                    "target_effective_leverage": 4.0,
+                    "required_true_features": ["recent_fvg_near_entry"],
+                }
+            ],
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        action = StrategyAction(
+            type=ActionType.OPEN_LONG,
+            timestamp="2023-11-14 22:13",
+            direction=Direction.BULL,
+            entry_price=1000.0,
+            stop_price=985.0,
+            target_price=1040.0,
+            metadata={
+                "capital_at_entry": 1000.0,
+                "notional": 1000.0,
+                "risk_based_notional": 1000.0,
+                "candidate_event_type": "sota_long",
+                "regime_label": "high_growth",
+                "feature_recent_fvg_near_entry": True,
+                "sota_score_gate": {
+                    "score": {
+                        "net_score": 8,
+                        "bull_total": 12,
+                        "bear_total": 4,
+                        "conflict": False,
+                    }
+                },
+            },
+        )
+
+        result = executor.execute_action(action, engine)
+
+        self.assertEqual(result["status"], "paper_recorded")
+        dynamic = result["dynamic_high_leverage"]
+        self.assertAlmostEqual(dynamic["effective_leverage"], 4.0)
+        self.assertEqual(dynamic["score_bucket_sizing"]["rule"]["name"], "fvg_high_growth_net8_target4")
+
+    def test_long_score_bucket_sizing_can_continue_nbb_into_fvg_target(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_dynamic_high_leverage_structure=True,
+            dynamic_base_leverage=2.0,
+            dynamic_high_growth_leverage=2.0,
+            dynamic_max_effective_leverage=20.0,
+            enable_long_score_bucket_sizing_live=True,
+            long_score_bucket_sizing_rules=[
+                {
+                    "name": "nbb_6_11_5_conflict_2p5_cap20",
+                    "net_eq": 6,
+                    "bull_eq": 11,
+                    "bear_eq": 5,
+                    "conflict_mode": "conflict",
+                    "leverage_multiplier": 2.5,
+                    "max_effective_leverage": 20.0,
+                    "continue": True,
+                },
+                {
+                    "name": "fvg_near_bear5_target8",
+                    "bear_eq": 5,
+                    "target_effective_leverage": 8.0,
+                    "required_true_features": ["recent_fvg_near_entry"],
+                    "continue": True,
+                },
+            ],
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        action = StrategyAction(
+            type=ActionType.OPEN_LONG,
+            timestamp="2023-11-14 22:13",
+            direction=Direction.BULL,
+            entry_price=1000.0,
+            stop_price=985.0,
+            target_price=1040.0,
+            metadata={
+                "capital_at_entry": 1000.0,
+                "notional": 1000.0,
+                "risk_based_notional": 1000.0,
+                "candidate_event_type": "sota_long",
+                "feature_recent_fvg_near_entry": True,
+                "sota_score_gate": {
+                    "score": {
+                        "net_score": 6,
+                        "bull_total": 11,
+                        "bear_total": 5,
+                        "conflict": True,
+                    }
+                },
+            },
+        )
+
+        result = executor.execute_action(action, engine)
+
+        self.assertEqual(result["status"], "paper_recorded")
+        dynamic = result["dynamic_high_leverage"]
+        self.assertAlmostEqual(dynamic["effective_leverage"], 8.0)
+        decision = dynamic["score_bucket_sizing"]
+        self.assertEqual(decision["rule"]["name"], "fvg_near_bear5_target8")
+        self.assertEqual([item["rule"]["name"] for item in decision["applied_rules"]], [
+            "nbb_6_11_5_conflict_2p5_cap20",
+            "fvg_near_bear5_target8",
+        ])
+
     def test_long_score_bucket_sizing_leaves_non_matching_sota_open_unchanged(self) -> None:
         config = ExecutorConfig(
             mode="paper",
@@ -509,6 +780,45 @@ class LiveCandidateArbitrationTest(unittest.TestCase):
         self.assertEqual(decision["decision"], "accepted")
         self.assertEqual(decision["selected"]["event_type"], "sota_long")
         self.assertEqual(decision["score_gate_rejected"], [])
+
+    def test_sota_score_gate_adds_liquidity_context_metadata(self) -> None:
+        config = ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="cross",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=":memory:",
+            enable_live_candidate_arbitration=True,
+            enable_sota_score_gate_live=True,
+            sota_score_net_min=-99,
+            sota_score_bull_min=0,
+            sota_score_bear_max=99,
+            sota_score_conflict_mode="any",
+        )
+        executor = make_executor(config)
+        engine = make_engine()
+        action = StrategyAction(
+            type=ActionType.OPEN_LONG,
+            timestamp="2023-11-14 22:13",
+            direction=Direction.BULL,
+            entry_price=1000.0,
+            stop_price=990.0,
+            target_price=1040.0,
+            metadata={"index": 1},
+        )
+
+        filtered_actions, decision = executor._apply_live_candidate_arbitration(engine, [action], 1)
+
+        self.assertEqual(len(filtered_actions), 1)
+        metadata = filtered_actions[0].metadata or {}
+        self.assertIn("sota_liquidity_context", metadata)
+        self.assertIn("feature_recent_fvg_near_entry", metadata)
+        self.assertIn("feature_recent_sweep_status", metadata)
+        self.assertIn("sota_liquidity_context", decision["selected"])
 
     def test_smc_long_candidate_can_be_selected_when_enabled(self) -> None:
         config = ExecutorConfig(

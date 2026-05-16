@@ -35,6 +35,7 @@ from scripts.live_shadow_utils import (  # noqa: E402
 )
 from scripts.score_bucket_sizing_utils import apply_score_bucket_sizing_to_events  # noqa: E402
 from scripts.sota_long_filters import apply_sota_structure_gate  # noqa: E402
+from scripts.sota_liquidity_context import annotate_sota_events_with_liquidity_context  # noqa: E402
 from scripts.report_smc_trade_context import daily_candles_from_4h  # noqa: E402
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay  # noqa: E402
 from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS, replay_shadow_events  # noqa: E402
@@ -57,32 +58,37 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--informative-asof-from-15m",
         action="store_true",
+        default=None,
         help="Use primary-candle as-of 4h state to match live evaluation instead of finalized 4h candles.",
     )
     parser.add_argument(
         "--confirmed-4h-only",
         action="store_true",
+        default=None,
         help="Use only the previous fully closed 4h candle state for each primary candle.",
     )
     parser.add_argument(
         "--replay-sync-entry-to-signal-price",
         action="store_true",
+        default=None,
         help="Sync replay entry execution price back to signal entry price after open to emulate live exchange fill reconciliation.",
     )
-    parser.add_argument("--smc-case", default="v2_medium_dispbody05_otherlag4_10x", choices=sorted(SMC_CASES))
-    parser.add_argument("--smc-allocation", type=float, default=1.0)
-    parser.add_argument("--enable-gap-smc-short", action="store_true")
-    parser.add_argument("--gap-smc-case", default="gap_expansion_21d_other_3x", choices=sorted(SMC_CASES))
-    parser.add_argument("--gap-smc-min-flat-days", type=float, default=21.0)
-    parser.add_argument("--gap-smc-leverage", type=float, default=3.0)
-    parser.add_argument("--gap-smc-max-stop-distance-pct", type=float, default=1.5)
-    parser.add_argument("--enable-sota-score-gate", action="store_true")
-    parser.add_argument("--sota-score-net-min", type=int, default=3)
-    parser.add_argument("--sota-score-bull-min", type=int, default=8)
-    parser.add_argument("--sota-score-bear-max", type=int, default=6)
-    parser.add_argument("--sota-score-conflict-mode", default="any", choices=("any", "conflict", "clean"))
-    parser.add_argument("--require-non-bearish-structure-for-long", action="store_true")
-    parser.add_argument("--enable-long-score-bucket-sizing", action="store_true")
+    parser.add_argument("--smc-case", default=None, choices=sorted(SMC_CASES))
+    parser.add_argument("--smc-allocation", type=float, default=None)
+    parser.add_argument("--smc-min-entry-idx", type=int, default=None)
+    parser.add_argument("--enable-gap-smc-short", action="store_true", default=None)
+    parser.add_argument("--gap-smc-case", default=None, choices=sorted(SMC_CASES))
+    parser.add_argument("--gap-smc-min-flat-days", type=float, default=None)
+    parser.add_argument("--gap-smc-leverage", type=float, default=None)
+    parser.add_argument("--gap-smc-max-stop-distance-pct", type=float, default=None)
+    parser.add_argument("--gap-smc-min-entry-idx", type=int, default=None)
+    parser.add_argument("--enable-sota-score-gate", action="store_true", default=None)
+    parser.add_argument("--sota-score-net-min", type=int, default=None)
+    parser.add_argument("--sota-score-bull-min", type=int, default=None)
+    parser.add_argument("--sota-score-bear-max", type=int, default=None)
+    parser.add_argument("--sota-score-conflict-mode", default=None, choices=("any", "conflict", "clean"))
+    parser.add_argument("--require-non-bearish-structure-for-long", action="store_true", default=None)
+    parser.add_argument("--enable-long-score-bucket-sizing", action="store_true", default=None)
     parser.add_argument(
         "--long-score-bucket-sizing-rules-json",
         default="",
@@ -96,9 +102,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sota-soft-stop-target-rr", type=float, default=None)
     parser.add_argument("--sota-soft-stop-max-extension-bars", type=int, default=None)
     parser.add_argument("--sota-soft-stop-exclude-score-buckets", default=None)
-    parser.add_argument("--stage-trigger-rr-mode", default="close", choices=RR_MODE_CHOICES)
-    parser.add_argument("--time-trailing-rr-mode", default="extreme", choices=RR_MODE_CHOICES)
-    parser.add_argument("--atr-activation-rr-mode", default="extreme", choices=RR_MODE_CHOICES)
+    parser.add_argument("--stage-trigger-rr-mode", default=None, choices=RR_MODE_CHOICES)
+    parser.add_argument("--time-trailing-rr-mode", default=None, choices=RR_MODE_CHOICES)
+    parser.add_argument("--atr-activation-rr-mode", default=None, choices=RR_MODE_CHOICES)
     parser.add_argument("--enable-auto-time-based-trailing", default=None)
     parser.add_argument("--daily-loss-stop-pct", type=float, default=6.0)
     parser.add_argument("--equity-drawdown-stop-pct", type=float, default=12.0)
@@ -622,6 +628,7 @@ def build_gap_smc_events(
     from scripts.research_smc_standalone_v1 import apply_max_open_positions, build_event_scan_args, scan_events, trade_rows_for_events
 
     case_params = dict(SMC_CASES[str(args.gap_smc_case)])
+    case_params["min_entry_idx"] = int(args.gap_smc_min_entry_idx)
     case_args = smc_case_namespace(args, case_params)
     case_args.leverage = float(args.gap_smc_leverage)
     case_args.position_size_pct = 1.0
@@ -660,6 +667,7 @@ def build_gap_smc_events(
     variant = {
         "case": str(args.gap_smc_case),
         "min_gap_days": float(args.gap_smc_min_flat_days),
+        "min_entry_idx": int(args.gap_smc_min_entry_idx),
         "candidate_time_buckets": str(case_params.get("allowed_time_buckets", "other")),
         "require_h4_bias_align": bool(case_params.get("require_h4_bias_align", False)),
         "require_confirmed_retest": bool(case_params.get("require_confirmed_retest", False)),
@@ -695,6 +703,7 @@ def build_gap_smc_events(
         "rows_after_filters": len(rows),
         "slot_skipped": int(slot_skipped),
         "accepted_trades": len(gap_events),
+        "min_entry_idx": int(args.gap_smc_min_entry_idx),
         "standalone_event_stats": event_stream_summary(gap_events, float(args.smc_allocation), prepared.end),
     }
 
@@ -725,6 +734,68 @@ def parse_score_bucket_rules(raw: str) -> Any:
     if not raw:
         return None
     return json.loads(raw)
+
+
+def _config_bool(payload: dict[str, Any], key: str, default: bool = False) -> bool:
+    return bool(payload.get(key, default))
+
+
+def _config_float(payload: dict[str, Any], key: str, default: float | None) -> float:
+    return float(payload.get(key, default) if payload.get(key, None) is not None else default)
+
+
+def _apply_config_defaults(args: argparse.Namespace, payload: dict[str, Any]) -> argparse.Namespace:
+    if args.informative_asof_from_15m is None:
+        args.informative_asof_from_15m = _config_bool(payload, "informative_asof_from_15m", False)
+    if args.confirmed_4h_only is None:
+        args.confirmed_4h_only = _config_bool(payload, "confirmed_4h_only", False)
+    if args.replay_sync_entry_to_signal_price is None:
+        args.replay_sync_entry_to_signal_price = _config_bool(payload, "replay_sync_entry_to_signal_price", False)
+    if args.enable_gap_smc_short is None:
+        args.enable_gap_smc_short = _config_bool(payload, "enable_gap_smc_short_live", False)
+    if args.enable_sota_score_gate is None:
+        args.enable_sota_score_gate = _config_bool(payload, "enable_sota_score_gate_live", False)
+    if args.require_non_bearish_structure_for_long is None:
+        args.require_non_bearish_structure_for_long = _config_bool(
+            payload,
+            "require_non_bearish_structure_for_long_live",
+            False,
+        )
+    if args.enable_long_score_bucket_sizing is None:
+        args.enable_long_score_bucket_sizing = _config_bool(payload, "enable_long_score_bucket_sizing_live", False)
+    if not str(args.long_score_bucket_sizing_rules_json or "").strip() and bool(args.enable_long_score_bucket_sizing):
+        args.long_score_bucket_sizing_rules_json = json.dumps(payload.get("long_score_bucket_sizing_rules", []))
+    if args.gap_smc_case is None:
+        args.gap_smc_case = str(payload.get("gap_smc_short_case", "gap_expansion_21d_other_3x") or "gap_expansion_21d_other_3x")
+    if args.gap_smc_min_flat_days is None:
+        args.gap_smc_min_flat_days = _config_float(payload, "gap_smc_short_min_flat_days", 21.0)
+    if args.gap_smc_leverage is None:
+        args.gap_smc_leverage = _config_float(payload, "gap_smc_short_leverage", 3.0)
+    if args.gap_smc_max_stop_distance_pct is None:
+        args.gap_smc_max_stop_distance_pct = _config_float(payload, "gap_smc_short_max_stop_distance_pct", 1.5)
+    if args.gap_smc_min_entry_idx is None:
+        args.gap_smc_min_entry_idx = int(payload.get("gap_smc_short_min_entry_idx", 0) or 0)
+    if args.smc_case is None:
+        args.smc_case = str(payload.get("smc_case", "v2_medium_dispbody05_otherlag4_10x") or "v2_medium_dispbody05_otherlag4_10x")
+    if args.smc_allocation is None:
+        args.smc_allocation = float(payload.get("smc_allocation", 1.0) or 1.0)
+    if args.smc_min_entry_idx is None:
+        args.smc_min_entry_idx = int(payload.get("smc_min_entry_idx", 0) or 0)
+    if args.sota_score_net_min is None:
+        args.sota_score_net_min = int(payload.get("sota_score_net_min", 3) or 3)
+    if args.sota_score_bull_min is None:
+        args.sota_score_bull_min = int(payload.get("sota_score_bull_min", 8) or 8)
+    if args.sota_score_bear_max is None:
+        args.sota_score_bear_max = int(payload.get("sota_score_bear_max", 6) or 6)
+    if args.sota_score_conflict_mode is None:
+        args.sota_score_conflict_mode = str(payload.get("sota_score_conflict_mode", "any") or "any")
+    if args.stage_trigger_rr_mode is None:
+        args.stage_trigger_rr_mode = str(payload.get("stage_trigger_rr_mode", "close") or "close")
+    if args.time_trailing_rr_mode is None:
+        args.time_trailing_rr_mode = str(payload.get("time_trailing_rr_mode", "extreme") or "extreme")
+    if args.atr_activation_rr_mode is None:
+        args.atr_activation_rr_mode = str(payload.get("atr_activation_rr_mode", "extreme") or "extreme")
+    return args
 
 
 def resolve_sota_soft_stop_args(args: argparse.Namespace, payload: dict[str, Any]) -> tuple[bool, argparse.Namespace]:
@@ -834,6 +905,7 @@ def apply_sota_score_gate(
 def main() -> None:
     args = parse_args()
     base_payload = load_config_payload(Path(args.config))
+    args = _apply_config_defaults(args, base_payload)
     sota_soft_stop_enabled, args = resolve_sota_soft_stop_args(args, base_payload)
     payload, pressure_params = apply_pressure_params(base_payload, Path(args.pressure_params))
     payload, trailing_rr_modes = apply_trailing_rr_modes(
@@ -867,7 +939,10 @@ def main() -> None:
     shadow_events = shadow["events"]
     full_sota_by_key = {sota_event_key(event): dict(event) for event in shadow_events}
     base_shadow_summary = event_stream_summary(shadow_events, initial_capital, prepared.end)
-    raw_base_events = [standard_sota_event(event) for event in shadow_events]
+    raw_base_events = annotate_sota_events_with_liquidity_context(
+        prepared.c15m,
+        [standard_sota_event(event) for event in shadow_events],
+    )
     base_events, sota_score_gate = apply_sota_score_gate(
         prepared,
         raw_base_events,
@@ -900,7 +975,7 @@ def main() -> None:
     d1_highs, d1_lows = precompute_swings(daily, n=2, lookback=20)
     smc_events, smc_summary = build_smc_events(
         args.smc_case,
-        SMC_CASES[str(args.smc_case)],
+        dict(SMC_CASES[str(args.smc_case)]) | {"min_entry_idx": int(args.smc_min_entry_idx)},
         args,
         prepared,
         daily,
@@ -954,6 +1029,8 @@ def main() -> None:
             "replay_sync_entry_to_signal_price": bool(args.replay_sync_entry_to_signal_price),
             "smc_case": args.smc_case,
             "smc_allocation": args.smc_allocation,
+            "smc_min_entry_idx": int(args.smc_min_entry_idx),
+            "gap_smc_min_entry_idx": int(args.gap_smc_min_entry_idx),
             "gap_smc_short": gap_smc_summary,
             "sota_score_gate": sota_score_gate,
             "sota_structure_gate": sota_structure_gate,
