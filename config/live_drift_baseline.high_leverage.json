@@ -1,21 +1,21 @@
 {
-  "name": "sota_smc_scoregate_net3_conservative_10x",
-  "source": "docs/archive/HIGH_LEVERAGE_SOTA_SMC_LIVE_BOT_20260506.md",
+  "name": "sota_smc_gap_recall_sweep_has_fvg_frozen_20260517",
+  "source": "docs/archive/HIGH_LEVERAGE_FROZEN_LIVE_CORE_20260515.md",
   "period_start": "2022-01-01",
-  "period_end": "2026-05-04",
+  "period_end": "2026-05-16",
   "expected": {
-    "full_return_pct": 12911.21,
-    "max_drawdown_pct": 28.36,
-    "current_year_return_pct": 30.95,
-    "current_year_max_drawdown_pct": 17.08,
-    "trades_per_year": 68.96,
-    "trades_per_month": 5.75,
-    "win_rate_pct": 44.82,
-    "avg_win_pct": 9.253,
-    "avg_loss_pct": -3.893,
-    "payoff_ratio": 2.377,
-    "profit_factor": 1.93,
-    "expectancy_pct": 1.998,
+    "full_return_pct": 1589905.71,
+    "max_drawdown_pct": 26.76,
+    "current_year_return_pct": 202.31,
+    "current_year_max_drawdown_pct": 15.25,
+    "trades_per_year": 65.68,
+    "trades_per_month": 5.47,
+    "win_rate_pct": 46.34,
+    "avg_win_pct": 13.919,
+    "avg_loss_pct": -4.251,
+    "payoff_ratio": 3.2745,
+    "profit_factor": 2.828,
+    "expectancy_pct": 4.169,
     "modeled_entry_slippage_bps": 5.0,
     "modeled_exit_slippage_bps": 5.0
   },
@@ -32,5 +32,23 @@
     "warn_avg_entry_slippage_bps_above": 12.0,
     "warn_avg_exit_slippage_bps_above": 12.0,
     "warn_stop_target_deviation_bps_above": 15.0
+  },
+  "promoted_feature_flags": {
+    "enable_sota_rejected_smc_recall_long_live": true,
+    "sota_rejected_smc_recall_long_condition": "sweep_has_fvg",
+    "sota_rejected_smc_recall_long_reject_stage": "structure_gate",
+    "sota_rejected_smc_recall_long_regime_label": "normal",
+    "sota_rejected_smc_recall_long_target_leverage": 8.0
+  },
+  "recall_audit": {
+    "enabled": true,
+    "condition": "sweep_has_fvg",
+    "reject_stage": "structure_gate",
+    "regime_label": "normal",
+    "target_effective_leverage": 8.0,
+    "structure_rejected_candidates": 30,
+    "recalled_candidates": 6,
+    "recalled_sum_return_pct": 97.89,
+    "audit_path": "var/reports/live_config_recall_on_full_events_audit_20260517.json"
   }
 }

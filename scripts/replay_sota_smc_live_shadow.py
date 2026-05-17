@@ -88,6 +88,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sota-score-bear-max", type=int, default=None)
     parser.add_argument("--sota-score-conflict-mode", default=None, choices=("any", "conflict", "clean"))
     parser.add_argument("--require-non-bearish-structure-for-long", action="store_true", default=None)
+    parser.add_argument("--enable-sota-rejected-smc-recall-long", action="store_true", default=None)
     parser.add_argument("--enable-long-score-bucket-sizing", action="store_true", default=None)
     parser.add_argument(
         "--long-score-bucket-sizing-rules-json",
@@ -761,6 +762,12 @@ def _apply_config_defaults(args: argparse.Namespace, payload: dict[str, Any]) ->
             "require_non_bearish_structure_for_long_live",
             False,
         )
+    if getattr(args, "enable_sota_rejected_smc_recall_long", None) is None:
+        args.enable_sota_rejected_smc_recall_long = _config_bool(
+            payload,
+            "enable_sota_rejected_smc_recall_long_live",
+            False,
+        )
     if args.enable_long_score_bucket_sizing is None:
         args.enable_long_score_bucket_sizing = _config_bool(payload, "enable_long_score_bucket_sizing_live", False)
     if not str(args.long_score_bucket_sizing_rules_json or "").strip() and bool(args.enable_long_score_bucket_sizing):
@@ -902,6 +909,72 @@ def apply_sota_score_gate(
     }
 
 
+def _recall_condition_matches(event: dict[str, Any], condition: str) -> bool:
+    if condition == "sweep_has_fvg":
+        return bool(event.get("feature_recent_sweep_has_fvg", False))
+    if condition == "recent_fvg_near_entry":
+        return bool(event.get("feature_recent_fvg_near_entry", False))
+    if condition == "mss_with_fvg":
+        return str(event.get("feature_recent_sweep_status") or "") == "mss_with_fvg"
+    if condition == "fvg_near_or_mss_with_fvg":
+        return bool(event.get("feature_recent_fvg_near_entry", False)) or str(event.get("feature_recent_sweep_status") or "") == "mss_with_fvg"
+    return False
+
+
+def apply_sota_rejected_smc_recall_long(
+    events_after_score_gate: list[dict[str, Any]],
+    events_after_structure_gate: list[dict[str, Any]],
+    *,
+    enabled: bool,
+    condition: str,
+    reject_stage: str,
+    regime_label: str,
+    target_leverage: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    accepted_keys = {sota_event_key(event) for event in events_after_structure_gate}
+    rejected = [event for event in events_after_score_gate if sota_event_key(event) not in accepted_keys]
+    recalled: list[dict[str, Any]] = []
+    for event in rejected:
+        if not bool(event.get("feature_bearish_structure", False)):
+            continue
+        if str(reject_stage or "") != "structure_gate":
+            continue
+        if regime_label and str(event.get("regime_label") or "") != str(regime_label):
+            continue
+        if not _recall_condition_matches(event, str(condition)):
+            continue
+        updated = dict(event)
+        updated["sota_rejected_smc_recall_long"] = {
+            "enabled": bool(enabled),
+            "accepted": bool(enabled),
+            "reason": "accepted" if enabled else "disabled",
+            "condition": str(condition),
+            "reject_stage": "structure_gate",
+            "expected_reject_stage": str(reject_stage),
+            "regime_label": str(event.get("regime_label") or ""),
+            "expected_regime_label": str(regime_label),
+            "target_effective_leverage": float(target_leverage),
+            "features": {
+                "feature_recent_sweep_has_fvg": bool(event.get("feature_recent_sweep_has_fvg", False)),
+                "feature_recent_fvg_near_entry": bool(event.get("feature_recent_fvg_near_entry", False)),
+                "feature_recent_sweep_status": event.get("feature_recent_sweep_status"),
+                "feature_bearish_structure": bool(event.get("feature_bearish_structure", False)),
+            },
+        }
+        recalled.append(updated)
+    if not enabled:
+        recalled = []
+    return events_after_structure_gate + recalled, {
+        "enabled": bool(enabled),
+        "condition": str(condition),
+        "reject_stage": str(reject_stage),
+        "regime_label": str(regime_label),
+        "target_effective_leverage": float(target_leverage),
+        "structure_rejected_candidates": len(rejected),
+        "recalled_candidates": len(recalled),
+    }
+
+
 def main() -> None:
     args = parse_args()
     base_payload = load_config_payload(Path(args.config))
@@ -952,9 +1025,19 @@ def main() -> None:
         bear_max=int(args.sota_score_bear_max),
         conflict_mode=str(args.sota_score_conflict_mode),
     )
+    score_gated_base_events = list(base_events)
     base_events, sota_structure_gate = apply_sota_structure_gate(
         base_events,
         enabled=bool(args.require_non_bearish_structure_for_long),
+    )
+    base_events, sota_rejected_smc_recall_long = apply_sota_rejected_smc_recall_long(
+        score_gated_base_events,
+        base_events,
+        enabled=bool(args.enable_sota_rejected_smc_recall_long),
+        condition=str(base_payload.get("sota_rejected_smc_recall_long_condition", "sweep_has_fvg") or "sweep_has_fvg"),
+        reject_stage=str(base_payload.get("sota_rejected_smc_recall_long_reject_stage", "structure_gate") or "structure_gate"),
+        regime_label=str(base_payload.get("sota_rejected_smc_recall_long_regime_label", "normal") or "normal"),
+        target_leverage=float(base_payload.get("sota_rejected_smc_recall_long_target_leverage", 8.0) or 8.0),
     )
     base_events, long_score_bucket_sizing = apply_score_bucket_sizing_to_events(
         base_events,
@@ -1034,6 +1117,7 @@ def main() -> None:
             "gap_smc_short": gap_smc_summary,
             "sota_score_gate": sota_score_gate,
             "sota_structure_gate": sota_structure_gate,
+            "sota_rejected_smc_recall_long": sota_rejected_smc_recall_long,
             "long_score_bucket_sizing": long_score_bucket_sizing,
             "sota_soft_stop_recovery_overlay": sota_soft_stop_recovery_overlay,
             "paper_log_output": str(Path(args.paper_log_output).resolve()),
@@ -1047,6 +1131,7 @@ def main() -> None:
             "gap_smc_short_candidates": len(gap_smc_events),
             "sota_score_gate": sota_score_gate,
             "sota_structure_gate": sota_structure_gate,
+            "sota_rejected_smc_recall_long": sota_rejected_smc_recall_long,
             "long_score_bucket_sizing": long_score_bucket_sizing,
             "sota_soft_stop_recovery_overlay": sota_soft_stop_recovery_overlay,
             "smc_summary": smc_summary,

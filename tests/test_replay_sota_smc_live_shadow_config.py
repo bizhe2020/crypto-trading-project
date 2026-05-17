@@ -39,7 +39,7 @@ def base_args(**overrides: object) -> argparse.Namespace:
 
 class ReplaySotaSmcLiveShadowConfigTest(unittest.TestCase):
     def test_config_defaults_enable_live_replay_switches(self) -> None:
-        rules = [{"name": "fvg_near_bear6_target12", "bear_eq": 6}]
+        rules = [{"name": "fvg_near_bear6_target20", "bear_eq": 6}]
         payload = {
             "confirmed_4h_only": True,
             "replay_sync_entry_to_signal_price": True,

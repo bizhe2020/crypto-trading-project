@@ -1,0 +1,690 @@
+{
+  "metadata": {
+    "scan": "/Users/laoji/projects/crypto-trading-project/var/reports/sota_rejected_smc_recall_scan_20260517.json",
+    "frozen": "/Users/laoji/projects/crypto-trading-project/var/high_leverage_expansion/frozen_live_core_20260515.json",
+    "condition": "sweep_has_fvg",
+    "dimensions": [
+      "regime_label",
+      "sota_reject_stage"
+    ],
+    "values": {
+      "regime_label": "normal",
+      "sota_reject_stage": "structure_gate"
+    },
+    "target_effective_leverage": 8.0
+  },
+  "baseline": {
+    "total_return_pct": 656013.44,
+    "max_drawdown_pct": 33.88,
+    "trades": 281,
+    "wins": 128,
+    "losses": 153,
+    "win_rate_pct": 45.55,
+    "avg_return_pct": 3.91,
+    "profit_factor": 2.6815,
+    "event_type_counts": {
+      "smc_short": 24,
+      "sota_long": 248,
+      "gap_smc_short_expansion": 9
+    },
+    "exit_counts": {
+      "target_2.0r": 24,
+      "stop_loss": 231,
+      "time_stop_exit": 9,
+      "stop": 9,
+      "target_rr": 8
+    },
+    "current_year": {
+      "total_return_pct": 202.31,
+      "max_drawdown_pct": 15.25,
+      "trades": 29,
+      "win_rate_pct": 48.28,
+      "profit_factor": 3.9192
+    }
+  },
+  "candidate": {
+    "total_return_pct": 1589905.01,
+    "max_drawdown_pct": 26.76,
+    "trades": 287,
+    "wins": 133,
+    "losses": 154,
+    "win_rate_pct": 46.34,
+    "avg_return_pct": 4.1694,
+    "profit_factor": 2.828,
+    "event_type_counts": {
+      "smc_short": 24,
+      "sota_long": 248,
+      "gap_smc_short_expansion": 9,
+      "sota_recall_sweep_has_fvg": 6
+    },
+    "exit_counts": {
+      "target_2.0r": 24,
+      "stop_loss": 231,
+      "time_stop_exit": 9,
+      "stop": 9,
+      "target_rr": 8,
+      "recall_source": 6
+    },
+    "current_year": {
+      "total_return_pct": 202.31,
+      "max_drawdown_pct": 15.25,
+      "trades": 29,
+      "win_rate_pct": 48.28,
+      "profit_factor": 3.9192
+    }
+  },
+  "delta_vs_frozen": {
+    "total_return_pct": 933891.57,
+    "max_drawdown_pct": -7.12,
+    "current_year_return_pct": 0.0,
+    "current_year_max_drawdown_pct": 0.0
+  },
+  "recall_events": [
+    {
+      "event_key": "sota_recall_sweep_has_fvg|65625|65641",
+      "entry_time": "2023-11-15 14:15:00+00:00",
+      "exit_time": "2023-11-15 18:15:00+00:00",
+      "return_pct": 13.3095,
+      "reject_stage": "structure_gate",
+      "net_score": 7,
+      "bull_total": 12,
+      "bear_total": 5,
+      "regime_label": "normal",
+      "conflict": true,
+      "recent_fvg_near_entry": false,
+      "recent_sweep_status": "mss_with_fvg",
+      "feature_bearish_structure": true,
+      "event_type": "sota_recall_sweep_has_fvg",
+      "entry_idx": 65625,
+      "exit_idx": 65641,
+      "direction": "BULL",
+      "return": 0.133095,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "recall_source"
+    },
+    {
+      "event_key": "sota_recall_sweep_has_fvg|68830|68888",
+      "entry_time": "2023-12-18 23:30:00+00:00",
+      "exit_time": "2023-12-19 14:00:00+00:00",
+      "return_pct": -1.2,
+      "reject_stage": "structure_gate",
+      "net_score": 13,
+      "bull_total": 14,
+      "bear_total": 1,
+      "regime_label": "normal",
+      "conflict": false,
+      "recent_fvg_near_entry": false,
+      "recent_sweep_status": "confirmed_retest",
+      "feature_bearish_structure": true,
+      "event_type": "sota_recall_sweep_has_fvg",
+      "entry_idx": 68830,
+      "exit_idx": 68888,
+      "direction": "BULL",
+      "return": -0.012,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "recall_source"
+    },
+    {
+      "event_key": "sota_recall_sweep_has_fvg|77430|77463",
+      "entry_time": "2024-03-17 13:30:00+00:00",
+      "exit_time": "2024-03-17 21:45:00+00:00",
+      "return_pct": 11.7016,
+      "reject_stage": "structure_gate",
+      "net_score": 4,
+      "bull_total": 10,
+      "bear_total": 6,
+      "regime_label": "normal",
+      "conflict": true,
+      "recent_fvg_near_entry": false,
+      "recent_sweep_status": "unconfirmed_retest",
+      "feature_bearish_structure": true,
+      "event_type": "sota_recall_sweep_has_fvg",
+      "entry_idx": 77430,
+      "exit_idx": 77463,
+      "direction": "BULL",
+      "return": 0.117016,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "recall_source"
+    },
+    {
+      "event_key": "sota_recall_sweep_has_fvg|89986|90105",
+      "entry_time": "2024-07-26 08:30:00+00:00",
+      "exit_time": "2024-07-27 14:15:00+00:00",
+      "return_pct": 22.1354,
+      "reject_stage": "structure_gate",
+      "net_score": 12,
+      "bull_total": 14,
+      "bear_total": 2,
+      "regime_label": "normal",
+      "conflict": false,
+      "recent_fvg_near_entry": true,
+      "recent_sweep_status": "unconfirmed_retest",
+      "feature_bearish_structure": true,
+      "event_type": "sota_recall_sweep_has_fvg",
+      "entry_idx": 89986,
+      "exit_idx": 90105,
+      "direction": "BULL",
+      "return": 0.221354,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "recall_source"
+    },
+    {
+      "event_key": "sota_recall_sweep_has_fvg|120310|120557",
+      "entry_time": "2025-06-07 05:30:00+00:00",
+      "exit_time": "2025-06-09 19:15:00+00:00",
+      "return_pct": 27.332,
+      "reject_stage": "structure_gate",
+      "net_score": 9,
+      "bull_total": 11,
+      "bear_total": 2,
+      "regime_label": "normal",
+      "conflict": false,
+      "recent_fvg_near_entry": false,
+      "recent_sweep_status": "mss_with_fvg",
+      "feature_bearish_structure": true,
+      "event_type": "sota_recall_sweep_has_fvg",
+      "entry_idx": 120310,
+      "exit_idx": 120557,
+      "direction": "BULL",
+      "return": 0.27332,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "recall_source"
+    },
+    {
+      "event_key": "sota_recall_sweep_has_fvg|121068|121229",
+      "entry_time": "2025-06-15 03:00:00+00:00",
+      "exit_time": "2025-06-16 19:15:00+00:00",
+      "return_pct": 24.6114,
+      "reject_stage": "structure_gate",
+      "net_score": 3,
+      "bull_total": 8,
+      "bear_total": 5,
+      "regime_label": "normal",
+      "conflict": true,
+      "recent_fvg_near_entry": true,
+      "recent_sweep_status": "mss_with_fvg",
+      "feature_bearish_structure": true,
+      "event_type": "sota_recall_sweep_has_fvg",
+      "entry_idx": 121068,
+      "exit_idx": 121229,
+      "direction": "BULL",
+      "return": 0.246114,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "recall_source"
+    }
+  ],
+  "recall_yearly_stats": {
+    "2023": {
+      "trades": 2,
+      "wins": 1,
+      "losses": 1,
+      "sum_return_pct": 12.1095,
+      "avg_return_pct": 6.0548,
+      "best_return_pct": 13.3095,
+      "worst_return_pct": -1.2
+    },
+    "2024": {
+      "trades": 2,
+      "wins": 2,
+      "losses": 0,
+      "sum_return_pct": 33.837,
+      "avg_return_pct": 16.9185,
+      "best_return_pct": 22.1354,
+      "worst_return_pct": 11.7016
+    },
+    "2025": {
+      "trades": 2,
+      "wins": 2,
+      "losses": 0,
+      "sum_return_pct": 51.9434,
+      "avg_return_pct": 25.9717,
+      "best_return_pct": 27.332,
+      "worst_return_pct": 24.6114
+    }
+  },
+  "remove_top_recall_winners": {
+    "remove_top_1": {
+      "removed_events": [
+        {
+          "event_key": "sota_recall_sweep_has_fvg|120310|120557",
+          "entry_time": "2025-06-07 05:30:00+00:00",
+          "return_pct": 27.332
+        }
+      ],
+      "summary": {
+        "total_return_pct": 1248608.11,
+        "max_drawdown_pct": 26.76,
+        "trades": 286,
+        "wins": 132,
+        "losses": 154,
+        "win_rate_pct": 46.15,
+        "avg_return_pct": 4.0884,
+        "profit_factor": 2.7862,
+        "event_type_counts": {
+          "smc_short": 24,
+          "sota_long": 248,
+          "gap_smc_short_expansion": 9,
+          "sota_recall_sweep_has_fvg": 5
+        },
+        "exit_counts": {
+          "target_2.0r": 24,
+          "stop_loss": 231,
+          "time_stop_exit": 9,
+          "stop": 9,
+          "target_rr": 8,
+          "recall_source": 5
+        },
+        "current_year": {
+          "total_return_pct": 202.31,
+          "max_drawdown_pct": 15.25,
+          "trades": 29,
+          "win_rate_pct": 48.28,
+          "profit_factor": 3.9192
+        }
+      },
+      "delta_vs_frozen": {
+        "total_return_pct": 592594.67,
+        "max_drawdown_pct": -7.12,
+        "current_year_return_pct": 0.0,
+        "current_year_max_drawdown_pct": 0.0
+      }
+    },
+    "remove_top_2": {
+      "removed_events": [
+        {
+          "event_key": "sota_recall_sweep_has_fvg|120310|120557",
+          "entry_time": "2025-06-07 05:30:00+00:00",
+          "return_pct": 27.332
+        },
+        {
+          "event_key": "sota_recall_sweep_has_fvg|121068|121229",
+          "entry_time": "2025-06-15 03:00:00+00:00",
+          "return_pct": 24.6114
+        }
+      ],
+      "summary": {
+        "total_return_pct": 1001981.76,
+        "max_drawdown_pct": 26.76,
+        "trades": 285,
+        "wins": 131,
+        "losses": 154,
+        "win_rate_pct": 45.96,
+        "avg_return_pct": 4.0164,
+        "profit_factor": 2.7486,
+        "event_type_counts": {
+          "smc_short": 24,
+          "sota_long": 248,
+          "gap_smc_short_expansion": 9,
+          "sota_recall_sweep_has_fvg": 4
+        },
+        "exit_counts": {
+          "target_2.0r": 24,
+          "stop_loss": 231,
+          "time_stop_exit": 9,
+          "stop": 9,
+          "target_rr": 8,
+          "recall_source": 4
+        },
+        "current_year": {
+          "total_return_pct": 202.31,
+          "max_drawdown_pct": 15.25,
+          "trades": 29,
+          "win_rate_pct": 48.28,
+          "profit_factor": 3.9192
+        }
+      },
+      "delta_vs_frozen": {
+        "total_return_pct": 345968.32,
+        "max_drawdown_pct": -7.12,
+        "current_year_return_pct": 0.0,
+        "current_year_max_drawdown_pct": 0.0
+      }
+    },
+    "remove_top_3": {
+      "removed_events": [
+        {
+          "event_key": "sota_recall_sweep_has_fvg|120310|120557",
+          "entry_time": "2025-06-07 05:30:00+00:00",
+          "return_pct": 27.332
+        },
+        {
+          "event_key": "sota_recall_sweep_has_fvg|121068|121229",
+          "entry_time": "2025-06-15 03:00:00+00:00",
+          "return_pct": 24.6114
+        },
+        {
+          "event_key": "sota_recall_sweep_has_fvg|89986|90105",
+          "entry_time": "2024-07-26 08:30:00+00:00",
+          "return_pct": 22.1354
+        }
+      ],
+      "summary": {
+        "total_return_pct": 820367.91,
+        "max_drawdown_pct": 33.88,
+        "trades": 284,
+        "wins": 130,
+        "losses": 154,
+        "win_rate_pct": 45.77,
+        "avg_return_pct": 3.9526,
+        "profit_factor": 2.7148,
+        "event_type_counts": {
+          "smc_short": 24,
+          "sota_long": 248,
+          "gap_smc_short_expansion": 9,
+          "sota_recall_sweep_has_fvg": 3
+        },
+        "exit_counts": {
+          "target_2.0r": 24,
+          "stop_loss": 231,
+          "time_stop_exit": 9,
+          "stop": 9,
+          "target_rr": 8,
+          "recall_source": 3
+        },
+        "current_year": {
+          "total_return_pct": 202.31,
+          "max_drawdown_pct": 15.25,
+          "trades": 29,
+          "win_rate_pct": 48.28,
+          "profit_factor": 3.9192
+        }
+      },
+      "delta_vs_frozen": {
+        "total_return_pct": 164354.47,
+        "max_drawdown_pct": 0.0,
+        "current_year_return_pct": 0.0,
+        "current_year_max_drawdown_pct": 0.0
+      }
+    }
+  },
+  "per_event_revert": [
+    {
+      "removed_event": {
+        "event_key": "sota_recall_sweep_has_fvg|120310|120557",
+        "entry_time": "2025-06-07 05:30:00+00:00",
+        "return_pct": 27.332,
+        "net_score": 9,
+        "bull_total": 11,
+        "bear_total": 2,
+        "recent_sweep_status": "mss_with_fvg"
+      },
+      "summary": {
+        "total_return_pct": 1248608.11,
+        "max_drawdown_pct": 26.76,
+        "trades": 286,
+        "wins": 132,
+        "losses": 154,
+        "win_rate_pct": 46.15,
+        "avg_return_pct": 4.0884,
+        "profit_factor": 2.7862,
+        "event_type_counts": {
+          "smc_short": 24,
+          "sota_long": 248,
+          "gap_smc_short_expansion": 9,
+          "sota_recall_sweep_has_fvg": 5
+        },
+        "exit_counts": {
+          "target_2.0r": 24,
+          "stop_loss": 231,
+          "time_stop_exit": 9,
+          "stop": 9,
+          "target_rr": 8,
+          "recall_source": 5
+        },
+        "current_year": {
+          "total_return_pct": 202.31,
+          "max_drawdown_pct": 15.25,
+          "trades": 29,
+          "win_rate_pct": 48.28,
+          "profit_factor": 3.9192
+        }
+      },
+      "delta_vs_frozen": {
+        "total_return_pct": 592594.67,
+        "max_drawdown_pct": -7.12,
+        "current_year_return_pct": 0.0,
+        "current_year_max_drawdown_pct": 0.0
+      }
+    },
+    {
+      "removed_event": {
+        "event_key": "sota_recall_sweep_has_fvg|121068|121229",
+        "entry_time": "2025-06-15 03:00:00+00:00",
+        "return_pct": 24.6114,
+        "net_score": 3,
+        "bull_total": 8,
+        "bear_total": 5,
+        "recent_sweep_status": "mss_with_fvg"
+      },
+      "summary": {
+        "total_return_pct": 1275870.74,
+        "max_drawdown_pct": 26.76,
+        "trades": 286,
+        "wins": 132,
+        "losses": 154,
+        "win_rate_pct": 46.15,
+        "avg_return_pct": 4.0979,
+        "profit_factor": 2.7904,
+        "event_type_counts": {
+          "smc_short": 24,
+          "sota_long": 248,
+          "gap_smc_short_expansion": 9,
+          "sota_recall_sweep_has_fvg": 5
+        },
+        "exit_counts": {
+          "target_2.0r": 24,
+          "stop_loss": 231,
+          "time_stop_exit": 9,
+          "stop": 9,
+          "target_rr": 8,
+          "recall_source": 5
+        },
+        "current_year": {
+          "total_return_pct": 202.31,
+          "max_drawdown_pct": 15.25,
+          "trades": 29,
+          "win_rate_pct": 48.28,
+          "profit_factor": 3.9192
+        }
+      },
+      "delta_vs_frozen": {
+        "total_return_pct": 619857.3,
+        "max_drawdown_pct": -7.12,
+        "current_year_return_pct": 0.0,
+        "current_year_max_drawdown_pct": 0.0
+      }
+    },
+    {
+      "removed_event": {
+        "event_key": "sota_recall_sweep_has_fvg|89986|90105",
+        "entry_time": "2024-07-26 08:30:00+00:00",
+        "return_pct": 22.1354,
+        "net_score": 12,
+        "bull_total": 14,
+        "bear_total": 2,
+        "recent_sweep_status": "unconfirmed_retest"
+      },
+      "summary": {
+        "total_return_pct": 1301737.97,
+        "max_drawdown_pct": 33.88,
+        "trades": 286,
+        "wins": 132,
+        "losses": 154,
+        "win_rate_pct": 46.15,
+        "avg_return_pct": 4.1065,
+        "profit_factor": 2.7942,
+        "event_type_counts": {
+          "smc_short": 24,
+          "sota_long": 248,
+          "gap_smc_short_expansion": 9,
+          "sota_recall_sweep_has_fvg": 5
+        },
+        "exit_counts": {
+          "target_2.0r": 24,
+          "stop_loss": 231,
+          "time_stop_exit": 9,
+          "stop": 9,
+          "target_rr": 8,
+          "recall_source": 5
+        },
+        "current_year": {
+          "total_return_pct": 202.31,
+          "max_drawdown_pct": 15.25,
+          "trades": 29,
+          "win_rate_pct": 48.28,
+          "profit_factor": 3.9192
+        }
+      },
+      "delta_vs_frozen": {
+        "total_return_pct": 645724.53,
+        "max_drawdown_pct": 0.0,
+        "current_year_return_pct": 0.0,
+        "current_year_max_drawdown_pct": 0.0
+      }
+    },
+    {
+      "removed_event": {
+        "event_key": "sota_recall_sweep_has_fvg|65625|65641",
+        "entry_time": "2023-11-15 14:15:00+00:00",
+        "return_pct": 13.3095,
+        "net_score": 7,
+        "bull_total": 12,
+        "bear_total": 5,
+        "recent_sweep_status": "mss_with_fvg"
+      },
+      "summary": {
+        "total_return_pct": 1403140.69,
+        "max_drawdown_pct": 26.76,
+        "trades": 286,
+        "wins": 132,
+        "losses": 154,
+        "win_rate_pct": 46.15,
+        "avg_return_pct": 4.1374,
+        "profit_factor": 2.8076,
+        "event_type_counts": {
+          "smc_short": 24,
+          "sota_long": 248,
+          "gap_smc_short_expansion": 9,
+          "sota_recall_sweep_has_fvg": 5
+        },
+        "exit_counts": {
+          "target_2.0r": 24,
+          "stop_loss": 231,
+          "time_stop_exit": 9,
+          "stop": 9,
+          "target_rr": 8,
+          "recall_source": 5
+        },
+        "current_year": {
+          "total_return_pct": 202.31,
+          "max_drawdown_pct": 15.25,
+          "trades": 29,
+          "win_rate_pct": 48.28,
+          "profit_factor": 3.9192
+        }
+      },
+      "delta_vs_frozen": {
+        "total_return_pct": 747127.25,
+        "max_drawdown_pct": -7.12,
+        "current_year_return_pct": 0.0,
+        "current_year_max_drawdown_pct": 0.0
+      }
+    },
+    {
+      "removed_event": {
+        "event_key": "sota_recall_sweep_has_fvg|77430|77463",
+        "entry_time": "2024-03-17 13:30:00+00:00",
+        "return_pct": 11.7016,
+        "net_score": 4,
+        "bull_total": 10,
+        "bear_total": 6,
+        "recent_sweep_status": "unconfirmed_retest"
+      },
+      "summary": {
+        "total_return_pct": 1423339.78,
+        "max_drawdown_pct": 26.76,
+        "trades": 286,
+        "wins": 132,
+        "losses": 154,
+        "win_rate_pct": 46.15,
+        "avg_return_pct": 4.143,
+        "profit_factor": 2.8101,
+        "event_type_counts": {
+          "smc_short": 24,
+          "sota_long": 248,
+          "gap_smc_short_expansion": 9,
+          "sota_recall_sweep_has_fvg": 5
+        },
+        "exit_counts": {
+          "target_2.0r": 24,
+          "stop_loss": 231,
+          "time_stop_exit": 9,
+          "stop": 9,
+          "target_rr": 8,
+          "recall_source": 5
+        },
+        "current_year": {
+          "total_return_pct": 202.31,
+          "max_drawdown_pct": 15.25,
+          "trades": 29,
+          "win_rate_pct": 48.28,
+          "profit_factor": 3.9192
+        }
+      },
+      "delta_vs_frozen": {
+        "total_return_pct": 767326.34,
+        "max_drawdown_pct": -7.12,
+        "current_year_return_pct": 0.0,
+        "current_year_max_drawdown_pct": 0.0
+      }
+    },
+    {
+      "removed_event": {
+        "event_key": "sota_recall_sweep_has_fvg|68830|68888",
+        "entry_time": "2023-12-18 23:30:00+00:00",
+        "return_pct": -1.2,
+        "net_score": 13,
+        "bull_total": 14,
+        "bear_total": 1,
+        "recent_sweep_status": "confirmed_retest"
+      },
+      "summary": {
+        "total_return_pct": 1609216.81,
+        "max_drawdown_pct": 26.76,
+        "trades": 286,
+        "wins": 133,
+        "losses": 153,
+        "win_rate_pct": 46.5,
+        "avg_return_pct": 4.1881,
+        "profit_factor": 2.8332,
+        "event_type_counts": {
+          "smc_short": 24,
+          "sota_long": 248,
+          "gap_smc_short_expansion": 9,
+          "sota_recall_sweep_has_fvg": 5
+        },
+        "exit_counts": {
+          "target_2.0r": 24,
+          "stop_loss": 231,
+          "time_stop_exit": 9,
+          "stop": 9,
+          "target_rr": 8,
+          "recall_source": 5
+        },
+        "current_year": {
+          "total_return_pct": 202.31,
+          "max_drawdown_pct": 15.25,
+          "trades": 29,
+          "win_rate_pct": 48.28,
+          "profit_factor": 3.9192
+        }
+      },
+      "delta_vs_frozen": {
+        "total_return_pct": 953203.37,
+        "max_drawdown_pct": -7.12,
+        "current_year_return_pct": 0.0,
+        "current_year_max_drawdown_pct": 0.0
+      }
+    }
+  ]
+}

@@ -69,6 +69,9 @@ class Trade:
     execution_guard_diagnostics: dict[str, Any] | None = None
     time_based_trailing_enabled: bool = False
     auto_tit_reason: str | None = None
+    exit_profile: str | None = None
+    exit_profile_reason: str | None = None
+    exit_profile_overrides: dict[str, Any] | None = None
     exit_idx: int | None = None
     pressure_target_applied: bool = False
     pressure_target_source: str | None = None
@@ -258,6 +261,9 @@ class PositionState:
     risk_regime: str | None = None
     regime_label: str | None = None
     candidate_event_type: str | None = None
+    exit_profile: str | None = None
+    exit_profile_reason: str | None = None
+    exit_profile_overrides: dict[str, Any] | None = None
     exchange_order_id: str | None = None
     exchange_attach_algo_id: str | None = None
     exchange_attach_algo_client_id: str | None = None
@@ -998,6 +1004,9 @@ class ScalpRobustEngine:
         trail_style_override: str | None = None,
         candidate_event_type: str | None = None,
         requested_notional_override: float | None = None,
+        exit_profile: str | None = None,
+        exit_profile_reason: str | None = None,
+        exit_profile_overrides: dict[str, Any] | None = None,
     ) -> StrategyAction:
         applied_risk_per_trade, risk_regime = self._risk_per_trade_for_idx(idx, direction)
         risk_amount = self.capital * applied_risk_per_trade
@@ -1065,6 +1074,9 @@ class ScalpRobustEngine:
             auto_tit_reason=auto_tit_reason,
             risk_regime=risk_regime,
             regime_label=regime_label,
+            exit_profile=exit_profile,
+            exit_profile_reason=exit_profile_reason,
+            exit_profile_overrides=dict(exit_profile_overrides) if isinstance(exit_profile_overrides, dict) else None,
         )
         if self.config.replay_sync_entry_to_signal_price:
             self.sync_position_execution(
@@ -1107,6 +1119,9 @@ class ScalpRobustEngine:
                 "replay_sync_entry_to_signal_price": self.config.replay_sync_entry_to_signal_price,
                 "time_based_trailing_enabled": tit_enabled,
                 "auto_tit_reason": auto_tit_reason,
+                "exit_profile": exit_profile,
+                "exit_profile_reason": exit_profile_reason,
+                "exit_profile_overrides": dict(exit_profile_overrides) if isinstance(exit_profile_overrides, dict) else None,
                 "regime_label": regime_label,
                 "feature_adx": float(regime_features.get("adx", 0.0) or 0.0),
                 "feature_momentum": float(regime_features.get("momentum", 0.0) or 0.0),
@@ -1212,6 +1227,9 @@ class ScalpRobustEngine:
                 execution_guard_diagnostics=pos.execution_guard_diagnostics,
                 time_based_trailing_enabled=pos.time_based_trailing_enabled,
                 auto_tit_reason=pos.auto_tit_reason,
+                exit_profile=pos.exit_profile,
+                exit_profile_reason=pos.exit_profile_reason,
+                exit_profile_overrides=pos.exit_profile_overrides,
                 exit_idx=idx,
                 pressure_target_applied=pos.pressure_target_applied,
                 pressure_target_source=pos.pressure_target_source,
@@ -1276,7 +1294,7 @@ class ScalpRobustEngine:
                     )
                 )
                 return actions
-            if self.config.enable_stage_trailing:
+            if self._exit_bool(pos, "enable_stage_trailing"):
                 update = self._apply_trailing_bull(pos, curr, idx)
                 if update:
                     actions.append(update)
@@ -1309,7 +1327,7 @@ class ScalpRobustEngine:
                     )
                 )
                 return actions
-            if self.config.enable_stage_trailing:
+            if self._exit_bool(pos, "enable_stage_trailing"):
                 update = self._apply_trailing_bear(pos, curr, idx)
                 if update:
                     actions.append(update)
@@ -1475,8 +1493,8 @@ class ScalpRobustEngine:
         return features or {}
 
     def _pressure_target_min_rr_for_position(self, pos: PositionState, idx: int) -> tuple[float, str]:
-        base_min_rr = float(self.config.pressure_target_min_rr or 0.0)
-        if not self.config.pressure_dynamic_target_min_rr_enabled:
+        base_min_rr = self._exit_float(pos, "pressure_target_min_rr")
+        if not self._exit_bool(pos, "pressure_dynamic_target_min_rr_enabled"):
             return base_min_rr, "static"
 
         features = self._regime_features_for_idx(idx)
@@ -1496,43 +1514,46 @@ class ScalpRobustEngine:
         )
 
         compression = (
-            adx <= float(self.config.pressure_dynamic_target_compression_adx_max or 0.0)
-            and abs(momentum_pct) <= float(self.config.pressure_dynamic_target_compression_momentum_abs_pct or 0.0)
-            and abs(ema_gap_pct) <= float(self.config.pressure_dynamic_target_compression_ema_gap_abs_pct or 0.0)
+            adx <= self._exit_float(pos, "pressure_dynamic_target_compression_adx_max")
+            and abs(momentum_pct) <= self._exit_float(pos, "pressure_dynamic_target_compression_momentum_abs_pct")
+            and abs(ema_gap_pct) <= self._exit_float(pos, "pressure_dynamic_target_compression_ema_gap_abs_pct")
         )
         breakout = (
-            adx >= float(self.config.pressure_dynamic_target_breakout_adx_min or 0.0)
+            adx >= self._exit_float(pos, "pressure_dynamic_target_breakout_adx_min")
             and (
-                directional_momentum_pct >= float(self.config.pressure_dynamic_target_breakout_momentum_pct or 0.0)
-                or directional_ema_gap_pct >= float(self.config.pressure_dynamic_target_breakout_ema_gap_pct or 0.0)
+                directional_momentum_pct >= self._exit_float(pos, "pressure_dynamic_target_breakout_momentum_pct")
+                or directional_ema_gap_pct >= self._exit_float(pos, "pressure_dynamic_target_breakout_ema_gap_pct")
                 or directional_structure
             )
         )
 
         if breakout:
-            return float(self.config.pressure_dynamic_target_breakout_rr or base_min_rr), "dynamic_breakout"
+            return self._exit_float(pos, "pressure_dynamic_target_breakout_rr", base_min_rr), "dynamic_breakout"
         if compression:
-            return float(self.config.pressure_dynamic_target_compression_rr or base_min_rr), "dynamic_compression"
-        return float(self.config.pressure_dynamic_target_flat_rr or base_min_rr), "dynamic_flat"
+            return self._exit_float(pos, "pressure_dynamic_target_compression_rr", base_min_rr), "dynamic_compression"
+        return self._exit_float(pos, "pressure_dynamic_target_flat_rr", base_min_rr), "dynamic_flat"
 
-    def _pressure_activation_min_rr(self) -> float:
-        base_min_rr = float(self.config.pressure_min_rr or 0.0)
-        if not (self.config.pressure_enable_target_cap and self.config.pressure_dynamic_target_min_rr_enabled):
+    def _pressure_activation_min_rr(self, pos: PositionState) -> float:
+        base_min_rr = self._exit_float(pos, "pressure_min_rr")
+        if not (
+            self._exit_bool(pos, "pressure_enable_target_cap")
+            and self._exit_bool(pos, "pressure_dynamic_target_min_rr_enabled")
+        ):
             return base_min_rr
         dynamic_values = [
-            float(self.config.pressure_dynamic_target_compression_rr or base_min_rr),
-            float(self.config.pressure_dynamic_target_flat_rr or base_min_rr),
-            float(self.config.pressure_dynamic_target_breakout_rr or base_min_rr),
+            self._exit_float(pos, "pressure_dynamic_target_compression_rr", base_min_rr),
+            self._exit_float(pos, "pressure_dynamic_target_flat_rr", base_min_rr),
+            self._exit_float(pos, "pressure_dynamic_target_breakout_rr", base_min_rr),
         ]
         return min([base_min_rr, *[value for value in dynamic_values if value > 0]])
 
     def _pressure_target_cap_price(self, pos: PositionState, level: float, idx: int) -> tuple[float | None, float | None, float | None, str | None]:
-        if not self.config.pressure_enable_target_cap:
+        if not self._exit_bool(pos, "pressure_enable_target_cap"):
             return None, None, None, None
         risk_price = abs(pos.entry_price - pos.initial_sl_price)
         if risk_price <= 0 or level <= 0:
             return None, None, None, None
-        buffer_pct = max(float(self.config.pressure_target_buffer_pct or 0.0), 0.0) / 100.0
+        buffer_pct = max(self._exit_float(pos, "pressure_target_buffer_pct"), 0.0) / 100.0
         min_rr, min_rr_reason = self._pressure_target_min_rr_for_position(pos, idx)
         if pos.direction == Direction.BULL:
             capped_target = level * (1.0 - buffer_pct)
@@ -1547,18 +1568,18 @@ class ScalpRobustEngine:
         return capped_target, capped_rr, min_rr, min_rr_reason
 
     def _apply_pressure_level_exit_or_trail(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
-        if not self.config.enable_pressure_level_trailing:
+        if not self._exit_bool(pos, "enable_pressure_level_trailing"):
             return None
-        allowed_regime_labels = self._configured_set(self.config.pressure_regime_labels)
+        allowed_regime_labels = self._configured_set(self._exit_param(pos, "pressure_regime_labels"))
         if allowed_regime_labels is not None and (pos.regime_label or "") not in allowed_regime_labels:
             return None
-        allowed_trail_styles = self._configured_set(self.config.pressure_trail_styles)
+        allowed_trail_styles = self._configured_set(self._exit_param(pos, "pressure_trail_styles"))
         if allowed_trail_styles is not None and (pos.trail_style or "") not in allowed_trail_styles:
             return None
-        if self._bars_held(pos, idx) < int(self.config.pressure_min_bars_held or 0):
+        if self._bars_held(pos, idx) < self._exit_int(pos, "pressure_min_bars_held"):
             return None
         unrealized_rr = self._unrealized_rr(pos, curr.c)
-        if unrealized_rr < self._pressure_activation_min_rr():
+        if unrealized_rr < self._pressure_activation_min_rr(pos):
             return None
         pressure = self._nearest_pressure_level(pos, curr, idx)
         if pressure is None:
@@ -1594,9 +1615,9 @@ class ScalpRobustEngine:
             metadata["target_rr"] = target_rr_update
 
         if (
-            bool(self.config.pressure_take_profit_on_rejection)
+            self._exit_bool(pos, "pressure_take_profit_on_rejection")
             and rejected
-            and unrealized_rr >= float(self.config.pressure_rejection_min_rr or 0.0)
+            and unrealized_rr >= self._exit_float(pos, "pressure_rejection_min_rr")
         ):
             action = self.close_position(idx, "pressure_rejection_exit", curr.c)
             action.metadata = {**(action.metadata or {}), **metadata}
@@ -1606,17 +1627,17 @@ class ScalpRobustEngine:
         if risk_price <= 0:
             return None
         atr = self._atr_for_idx(idx)
-        atr_multiplier = float(self.config.pressure_atr_multiplier or 0.0)
-        lock_rr = float(self.config.pressure_lock_rr or 0.0)
-        touch_lock_requires_touch = bool(self.config.pressure_touch_lock_requires_touch)
+        atr_multiplier = self._exit_float(pos, "pressure_atr_multiplier")
+        lock_rr = self._exit_float(pos, "pressure_lock_rr")
+        touch_lock_requires_touch = self._exit_bool(pos, "pressure_touch_lock_requires_touch")
         touch_lock_allowed = bool(pressure.get("touched")) or not touch_lock_requires_touch
         touch_lock_enabled = (
-            bool(self.config.pressure_touch_lock_enabled)
+            self._exit_bool(pos, "pressure_touch_lock_enabled")
             and touch_lock_allowed
-            and unrealized_rr >= float(self.config.pressure_touch_lock_min_rr or 0.0)
+            and unrealized_rr >= self._exit_float(pos, "pressure_touch_lock_min_rr")
         )
-        touch_lock_buffer_pct = max(float(self.config.pressure_touch_lock_buffer_pct or 0.0), 0.0) / 100.0
-        touch_lock_atr_multiplier = float(self.config.pressure_touch_lock_atr_multiplier or 0.0)
+        touch_lock_buffer_pct = max(self._exit_float(pos, "pressure_touch_lock_buffer_pct"), 0.0) / 100.0
+        touch_lock_atr_multiplier = self._exit_float(pos, "pressure_touch_lock_atr_multiplier")
         if pos.direction == Direction.BULL:
             new_stop = pos.entry_price + risk_price * lock_rr
             if atr > 0 and atr_multiplier > 0:
@@ -1700,7 +1721,8 @@ class ScalpRobustEngine:
         )
 
     def _apply_trailing_bull(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
-        pnl = pos.quantity * (self._rr_observation_price(pos, curr, self.config.stage_trigger_rr_mode) - pos.entry_price)
+        trigger_mode = self._exit_str(pos, "stage_trigger_rr_mode", "close")
+        pnl = pos.quantity * (self._rr_observation_price(pos, curr, trigger_mode) - pos.entry_price)
         stage = pos.stage
         new_stop = None
         new_stage = stage
@@ -1737,7 +1759,8 @@ class ScalpRobustEngine:
         )
 
     def _apply_trailing_bear(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
-        pnl = pos.quantity * (pos.entry_price - self._rr_observation_price(pos, curr, self.config.stage_trigger_rr_mode))
+        trigger_mode = self._exit_str(pos, "stage_trigger_rr_mode", "close")
+        pnl = pos.quantity * (pos.entry_price - self._rr_observation_price(pos, curr, trigger_mode))
         stage = pos.stage
         new_stop = None
         new_stage = stage
@@ -1856,7 +1879,40 @@ class ScalpRobustEngine:
     def _bars_held(self, pos: PositionState, idx: int) -> int:
         return max(0, idx - pos.entry_idx)
 
-    def _atr_multiplier_for_style(self, trail_style: str) -> float:
+    def _exit_param(self, pos: PositionState, key: str) -> Any:
+        overrides = pos.exit_profile_overrides
+        if isinstance(overrides, dict) and key in overrides:
+            return overrides[key]
+        return getattr(self.config, key)
+
+    def _exit_bool(self, pos: PositionState, key: str) -> bool:
+        return bool(self._exit_param(pos, key))
+
+    def _exit_float(self, pos: PositionState, key: str, default: float = 0.0) -> float:
+        value = self._exit_param(pos, key)
+        if value is None:
+            return default
+        return float(value)
+
+    def _exit_int(self, pos: PositionState, key: str, default: int = 0) -> int:
+        value = self._exit_param(pos, key)
+        if value is None:
+            return default
+        return int(value)
+
+    def _exit_str(self, pos: PositionState, key: str, default: str = "") -> str:
+        value = self._exit_param(pos, key)
+        if value is None:
+            return default
+        return str(value)
+
+    def _atr_multiplier_for_style(self, trail_style: str, pos: PositionState | None = None) -> float:
+        if pos is not None:
+            if trail_style == "loose":
+                return self._exit_float(pos, "atr_loose_multiplier")
+            if trail_style == "tight":
+                return self._exit_float(pos, "atr_tight_multiplier")
+            return self._exit_float(pos, "atr_normal_multiplier")
         if trail_style == "loose":
             return self.config.atr_loose_multiplier
         if trail_style == "tight":
@@ -1992,11 +2048,11 @@ class ScalpRobustEngine:
         raise ValueError(f"Unsupported auto TIT mode: {self.config.auto_tit_mode}")
 
     def _time_based_trailing_enabled_for_position(self, pos: PositionState) -> bool:
-        return bool(self.config.enable_time_based_trailing or pos.time_based_trailing_enabled)
+        return bool(self._exit_bool(pos, "enable_time_based_trailing") or pos.time_based_trailing_enabled)
 
     def _time_based_trailing_state(self, pos: PositionState, curr: Candle, idx: int) -> TimeBasedTrailingState:
         bars_held = self._bars_held(pos, idx)
-        unrealized_rr = self._unrealized_rr_for_mode(pos, curr, self.config.time_trailing_rr_mode)
+        unrealized_rr = self._unrealized_rr_for_mode(pos, curr, self._exit_str(pos, "time_trailing_rr_mode", "close"))
         if not self._time_based_trailing_enabled_for_position(pos):
             return TimeBasedTrailingState(
                 stage=-1,
@@ -2005,13 +2061,13 @@ class ScalpRobustEngine:
                 unrealized_rr=unrealized_rr,
             )
 
-        t1 = max(int(self.config.T1 or 0), 0)
-        t2 = max(int(self.config.T2 or 0), t1)
-        t_max = max(int(self.config.T_max or 0), t2)
-        s0_trigger_rr = float(self.config.S0_trigger_rr)
-        s1_trigger_rr = max(float(self.config.S1_trigger_rr), s0_trigger_rr)
-        s3_trigger_rr = max(float(self.config.S3_trigger_rr), s1_trigger_rr)
-        s4_close_rr = float(self.config.S4_close_rr)
+        t1 = max(self._exit_int(pos, "T1"), 0)
+        t2 = max(self._exit_int(pos, "T2"), t1)
+        t_max = max(self._exit_int(pos, "T_max"), t2)
+        s0_trigger_rr = self._exit_float(pos, "S0_trigger_rr")
+        s1_trigger_rr = max(self._exit_float(pos, "S1_trigger_rr"), s0_trigger_rr)
+        s3_trigger_rr = max(self._exit_float(pos, "S3_trigger_rr"), s1_trigger_rr)
+        s4_close_rr = self._exit_float(pos, "S4_close_rr")
 
         if bars_held > t_max and unrealized_rr < s4_close_rr:
             return TimeBasedTrailingState(
@@ -2053,9 +2109,9 @@ class ScalpRobustEngine:
         )
 
     def _atr_trailing_enabled_for_position(self, pos: PositionState) -> bool:
-        if not self.config.enable_atr_trailing:
+        if not self._exit_bool(pos, "enable_atr_trailing"):
             return False
-        regime_filter = self.config.atr_regime_filter
+        regime_filter = self._exit_str(pos, "atr_regime_filter", "all")
         if regime_filter == "all":
             return True
         entry_regime = self._risk_regime_for_idx(pos.entry_idx)
@@ -2070,13 +2126,14 @@ class ScalpRobustEngine:
     def _apply_atr_trailing_bull(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
         if not self._atr_trailing_enabled_for_position(pos):
             return None
-        if self._unrealized_rr_for_mode(pos, curr, self.config.atr_activation_rr_mode) < self.config.atr_activation_rr:
+        activation_mode = self._exit_str(pos, "atr_activation_rr_mode", "close")
+        if self._unrealized_rr_for_mode(pos, curr, activation_mode) < self._exit_float(pos, "atr_activation_rr"):
             return None
         atr = self._atr_for_idx(idx)
         if atr <= 0:
             return None
         highest_price, _ = self._price_extrema_since_entry(pos, idx)
-        atr_multiplier = self._atr_multiplier_for_style(pos.trail_style)
+        atr_multiplier = self._atr_multiplier_for_style(pos.trail_style, pos)
         if self._time_based_trailing_enabled_for_position(pos):
             time_state = self._time_based_trailing_state(pos, curr, idx)
             if time_state.atr_multiplier is None:
@@ -2106,13 +2163,14 @@ class ScalpRobustEngine:
     def _apply_atr_trailing_bear(self, pos: PositionState, curr: Candle, idx: int) -> StrategyAction | None:
         if not self._atr_trailing_enabled_for_position(pos):
             return None
-        if self._unrealized_rr_for_mode(pos, curr, self.config.atr_activation_rr_mode) < self.config.atr_activation_rr:
+        activation_mode = self._exit_str(pos, "atr_activation_rr_mode", "close")
+        if self._unrealized_rr_for_mode(pos, curr, activation_mode) < self._exit_float(pos, "atr_activation_rr"):
             return None
         atr = self._atr_for_idx(idx)
         if atr <= 0:
             return None
         _, lowest_price = self._price_extrema_since_entry(pos, idx)
-        atr_multiplier = self._atr_multiplier_for_style(pos.trail_style)
+        atr_multiplier = self._atr_multiplier_for_style(pos.trail_style, pos)
         if self._time_based_trailing_enabled_for_position(pos):
             time_state = self._time_based_trailing_state(pos, curr, idx)
             if time_state.atr_multiplier is None:

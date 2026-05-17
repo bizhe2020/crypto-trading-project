@@ -242,6 +242,29 @@ def apply_score_bucket_sizing_to_events(
             continue
 
         source_leverage = float(updated.get("source_effective_leverage", 0.0) or 0.0)
+        recall_decision = updated.get("sota_rejected_smc_recall_long")
+        if isinstance(recall_decision, dict) and bool(recall_decision.get("accepted")):
+            target_leverage = float(recall_decision.get("target_effective_leverage", 0.0) or 0.0)
+            if enabled and source_leverage > 0.0 and target_leverage > 0.0:
+                scale = target_leverage / source_leverage
+                decision = {
+                    "enabled": True,
+                    "applied": abs(source_leverage - target_leverage) > 1e-9,
+                    "reason": "sota_rejected_smc_recall_long",
+                    "source_effective_leverage": round(source_leverage, 6),
+                    "target_effective_leverage": round(target_leverage, 6),
+                    "leverage_multiplier": round(scale, 6),
+                    "recall": recall_decision,
+                }
+                updated["return"] = float(updated.get("return", 0.0) or 0.0) * scale
+                updated["return_pct"] = round(float(updated["return"]) * 100.0, 4)
+                updated["source_effective_leverage"] = round(target_leverage, 6)
+                updated["pre_bucket_source_effective_leverage"] = round(source_leverage, 6)
+                updated["long_score_bucket_sizing"] = decision
+                applied += 1
+                matched += 1
+                adjusted.append(updated)
+                continue
         score = {
             "net_score": updated.get("net_score"),
             "bull_total": updated.get("bull_total"),

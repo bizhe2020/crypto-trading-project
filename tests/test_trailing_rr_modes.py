@@ -19,7 +19,6 @@ def build_mode_engine(config: StrategyConfig) -> ScalpRobustEngine:
     ]
     return ScalpRobustEngine.from_candles(candles, candles, config)
 
-
 def build_long_position() -> PositionState:
     return PositionState(
         direction=Direction.BULL,
@@ -117,6 +116,60 @@ class TrailingRRModeTest(unittest.TestCase):
         self.assertIsNotNone(extreme_action)
         self.assertEqual(extreme_action.type, ActionType.UPDATE_STOP)
         self.assertEqual(extreme_action.reason, "atr_trail")
+
+    def test_exit_profile_overrides_stage_trigger_mode_per_position(self) -> None:
+        engine = build_mode_engine(StrategyConfig(stage_trigger_rr_mode="close"))
+        engine.position = build_long_position()
+        engine.position.exit_profile = "unit_extreme"
+        engine.position.exit_profile_overrides = {"stage_trigger_rr_mode": "extreme"}
+
+        action = engine._apply_trailing_bull(engine.position, engine.c15m[1], 1)
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action.reason, "trail_stage_2")
+        self.assertAlmostEqual(action.stop_price, 1020.0)
+
+    def test_exit_profile_overrides_time_trailing_mode_per_position(self) -> None:
+        engine = build_mode_engine(
+            StrategyConfig(
+                enable_time_based_trailing=True,
+                time_trailing_rr_mode="close",
+                S1_trigger_rr=1.5,
+                S3_trigger_rr=4.0,
+            )
+        )
+        engine.position = build_long_position()
+        engine.position.exit_profile = "unit_extreme"
+        engine.position.exit_profile_overrides = {"time_trailing_rr_mode": "extreme"}
+
+        state = engine._time_based_trailing_state(engine.position, engine.c15m[1], 1)
+
+        self.assertEqual(state.stage, 1)
+        self.assertEqual(state.label, "S1_breathe")
+
+    def test_exit_profile_overrides_atr_activation_and_multiplier_per_position(self) -> None:
+        engine = build_mode_engine(
+            StrategyConfig(
+                enable_atr_trailing=True,
+                atr_activation_rr=99.0,
+                atr_activation_rr_mode="close",
+                atr_tight_multiplier=5.0,
+            )
+        )
+        engine.position = build_long_position()
+        engine.position.trail_style = "tight"
+        engine.position.exit_profile = "unit_extreme"
+        engine.position.exit_profile_overrides = {
+            "atr_activation_rr": 2.5,
+            "atr_activation_rr_mode": "extreme",
+            "atr_tight_multiplier": 1.0,
+        }
+
+        action = engine._apply_atr_trailing_bull(engine.position, engine.c15m[1], 1)
+
+        self.assertIsNotNone(action)
+        self.assertEqual(action.reason, "atr_trail")
+        self.assertEqual(action.metadata["atr_multiplier"], 1.0)
 
 
 if __name__ == "__main__":

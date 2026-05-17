@@ -1,0 +1,400 @@
+{
+  "summary": {
+    "total_return_pct": 1589905.71,
+    "max_drawdown_pct": 26.76,
+    "current_year_return_pct": 202.31,
+    "accepted_trades": 287,
+    "recalled_trades": 6,
+    "recalled_sum_return_pct": 97.89,
+    "recall_gate": {
+      "enabled": true,
+      "condition": "sweep_has_fvg",
+      "reject_stage": "structure_gate",
+      "regime_label": "normal",
+      "target_effective_leverage": 8.0,
+      "structure_rejected_candidates": 30,
+      "recalled_candidates": 6
+    },
+    "decision_counts": {
+      "by_decision": {
+        "accepted": 287,
+        "rejected": 3
+      },
+      "by_reject_reason": {
+        "position_lock_open": 3
+      },
+      "by_event_type_decision": {
+        "smc_short": {
+          "accepted": 24,
+          "rejected": 3
+        },
+        "sota_long": {
+          "accepted": 254
+        },
+        "gap_smc_short_expansion": {
+          "accepted": 9
+        }
+      },
+      "by_paper_tag": {
+        "accepted_smc_short": 24,
+        "accepted_sota_long": 254,
+        "accepted_gap_smc_short_expansion": 9,
+        "untagged": 3
+      }
+    }
+  },
+  "recalled_yearly_unit_return": {
+    "2023": {
+      "count": 2,
+      "sum_return_pct": 12.1095,
+      "win_rate_pct": 50.0
+    },
+    "2024": {
+      "count": 2,
+      "sum_return_pct": 33.837,
+      "win_rate_pct": 100.0
+    },
+    "2025": {
+      "count": 2,
+      "sum_return_pct": 51.9434,
+      "win_rate_pct": 100.0
+    }
+  },
+  "all_events_yearly_unit_return": {
+    "2022": {
+      "count": 49,
+      "sum_return_pct": 100.5987,
+      "win_rate_pct": 42.86
+    },
+    "2023": {
+      "count": 84,
+      "sum_return_pct": 294.1898,
+      "win_rate_pct": 47.62
+    },
+    "2024": {
+      "count": 72,
+      "sum_return_pct": 477.7494,
+      "win_rate_pct": 50.0
+    },
+    "2025": {
+      "count": 53,
+      "sum_return_pct": 195.4437,
+      "win_rate_pct": 41.51
+    },
+    "2026": {
+      "count": 29,
+      "sum_return_pct": 128.6253,
+      "win_rate_pct": 48.28
+    }
+  },
+  "recalled_events": [
+    {
+      "entry_time": "2023-11-15 14:15:00+00:00",
+      "exit_time": "2023-11-15 18:15:00+00:00",
+      "entry_idx": 65625,
+      "exit_idx": 65641,
+      "return_pct": 13.3095,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "stop_loss",
+      "regime_label": "normal",
+      "net_score": 7,
+      "bull_total": 12,
+      "bear_total": 5,
+      "conflict": true,
+      "features": {
+        "feature_recent_sweep_has_fvg": true,
+        "feature_recent_fvg_near_entry": false,
+        "feature_recent_sweep_status": "mss_with_fvg",
+        "feature_bearish_structure": true
+      },
+      "bucket_sizing": {
+        "enabled": true,
+        "applied": true,
+        "reason": "sota_rejected_smc_recall_long",
+        "source_effective_leverage": 2.0,
+        "target_effective_leverage": 8.0,
+        "leverage_multiplier": 4.0,
+        "recall": {
+          "enabled": true,
+          "accepted": true,
+          "reason": "accepted",
+          "condition": "sweep_has_fvg",
+          "reject_stage": "structure_gate",
+          "expected_reject_stage": "structure_gate",
+          "regime_label": "normal",
+          "expected_regime_label": "normal",
+          "target_effective_leverage": 8.0,
+          "features": {
+            "feature_recent_sweep_has_fvg": true,
+            "feature_recent_fvg_near_entry": false,
+            "feature_recent_sweep_status": "mss_with_fvg",
+            "feature_bearish_structure": true
+          }
+        }
+      }
+    },
+    {
+      "entry_time": "2023-12-18 23:30:00+00:00",
+      "exit_time": "2023-12-19 14:00:00+00:00",
+      "entry_idx": 68830,
+      "exit_idx": 68888,
+      "return_pct": -1.2,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "stop_loss",
+      "regime_label": "normal",
+      "net_score": 13,
+      "bull_total": 14,
+      "bear_total": 1,
+      "conflict": false,
+      "features": {
+        "feature_recent_sweep_has_fvg": true,
+        "feature_recent_fvg_near_entry": false,
+        "feature_recent_sweep_status": "confirmed_retest",
+        "feature_bearish_structure": true
+      },
+      "bucket_sizing": {
+        "enabled": true,
+        "applied": true,
+        "reason": "sota_rejected_smc_recall_long",
+        "source_effective_leverage": 2.0,
+        "target_effective_leverage": 8.0,
+        "leverage_multiplier": 4.0,
+        "recall": {
+          "enabled": true,
+          "accepted": true,
+          "reason": "accepted",
+          "condition": "sweep_has_fvg",
+          "reject_stage": "structure_gate",
+          "expected_reject_stage": "structure_gate",
+          "regime_label": "normal",
+          "expected_regime_label": "normal",
+          "target_effective_leverage": 8.0,
+          "features": {
+            "feature_recent_sweep_has_fvg": true,
+            "feature_recent_fvg_near_entry": false,
+            "feature_recent_sweep_status": "confirmed_retest",
+            "feature_bearish_structure": true
+          }
+        }
+      }
+    },
+    {
+      "entry_time": "2024-03-17 13:30:00+00:00",
+      "exit_time": "2024-03-17 21:45:00+00:00",
+      "entry_idx": 77430,
+      "exit_idx": 77463,
+      "return_pct": 11.7016,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "stop_loss",
+      "regime_label": "normal",
+      "net_score": 4,
+      "bull_total": 10,
+      "bear_total": 6,
+      "conflict": true,
+      "features": {
+        "feature_recent_sweep_has_fvg": true,
+        "feature_recent_fvg_near_entry": false,
+        "feature_recent_sweep_status": "unconfirmed_retest",
+        "feature_bearish_structure": true
+      },
+      "bucket_sizing": {
+        "enabled": true,
+        "applied": true,
+        "reason": "sota_rejected_smc_recall_long",
+        "source_effective_leverage": 2.0,
+        "target_effective_leverage": 8.0,
+        "leverage_multiplier": 4.0,
+        "recall": {
+          "enabled": true,
+          "accepted": true,
+          "reason": "accepted",
+          "condition": "sweep_has_fvg",
+          "reject_stage": "structure_gate",
+          "expected_reject_stage": "structure_gate",
+          "regime_label": "normal",
+          "expected_regime_label": "normal",
+          "target_effective_leverage": 8.0,
+          "features": {
+            "feature_recent_sweep_has_fvg": true,
+            "feature_recent_fvg_near_entry": false,
+            "feature_recent_sweep_status": "unconfirmed_retest",
+            "feature_bearish_structure": true
+          }
+        }
+      }
+    },
+    {
+      "entry_time": "2024-07-26 08:30:00+00:00",
+      "exit_time": "2024-07-27 14:15:00+00:00",
+      "entry_idx": 89986,
+      "exit_idx": 90105,
+      "return_pct": 22.1354,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "stop_loss",
+      "regime_label": "normal",
+      "net_score": 12,
+      "bull_total": 14,
+      "bear_total": 2,
+      "conflict": false,
+      "features": {
+        "feature_recent_sweep_has_fvg": true,
+        "feature_recent_fvg_near_entry": true,
+        "feature_recent_sweep_status": "unconfirmed_retest",
+        "feature_bearish_structure": true
+      },
+      "bucket_sizing": {
+        "enabled": true,
+        "applied": true,
+        "reason": "sota_rejected_smc_recall_long",
+        "source_effective_leverage": 2.0,
+        "target_effective_leverage": 8.0,
+        "leverage_multiplier": 4.0,
+        "recall": {
+          "enabled": true,
+          "accepted": true,
+          "reason": "accepted",
+          "condition": "sweep_has_fvg",
+          "reject_stage": "structure_gate",
+          "expected_reject_stage": "structure_gate",
+          "regime_label": "normal",
+          "expected_regime_label": "normal",
+          "target_effective_leverage": 8.0,
+          "features": {
+            "feature_recent_sweep_has_fvg": true,
+            "feature_recent_fvg_near_entry": true,
+            "feature_recent_sweep_status": "unconfirmed_retest",
+            "feature_bearish_structure": true
+          }
+        }
+      }
+    },
+    {
+      "entry_time": "2025-06-07 05:30:00+00:00",
+      "exit_time": "2025-06-09 19:15:00+00:00",
+      "entry_idx": 120310,
+      "exit_idx": 120557,
+      "return_pct": 27.332,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "target_rr",
+      "regime_label": "normal",
+      "net_score": 9,
+      "bull_total": 11,
+      "bear_total": 2,
+      "conflict": false,
+      "features": {
+        "feature_recent_sweep_has_fvg": true,
+        "feature_recent_fvg_near_entry": false,
+        "feature_recent_sweep_status": "mss_with_fvg",
+        "feature_bearish_structure": true
+      },
+      "bucket_sizing": {
+        "enabled": true,
+        "applied": true,
+        "reason": "sota_rejected_smc_recall_long",
+        "source_effective_leverage": 2.0,
+        "target_effective_leverage": 8.0,
+        "leverage_multiplier": 4.0,
+        "recall": {
+          "enabled": true,
+          "accepted": true,
+          "reason": "accepted",
+          "condition": "sweep_has_fvg",
+          "reject_stage": "structure_gate",
+          "expected_reject_stage": "structure_gate",
+          "regime_label": "normal",
+          "expected_regime_label": "normal",
+          "target_effective_leverage": 8.0,
+          "features": {
+            "feature_recent_sweep_has_fvg": true,
+            "feature_recent_fvg_near_entry": false,
+            "feature_recent_sweep_status": "mss_with_fvg",
+            "feature_bearish_structure": true
+          }
+        }
+      }
+    },
+    {
+      "entry_time": "2025-06-15 03:00:00+00:00",
+      "exit_time": "2025-06-16 19:15:00+00:00",
+      "entry_idx": 121068,
+      "exit_idx": 121229,
+      "return_pct": 24.6114,
+      "source_effective_leverage": 8.0,
+      "exit_reason": "target_rr",
+      "regime_label": "normal",
+      "net_score": 3,
+      "bull_total": 8,
+      "bear_total": 5,
+      "conflict": true,
+      "features": {
+        "feature_recent_sweep_has_fvg": true,
+        "feature_recent_fvg_near_entry": true,
+        "feature_recent_sweep_status": "mss_with_fvg",
+        "feature_bearish_structure": true
+      },
+      "bucket_sizing": {
+        "enabled": true,
+        "applied": true,
+        "reason": "sota_rejected_smc_recall_long",
+        "source_effective_leverage": 2.0,
+        "target_effective_leverage": 8.0,
+        "leverage_multiplier": 4.0,
+        "recall": {
+          "enabled": true,
+          "accepted": true,
+          "reason": "accepted",
+          "condition": "sweep_has_fvg",
+          "reject_stage": "structure_gate",
+          "expected_reject_stage": "structure_gate",
+          "regime_label": "normal",
+          "expected_regime_label": "normal",
+          "target_effective_leverage": 8.0,
+          "features": {
+            "feature_recent_sweep_has_fvg": true,
+            "feature_recent_fvg_near_entry": true,
+            "feature_recent_sweep_status": "mss_with_fvg",
+            "feature_bearish_structure": true
+          }
+        }
+      }
+    }
+  ],
+  "remove_top_recall": {
+    "1": {
+      "total_return_pct": 1248608.75,
+      "max_drawdown_pct": 26.76,
+      "current_year_return_pct": 202.31,
+      "delta_vs_frozen_pct": 592595.31
+    },
+    "2": {
+      "total_return_pct": 1001981.91,
+      "max_drawdown_pct": 26.76,
+      "current_year_return_pct": 202.31,
+      "delta_vs_frozen_pct": 345968.47
+    },
+    "3": {
+      "total_return_pct": 820368.01,
+      "max_drawdown_pct": 33.88,
+      "current_year_return_pct": 202.31,
+      "delta_vs_frozen_pct": 164354.57
+    },
+    "4": {
+      "total_return_pct": 723994.51,
+      "max_drawdown_pct": 33.88,
+      "current_year_return_pct": 202.31,
+      "delta_vs_frozen_pct": 67981.07
+    },
+    "5": {
+      "total_return_pct": 648140.08,
+      "max_drawdown_pct": 33.88,
+      "current_year_return_pct": 202.31,
+      "delta_vs_frozen_pct": -7873.36
+    },
+    "6": {
+      "total_return_pct": 656013.44,
+      "max_drawdown_pct": 33.88,
+      "current_year_return_pct": 202.31,
+      "delta_vs_frozen_pct": 0.0
+    }
+  }
+}

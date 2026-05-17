@@ -27,11 +27,19 @@ from scripts.live_shadow_utils import (  # noqa: E402
     standard_event_summary,
     standard_sota_event,
 )
-from scripts.replay_sota_smc_live_shadow import apply_sota_score_gate, apply_trailing_rr_modes, replay_live_shadow  # noqa: E402
+from scripts.replay_sota_smc_live_shadow import (  # noqa: E402
+    apply_sota_score_gate,
+    apply_sota_structure_gate,
+    apply_trailing_rr_modes,
+    build_gap_smc_events,
+    parse_score_bucket_rules,
+    replay_live_shadow,
+)
 from scripts.report_smc_trade_context import daily_candles_from_4h  # noqa: E402
 from scripts.scan_high_leverage_expansion import enrich_trades_with_regime_features, expansion_overlay  # noqa: E402
 from scripts.scan_shadow_on_fixed_high_leverage import FIXED_STRUCTURE_PARAMS, replay_shadow_events  # noqa: E402
-from scripts.smc_live_utils import SMC_CASES, build_smc_events  # noqa: E402
+from scripts.score_bucket_sizing_utils import apply_score_bucket_sizing_to_events  # noqa: E402
+from scripts.smc_live_utils import SMC_CASES, build_smc_events, replay_base_priority_sota_first  # noqa: E402
 from strategy.scalp_robust_v2_core import precompute_swings  # noqa: E402
 
 
@@ -55,6 +63,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sota-score-bull-min", type=int, default=8)
     parser.add_argument("--sota-score-bear-max", type=int, default=6)
     parser.add_argument("--sota-score-conflict-mode", default="any", choices=("any", "conflict", "clean"))
+    parser.add_argument("--require-non-bearish-structure-for-long", action="store_true")
+    parser.add_argument("--enable-gap-smc-short", action="store_true")
+    parser.add_argument("--gap-smc-case", default="gap_expansion_21d_other_3x", choices=sorted(SMC_CASES))
+    parser.add_argument("--gap-smc-min-flat-days", type=float, default=21.0)
+    parser.add_argument("--gap-smc-leverage", type=float, default=3.0)
+    parser.add_argument("--gap-smc-max-stop-distance-pct", type=float, default=1.5)
+    parser.add_argument("--enable-long-score-bucket-sizing", action="store_true")
+    parser.add_argument(
+        "--long-score-bucket-sizing-rules-json",
+        default="",
+        help="Optional JSON array/dict for long score bucket sizing rules.",
+    )
     parser.add_argument("--daily-loss-values", default="0,4,6,8,10,12")
     parser.add_argument("--equity-dd-values", default="0,12,15,18,21,25,30")
     parser.add_argument("--equity-cooldown-values", default="0,1,2,4,6,10")
@@ -96,6 +116,27 @@ def sort_by_2026(item: dict[str, Any]) -> tuple[float, float, float]:
 def main() -> None:
     args = parse_args()
     base_payload = load_config_payload(Path(args.config))
+    if bool(base_payload.get("enable_sota_score_gate_live", False)):
+        args.sota_score_net_min = int(base_payload.get("sota_score_net_min", args.sota_score_net_min) or args.sota_score_net_min)
+        args.sota_score_bull_min = int(base_payload.get("sota_score_bull_min", args.sota_score_bull_min) or args.sota_score_bull_min)
+        args.sota_score_bear_max = int(base_payload.get("sota_score_bear_max", args.sota_score_bear_max) or args.sota_score_bear_max)
+        args.sota_score_conflict_mode = str(base_payload.get("sota_score_conflict_mode", args.sota_score_conflict_mode) or args.sota_score_conflict_mode)
+    if bool(base_payload.get("require_non_bearish_structure_for_long_live", False)):
+        args.require_non_bearish_structure_for_long = True
+    if bool(base_payload.get("enable_long_score_bucket_sizing_live", False)) and not bool(args.enable_long_score_bucket_sizing):
+        args.enable_long_score_bucket_sizing = True
+        if not str(args.long_score_bucket_sizing_rules_json or "").strip():
+            args.long_score_bucket_sizing_rules_json = json.dumps(
+                base_payload.get("long_score_bucket_sizing_rules", []),
+                ensure_ascii=False,
+            )
+    if bool(base_payload.get("enable_gap_smc_short_live", False)) and not bool(args.enable_gap_smc_short):
+        args.enable_gap_smc_short = True
+        args.gap_smc_case = str(base_payload.get("gap_smc_short_case", args.gap_smc_case) or args.gap_smc_case)
+        args.gap_smc_min_flat_days = float(
+            base_payload.get("gap_smc_short_min_flat_days", args.gap_smc_min_flat_days) or args.gap_smc_min_flat_days
+        )
+        args.gap_smc_leverage = float(base_payload.get("gap_smc_short_leverage", args.gap_smc_leverage) or args.gap_smc_leverage)
     payload, pressure_params = apply_pressure_params(base_payload, Path(args.pressure_params))
     payload, trailing_rr_modes = apply_trailing_rr_modes(
         payload,
@@ -125,6 +166,15 @@ def main() -> None:
         bull_min=int(args.sota_score_bull_min),
         bear_max=int(args.sota_score_bear_max),
         conflict_mode=str(args.sota_score_conflict_mode),
+    )
+    all_gated_sota, sota_structure_gate = apply_sota_structure_gate(
+        all_gated_sota,
+        enabled=bool(args.require_non_bearish_structure_for_long),
+    )
+    all_gated_sota, long_score_bucket_sizing = apply_score_bucket_sizing_to_events(
+        all_gated_sota,
+        enabled=bool(args.enable_long_score_bucket_sizing),
+        rules=parse_score_bucket_rules(str(args.long_score_bucket_sizing_rules_json)),
     )
     gated_sota_by_key = {event_key(event): event for event in all_gated_sota}
 
@@ -169,6 +219,7 @@ def main() -> None:
         base_events = [gated_sota_by_key[key] for event in raw_sota if (key := event_key(event)) in gated_sota_by_key]
         score_gate = {
             **all_score_gate,
+            "structure_gate": sota_structure_gate,
             "original_candidates": len(raw_sota),
             "filtered_candidates": len(base_events),
             "removed_candidates": len(raw_sota) - len(base_events),
@@ -177,7 +228,26 @@ def main() -> None:
         }
         baseline = standard_event_summary(base_events, initial_capital, "entry_idx")
         baseline = add_standard_windows(baseline, initial_capital, prepared.end, "entry_idx")
-        live, decisions = replay_live_shadow(base_events + smc_events, initial_capital, prepared.end, baseline)
+        reference = replay_base_priority_sota_first(
+            base_events,
+            smc_events,
+            initial_capital,
+            prepared.end,
+            baseline,
+        )
+        gap_smc_events, gap_smc_summary = build_gap_smc_events(
+            args,
+            prepared,
+            daily,
+            h4_highs,
+            h4_lows,
+            d1_highs,
+            d1_lows,
+            list(reference.get("events", [])),
+            taker_fee_rate=float(payload.get("taker_fee_rate", 0.0005) or 0.0),
+            slippage_bps=float(payload.get("slippage_bps", 0.0) or 0.0),
+        )
+        live, decisions = replay_live_shadow(base_events + smc_events + gap_smc_events, initial_capital, prepared.end, baseline)
         live["shadow_risk_gate"] = {
             "daily_loss_stop_pct": float(daily_loss),
             "equity_drawdown_stop_pct": float(equity_dd),
@@ -190,7 +260,10 @@ def main() -> None:
                 "params": live["shadow_risk_gate"],
                 "raw_sota_candidates": len(raw_sota),
                 "sota_score_gate": score_gate,
+                "long_score_bucket_sizing": long_score_bucket_sizing,
                 "smc_candidates": len(smc_events),
+                "gap_smc_short_candidates": len(gap_smc_events),
+                "gap_smc_summary": gap_smc_summary,
                 "shadow_trigger_counts": shadow.get("trigger_counts", {}),
                 "shadow_skipped_trades": int(shadow.get("skipped_trades", 0) or 0),
                 "live_shadow": compact(live, int(args.sample_trades)),
@@ -219,9 +292,20 @@ def main() -> None:
                 "bear_max": int(args.sota_score_bear_max),
                 "conflict_mode": str(args.sota_score_conflict_mode),
             },
+            "long_score_bucket_sizing": {
+                "enabled": bool(args.enable_long_score_bucket_sizing),
+                "rules": parse_score_bucket_rules(str(args.long_score_bucket_sizing_rules_json)),
+            },
             "smc_case": str(args.smc_case),
             "smc_allocation": float(args.smc_allocation),
             "smc_summary": smc_summary,
+            "gap_smc_short": {
+                "enabled": bool(args.enable_gap_smc_short),
+                "case": str(args.gap_smc_case),
+                "min_flat_days": float(args.gap_smc_min_flat_days),
+                "max_stop_distance_pct": float(args.gap_smc_max_stop_distance_pct),
+                "leverage": float(args.gap_smc_leverage),
+            },
             "candidate_count": len(candidates),
         },
         "top_by_return": ranked_by_return[: int(args.top_n)],

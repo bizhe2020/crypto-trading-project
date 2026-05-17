@@ -247,6 +247,9 @@ def live_anchor_position(anchor_bundle: dict[str, Any], engine: Any, entry_time:
         auto_tit_reason=snapshot_position.get("auto_tit_reason", open_metadata.get("auto_tit_reason")),
         risk_regime=snapshot_position.get("risk_regime", open_metadata.get("risk_regime")),
         regime_label=snapshot_position.get("regime_label", open_metadata.get("regime_label")),
+        exit_profile=snapshot_position.get("exit_profile", open_metadata.get("exit_profile")),
+        exit_profile_reason=snapshot_position.get("exit_profile_reason", open_metadata.get("exit_profile_reason")),
+        exit_profile_overrides=snapshot_position.get("exit_profile_overrides", open_metadata.get("exit_profile_overrides")),
     )
 
 
@@ -266,8 +269,8 @@ def trace_position(engine: Any, *, max_rows: int) -> list[dict[str, Any]]:
         target_before = float(pos.target_price)
         highest, lowest = engine._price_extrema_since_entry(pos, idx)
         atr = engine._atr_for_idx(idx)
-        stage_rr = engine._unrealized_rr_for_mode(pos, candle, engine.config.stage_trigger_rr_mode)
-        atr_rr = engine._unrealized_rr_for_mode(pos, candle, engine.config.atr_activation_rr_mode)
+        stage_rr = engine._unrealized_rr_for_mode(pos, candle, engine._exit_str(pos, "stage_trigger_rr_mode", "close"))
+        atr_rr = engine._unrealized_rr_for_mode(pos, candle, engine._exit_str(pos, "atr_activation_rr_mode", "close"))
         stopped_before_update = (
             candle.l <= stop_before if pos.direction == Direction.BULL else candle.h >= stop_before
         )
@@ -365,6 +368,9 @@ def trace_trade(
             regime_label=regime_label,
             time_based_trailing_enabled=bool(getattr(trade, "time_based_trailing_enabled", False)),
             auto_tit_reason=getattr(trade, "auto_tit_reason", None),
+            exit_profile=getattr(trade, "exit_profile", None),
+            exit_profile_reason=getattr(trade, "exit_profile_reason", None),
+            exit_profile_overrides=getattr(trade, "exit_profile_overrides", None),
         )
     if live_anchor is not None and replay_engine.position is not None:
         apply_live_anchor(replay_engine.position, live_anchor)
@@ -381,8 +387,8 @@ def trace_trade(
         target_before = float(pos.target_price)
         highest, lowest = replay_engine._price_extrema_since_entry(pos, idx)
         atr = replay_engine._atr_for_idx(idx)
-        stage_rr = replay_engine._unrealized_rr_for_mode(pos, candle, replay_engine.config.stage_trigger_rr_mode)
-        atr_rr = replay_engine._unrealized_rr_for_mode(pos, candle, replay_engine.config.atr_activation_rr_mode)
+        stage_rr = replay_engine._unrealized_rr_for_mode(pos, candle, replay_engine._exit_str(pos, "stage_trigger_rr_mode", "close"))
+        atr_rr = replay_engine._unrealized_rr_for_mode(pos, candle, replay_engine._exit_str(pos, "atr_activation_rr_mode", "close"))
         stopped_before_update = (
             candle.l <= stop_before if pos.direction == Direction.BULL else candle.h >= stop_before
         )

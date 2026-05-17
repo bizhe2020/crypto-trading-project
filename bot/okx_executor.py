@@ -29,6 +29,25 @@ from scripts.sota_long_filters import apply_sota_structure_gate
 from scripts.sota_liquidity_context import flatten_context_features, liquidity_context_for_entry
 
 
+FVG_BEAR6_LOOSE_EXIT_PROFILE_NAME = "fvg_bear6_loose_runner"
+FVG_BEAR6_LOOSE_EXIT_PROFILE_BUCKET = "fvg_near_bear6_target20"
+FVG_BEAR6_LOOSE_EXIT_PROFILE_OVERRIDES = {
+    "stage_trigger_rr_mode": "close",
+    "time_trailing_rr_mode": "extreme",
+    "atr_activation_rr_mode": "extreme",
+    "atr_activation_rr": 2.6,
+    "atr_loose_multiplier": 3.3,
+    "atr_normal_multiplier": 2.8,
+    "atr_tight_multiplier": 2.25,
+    "S0_trigger_rr": 0.7,
+    "S1_trigger_rr": 1.0,
+    "S3_trigger_rr": 3.5,
+    "S4_close_rr": 1.25,
+    "pressure_target_min_rr": 1.75,
+    "pressure_touch_lock_enabled": False,
+}
+
+
 @dataclass
 class ExecutorConfig:
     mode: str
@@ -238,8 +257,17 @@ class ExecutorConfig:
     sota_score_bear_max: int = 6
     sota_score_conflict_mode: str = "any"
     require_non_bearish_structure_for_long_live: bool = False
+    enable_sota_rejected_smc_recall_long_live: bool = False
+    sota_rejected_smc_recall_long_condition: str = "sweep_has_fvg"
+    sota_rejected_smc_recall_long_reject_stage: str = "structure_gate"
+    sota_rejected_smc_recall_long_regime_label: str = "normal"
+    sota_rejected_smc_recall_long_target_leverage: float = 8.0
     enable_long_score_bucket_sizing_live: bool = False
     long_score_bucket_sizing_rules: list[dict[str, Any]] | None = None
+    enable_fvg_bear6_loose_exit_profile_live: bool = False
+    fvg_bear6_loose_exit_profile_bucket: str = FVG_BEAR6_LOOSE_EXIT_PROFILE_BUCKET
+    fvg_bear6_loose_exit_profile_name: str = FVG_BEAR6_LOOSE_EXIT_PROFILE_NAME
+    fvg_bear6_loose_exit_profile_overrides: dict[str, Any] | None = None
     enable_sota_soft_stop_recovery_overlay_live: bool = False
     sota_soft_stop_live_mode: str = "audit"
     sota_soft_stop_net_min: int = 15
@@ -815,6 +843,92 @@ class OkxExecutionEngine:
         rule = bucket.get("rule") if isinstance(bucket.get("rule"), dict) else {}
         name = rule.get("name")
         return str(name) if name else None
+
+    def _score_bucket_names_from_action(self, action: StrategyAction) -> set[str]:
+        metadata = action.metadata or {}
+        dynamic = metadata.get("dynamic_high_leverage") if isinstance(metadata.get("dynamic_high_leverage"), dict) else {}
+        bucket = dynamic.get("score_bucket_sizing") if isinstance(dynamic.get("score_bucket_sizing"), dict) else {}
+        if not bucket:
+            bucket = metadata.get("score_bucket_sizing") if isinstance(metadata.get("score_bucket_sizing"), dict) else {}
+        if not bool(bucket.get("applied")):
+            return set()
+        names: set[str] = set()
+        applied_rules = bucket.get("applied_rules")
+        if isinstance(applied_rules, list):
+            for item in applied_rules:
+                if not isinstance(item, dict):
+                    continue
+                if not bool(item.get("applied")):
+                    continue
+                item_rule = item.get("rule") if isinstance(item.get("rule"), dict) else {}
+                if item_rule.get("name"):
+                    names.add(str(item_rule["name"]))
+        if not names:
+            rule = bucket.get("rule") if isinstance(bucket.get("rule"), dict) else {}
+            if rule.get("name"):
+                names.add(str(rule["name"]))
+        return names
+
+    def _configured_fvg_bear6_exit_profile_overrides(self) -> dict[str, Any]:
+        configured = self.config.fvg_bear6_loose_exit_profile_overrides
+        if isinstance(configured, dict) and configured:
+            return dict(configured)
+        return dict(FVG_BEAR6_LOOSE_EXIT_PROFILE_OVERRIDES)
+
+    def _fvg_bear6_loose_exit_profile_decision(self, action: StrategyAction) -> dict[str, Any]:
+        bucket_name = str(
+            self.config.fvg_bear6_loose_exit_profile_bucket
+            or FVG_BEAR6_LOOSE_EXIT_PROFILE_BUCKET
+        )
+        profile_name = str(
+            self.config.fvg_bear6_loose_exit_profile_name
+            or FVG_BEAR6_LOOSE_EXIT_PROFILE_NAME
+        )
+        decision: dict[str, Any] = {
+            "enabled": bool(self.config.enable_fvg_bear6_loose_exit_profile_live),
+            "applied": False,
+            "profile": profile_name,
+            "bucket": bucket_name,
+        }
+        if not decision["enabled"]:
+            decision["reason"] = "disabled"
+            return decision
+        if self._open_action_event_type(action) != "sota_long" or action.type != ActionType.OPEN_LONG:
+            decision["reason"] = "not_sota_long"
+            return decision
+        bucket_names = self._score_bucket_names_from_action(action)
+        decision["matched_buckets"] = sorted(bucket_names)
+        if bucket_name not in bucket_names:
+            decision["reason"] = "bucket_not_matched"
+            return decision
+        overrides = self._configured_fvg_bear6_exit_profile_overrides()
+        decision.update(
+            {
+                "applied": True,
+                "reason": f"score_bucket:{bucket_name}",
+                "overrides": overrides,
+            }
+        )
+        return decision
+
+    def _apply_open_exit_profile_metadata(self, engine: Any, action: StrategyAction) -> dict[str, Any] | None:
+        if action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+            return None
+        decision = self._fvg_bear6_loose_exit_profile_decision(action)
+        if not bool(decision.get("applied")):
+            return decision if bool(decision.get("enabled")) else None
+        metadata = dict(action.metadata or {})
+        metadata["exit_profile"] = decision["profile"]
+        metadata["exit_profile_reason"] = decision["reason"]
+        metadata["exit_profile_overrides"] = dict(decision["overrides"])
+        metadata["exit_profile_decision"] = decision
+        action.metadata = metadata
+        position = getattr(engine, "position", None)
+        if position is not None:
+            setattr(position, "exit_profile", decision["profile"])
+            setattr(position, "exit_profile_reason", decision["reason"])
+            setattr(position, "exit_profile_overrides", dict(decision["overrides"]))
+        return decision
 
     def _sota_soft_stop_score_payload(self, action: StrategyAction) -> dict[str, Any] | None:
         score_gate = (action.metadata or {}).get("sota_score_gate")
@@ -1696,7 +1810,7 @@ class OkxExecutionEngine:
             "bear_total_6_20x_boost": "bear=6 20x",
             "nbb_6_11_5_conflict_2p5_cap20": "6/11/5冲突 2.5x cap20",
             "bear_total_6_light_boost": "bear=6轻放大",
-            "fvg_near_bear6_target12": "fvg近场 bear=6 12x",
+            "fvg_near_bear6_target20": "fvg近场 bear=6 20x",
             "fvg_near_bear5_target8": "fvg近场 bear=5 8x",
             "fvg_near_bear3_target3": "fvg近场 bear=3 3x",
             "fvg_hg_net8_target4": "fvg高增长 net=8 4x",
@@ -1903,6 +2017,8 @@ class OkxExecutionEngine:
                 f"{self._format_optional_usdt(context.get('actual_notional'), digits=0)}"
             )
             lines.append(f"压仓: {context.get('reason_text') or '-'}")
+        if position.get("exit_profile"):
+            lines.append(f"Exit profile: {position.get('exit_profile')}")
         return lines
 
     def _open_strategy_context_lines(self, action: StrategyAction, dynamic_info: dict[str, Any]) -> list[str]:
@@ -2340,6 +2456,20 @@ class OkxExecutionEngine:
             "feature_recent_sweep_status": metadata.get("feature_recent_sweep_status"),
         }
 
+    def _clear_local_position_for_rejected_open_actions(self, engine: Any, rejected: list[dict[str, Any]]) -> bool:
+        position = getattr(engine, "position", None)
+        if position is None:
+            return False
+        rejected_times: set[str] = set()
+        for item in rejected:
+            candidate = item.get("candidate") if isinstance(item, dict) else None
+            if isinstance(candidate, dict) and candidate.get("timestamp"):
+                rejected_times.add(str(candidate["timestamp"]))
+        if getattr(position, "entry_time", None) in rejected_times:
+            engine.position = None
+            return True
+        return False
+
     def _sota_score_gate_rule(self) -> dict[str, Any]:
         return {
             "net_min": int(self.config.sota_score_net_min),
@@ -2423,11 +2553,12 @@ class OkxExecutionEngine:
     def _apply_sota_structure_gate_to_open_actions(
         self,
         open_actions: list[StrategyAction],
-    ) -> tuple[list[StrategyAction], list[dict[str, Any]]]:
+    ) -> tuple[list[StrategyAction], list[dict[str, Any]], list[dict[str, Any]]]:
         if not bool(self.config.require_non_bearish_structure_for_long_live):
-            return open_actions, []
+            return open_actions, [], []
         accepted: list[StrategyAction] = []
         rejected: list[dict[str, Any]] = []
+        recalled: list[dict[str, Any]] = []
         for action in open_actions:
             event_type = self._open_action_event_type(action)
             if event_type != "sota_long" or action.type != ActionType.OPEN_LONG:
@@ -2447,6 +2578,18 @@ class OkxExecutionEngine:
             if decision["filtered_candidates"] > 0:
                 accepted.append(action)
             else:
+                recall_decision = self._sota_rejected_smc_recall_long_decision(
+                    action,
+                    metadata,
+                    reject_stage="structure_gate",
+                )
+                if bool(recall_decision.get("accepted")):
+                    metadata["sota_rejected_smc_recall_long"] = recall_decision
+                    metadata.setdefault("candidate_event_type", "sota_long")
+                    action.metadata = metadata
+                    accepted.append(action)
+                    recalled.append(recall_decision)
+                    continue
                 rejected.append(
                     {
                         "enabled": True,
@@ -2458,7 +2601,64 @@ class OkxExecutionEngine:
                         "decision": "rejected",
                     }
                 )
-        return accepted, rejected
+        return accepted, rejected, recalled
+
+    def _sota_rejected_smc_recall_long_decision(
+        self,
+        action: StrategyAction,
+        metadata: dict[str, Any],
+        reject_stage: str,
+    ) -> dict[str, Any]:
+        enabled = bool(self.config.enable_sota_rejected_smc_recall_long_live)
+        condition = str(self.config.sota_rejected_smc_recall_long_condition or "")
+        expected_stage = str(self.config.sota_rejected_smc_recall_long_reject_stage or "")
+        expected_regime = str(self.config.sota_rejected_smc_recall_long_regime_label or "")
+        target_leverage = float(self.config.sota_rejected_smc_recall_long_target_leverage or 0.0)
+        recent_sweep_has_fvg = bool(metadata.get("feature_recent_sweep_has_fvg", False))
+        recent_fvg_near_entry = bool(metadata.get("feature_recent_fvg_near_entry", False))
+        recent_sweep_status = str(metadata.get("feature_recent_sweep_status") or "")
+        regime_label = str(metadata.get("regime_label") or "")
+        condition_matched = False
+        if condition == "sweep_has_fvg":
+            condition_matched = recent_sweep_has_fvg
+        elif condition == "recent_fvg_near_entry":
+            condition_matched = recent_fvg_near_entry
+        elif condition == "mss_with_fvg":
+            condition_matched = recent_sweep_status == "mss_with_fvg"
+        elif condition == "fvg_near_or_mss_with_fvg":
+            condition_matched = recent_fvg_near_entry or recent_sweep_status == "mss_with_fvg"
+        else:
+            condition_matched = False
+        reasons: list[str] = []
+        if not enabled:
+            reasons.append("disabled")
+        if expected_stage and reject_stage != expected_stage:
+            reasons.append("reject_stage_mismatch")
+        if expected_regime and regime_label != expected_regime:
+            reasons.append("regime_mismatch")
+        if not condition_matched:
+            reasons.append("condition_mismatch")
+        if target_leverage <= 0:
+            reasons.append("invalid_target_leverage")
+        accepted = enabled and not reasons
+        return {
+            "enabled": enabled,
+            "accepted": accepted,
+            "reason": "accepted" if accepted else ",".join(reasons),
+            "condition": condition,
+            "reject_stage": reject_stage,
+            "expected_reject_stage": expected_stage,
+            "regime_label": regime_label,
+            "expected_regime_label": expected_regime,
+            "target_effective_leverage": target_leverage,
+            "features": {
+                "feature_recent_sweep_has_fvg": recent_sweep_has_fvg,
+                "feature_recent_fvg_near_entry": recent_fvg_near_entry,
+                "feature_recent_sweep_status": recent_sweep_status,
+                "feature_bearish_structure": bool(metadata.get("feature_bearish_structure", False)),
+            },
+            "candidate": self._action_candidate_summary(action, "sota_long"),
+        }
 
     def _apply_long_score_bucket_sizing(
         self,
@@ -2472,6 +2672,24 @@ class OkxExecutionEngine:
             return effective_leverage, None
 
         metadata = action.metadata or {}
+        recall_decision = metadata.get("sota_rejected_smc_recall_long")
+        if isinstance(recall_decision, dict) and bool(recall_decision.get("accepted")):
+            target_leverage = float(
+                recall_decision.get(
+                    "target_effective_leverage",
+                    self.config.sota_rejected_smc_recall_long_target_leverage,
+                )
+                or 0.0
+            )
+            if target_leverage > 0:
+                return target_leverage, {
+                    "enabled": True,
+                    "applied": abs(float(effective_leverage) - target_leverage) > 1e-9,
+                    "reason": "sota_rejected_smc_recall_long",
+                    "source_effective_leverage": float(effective_leverage),
+                    "target_effective_leverage": target_leverage,
+                    "recall": recall_decision,
+                }
         score = metadata.get("sota_score_gate")
         score_payload = score.get("score") if isinstance(score, dict) else None
         if not isinstance(score_payload, dict):
@@ -3115,7 +3333,9 @@ class OkxExecutionEngine:
             raw_open_actions,
             latest_closed_idx,
         )
-        open_actions, structure_gate_rejected = self._apply_sota_structure_gate_to_open_actions(open_actions)
+        open_actions, structure_gate_rejected, structure_gate_recalled = (
+            self._apply_sota_structure_gate_to_open_actions(open_actions)
+        )
         close_actions = [action for action in actions if action.type == ActionType.CLOSE_POSITION]
         candidates: list[dict[str, Any]] = []
         for action in open_actions:
@@ -3143,6 +3363,10 @@ class OkxExecutionEngine:
             candidates.append(smc_long_candidate)
 
         if not candidates:
+            cleared_rejected_position = self._clear_local_position_for_rejected_open_actions(
+                engine,
+                score_gate_rejected + structure_gate_rejected,
+            )
             output_actions = [action for action in actions if action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}]
             decision = {
                 "enabled": True,
@@ -3150,6 +3374,8 @@ class OkxExecutionEngine:
                 "candidates": [],
                 "score_gate_rejected": score_gate_rejected,
                 "structure_gate_rejected": structure_gate_rejected,
+                "structure_gate_recalled": structure_gate_recalled,
+                "cleared_rejected_position": cleared_rejected_position,
             }
             if score_gate_rejected or structure_gate_rejected:
                 self.store.append_action(engine._timestamp_for_idx(latest_closed_idx), "LIVE_CANDIDATE_ARBITRATION", decision)
@@ -3201,6 +3427,7 @@ class OkxExecutionEngine:
             "priority": self._live_candidate_priority(),
             "score_gate_rejected": score_gate_rejected,
             "structure_gate_rejected": structure_gate_rejected,
+            "structure_gate_recalled": structure_gate_recalled,
         }
         self.store.append_action(selected_action.timestamp, "LIVE_CANDIDATE_ARBITRATION", decision)
         return output_actions, decision
@@ -3310,6 +3537,7 @@ class OkxExecutionEngine:
         else:
             overlay_skipped_dynamic = True
             self._apply_overlay_execution_metadata(engine, action, sizing)
+        exit_profile_decision = self._apply_open_exit_profile_metadata(engine, action)
         high_leverage_decision = self._high_leverage_guard_pre_open(action, sizing)
         if high_leverage_decision is not None:
             return high_leverage_decision
@@ -3339,6 +3567,7 @@ class OkxExecutionEngine:
                 "dynamic_high_leverage": sizing.get("dynamic_high_leverage"),
                 "overlay_skipped_dynamic_high_leverage": overlay_skipped_dynamic,
                 "sota_soft_stop_live": soft_stop_decision,
+                "exit_profile": exit_profile_decision,
             }
 
         if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
@@ -3406,6 +3635,8 @@ class OkxExecutionEngine:
             soft_stop_line = self._sota_soft_stop_open_line(soft_stop_decision)
             if soft_stop_line:
                 open_lines.append(soft_stop_line)
+            if isinstance(exit_profile_decision, dict) and bool(exit_profile_decision.get("applied")):
+                open_lines.append(f"Exit profile: {exit_profile_decision.get('profile')}")
             open_lines.extend(
                 [
                     f"入场: {action.entry_price:.1f}" if action.entry_price is not None else "入场: -",
@@ -4902,6 +5133,9 @@ class OkxExecutionEngine:
             execution_guard_diagnostics=getattr(position, "execution_guard_diagnostics", None),
             time_based_trailing_enabled=bool(getattr(position, "time_based_trailing_enabled", False)),
             auto_tit_reason=getattr(position, "auto_tit_reason", None),
+            exit_profile=getattr(position, "exit_profile", None),
+            exit_profile_reason=getattr(position, "exit_profile_reason", None),
+            exit_profile_overrides=getattr(position, "exit_profile_overrides", None),
             exit_idx=exit_idx,
             pressure_target_applied=bool(getattr(position, "pressure_target_applied", False)),
             pressure_target_source=getattr(position, "pressure_target_source", None),
@@ -4943,6 +5177,9 @@ class OkxExecutionEngine:
                 "pnl_pct": pnl_pct,
                 "index": exit_idx,
                 "candidate_event_type": getattr(position, "candidate_event_type", None),
+                "exit_profile": getattr(position, "exit_profile", None),
+                "exit_profile_reason": getattr(position, "exit_profile_reason", None),
+                "exit_profile_overrides": getattr(position, "exit_profile_overrides", None),
                 "execution_effective_leverage": self._safe_float(getattr(position, "execution_effective_leverage", None)),
                 "execution_risk_mode": getattr(position, "execution_risk_mode", None),
                 "execution_leverage_reasons": getattr(position, "execution_leverage_reasons", None),
