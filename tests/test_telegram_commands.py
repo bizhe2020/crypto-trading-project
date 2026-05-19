@@ -333,6 +333,28 @@ class TelegramCommandTests(unittest.TestCase):
 
         self.assertIn("🔒 最近记录平仓：1", reply)
 
+    def test_daily_profit_counts_exchange_fill_sync_as_realized(self) -> None:
+        engine = self._engine()
+        engine.config.mode = "live"
+        engine.config.enable_shadow_risk_gate = True
+        engine.config.shadow_daily_loss_stop_pct = 1.0
+        engine.store.append_action(
+            "2026-05-07 12:00",
+            "CLOSE_POSITION",
+            {
+                "type": "CLOSE_POSITION",
+                "timestamp": "2026-05-07 12:00",
+                "direction": "BULL",
+                "reason": "external_stop_loss",
+                "metadata": {"source": "exchange_fill_sync", "net_pnl": -7.08},
+            },
+        )
+
+        reply = engine._telegram_profit_text(daily=False)
+
+        self.assertIn("已实现 PnL：-7.08 USDT", reply)
+        self.assertIn("🔒 平仓笔数：1", reply)
+
     def test_ob_regime_display_labels_compression_bucket_plainly(self) -> None:
         engine = object.__new__(OkxExecutionEngine)
 

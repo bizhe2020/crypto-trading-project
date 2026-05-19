@@ -9,7 +9,20 @@ from pathlib import Path
 from scripts.audit_live_replay_trade_convergence import load_live_trades, load_replay_events, match_live_trade, parse_time
 
 
-def insert_action(conn: sqlite3.Connection, timestamp: str, action_type: str, payload: dict) -> None:
+def insert_action(
+    conn: sqlite3.Connection,
+    timestamp: str,
+    action_type: str,
+    payload: dict,
+    *,
+    created_at: str | None = None,
+) -> None:
+    if created_at is not None:
+        conn.execute(
+            "INSERT INTO action_log(timestamp, action_type, payload, created_at) VALUES(?, ?, ?, ?)",
+            (timestamp, action_type, json.dumps(payload), created_at),
+        )
+        return
     conn.execute(
         "INSERT INTO action_log(timestamp, action_type, payload) VALUES(?, ?, ?)",
         (timestamp, action_type, json.dumps(payload)),
@@ -128,6 +141,91 @@ class AuditLiveReplayTradeConvergenceTest(unittest.TestCase):
         self.assertEqual(match["signal_entry_gap_seconds"], 0.0)
         self.assertEqual(match["execution_entry_gap_seconds"], 900.0)
         self.assertEqual(parse_time(live["entry_execution_time"]).isoformat(), "2026-04-01T00:15:00+00:00")
+
+    def test_load_live_trades_keeps_exchange_fill_sync_negative_pnl(self) -> None:
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        db_path = Path(tmpdir.name) / "state.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE action_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            insert_action(
+                conn,
+                "2026-05-19 10:45:00",
+                "OPEN_SHORT",
+                {
+                    "type": "OPEN_SHORT",
+                    "timestamp": "2026-05-19 10:45:00",
+                    "direction": "BEAR",
+                    "entry_price": 77006.5,
+                    "stop_price": 77297.340263,
+                    "target_price": 76309.3097,
+                    "metadata": {
+                        "signal_entry_price": 77006.5,
+                        "capital_at_entry": 1000.0,
+                        "notional": 71470.52,
+                        "risk_amount": 100.0,
+                    },
+                },
+            )
+            insert_action(
+                conn,
+                "2026-05-19 11:01:17",
+                "MANUAL_POSITION_SYNC",
+                {
+                    "context": "after_execute",
+                    "snapshot": {
+                        "position": {
+                            "direction": "BEAR",
+                            "entry_time": "2026-05-19 11:01:17",
+                            "signal_entry_price": 77006.5,
+                            "entry_price": 77026.96357273609,
+                            "sl_price": 76959.37946592011,
+                            "target_price": 76309.3097,
+                            "capital_at_entry": 1000.0,
+                            "notional": 71470.52,
+                            "risk_amount": 100.0,
+                        }
+                    },
+                },
+            )
+            insert_action(
+                conn,
+                "2026-05-19 12:55:07",
+                "CLOSE_POSITION",
+                {
+                    "type": "CLOSE_POSITION",
+                    "timestamp": "2026-05-19 12:55:07",
+                    "direction": "BEAR",
+                    "exit_price": 76957.6,
+                    "reason": "external_stop_loss",
+                    "metadata": {
+                        "source": "exchange_fill_sync",
+                        "synthetic": False,
+                        "signal_exit_price": 76957.6,
+                        "net_pnl": -7.084782095,
+                    },
+                },
+                created_at="2026-05-19 15:22:58",
+            )
+
+        live_rows, diagnostics = load_live_trades(db_path, None)
+
+        self.assertEqual(diagnostics["orphan_closes"], 0)
+        self.assertEqual(len(live_rows), 1)
+        self.assertAlmostEqual(live_rows[0]["net_pnl"], -7.084782, places=6)
+        self.assertAlmostEqual(live_rows[0]["pnl_pct"], -0.7085, places=4)
+        self.assertEqual(live_rows[0]["signal_exit_time"], "2026-05-19T12:55:07+00:00")
+        self.assertEqual(live_rows[0]["exit_execution_time"], "2026-05-19T15:22:58+00:00")
 
 
 if __name__ == "__main__":

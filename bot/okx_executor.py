@@ -49,6 +49,23 @@ FVG_BEAR6_LOOSE_EXIT_PROFILE_OVERRIDES = {
 
 
 @dataclass
+class ExternalFlatFillClose:
+    exit_price: float
+    gross_pnl: float
+    fees: float
+    net_pnl: float
+    live_total: float
+    source: str
+    synthetic: bool
+    entry_fee: float
+    exit_fee: float
+    close_order_id: str | None = None
+    close_fill_count: int = 0
+    entry_fill_count: int = 0
+    exit_time: str | None = None
+
+
+@dataclass
 class ExecutorConfig:
     mode: str
     symbol: str
@@ -1347,7 +1364,7 @@ class OkxExecutionEngine:
             return False
         if self.config.mode != "live" or not self._shadow_gate_enabled():
             return True
-        return str(metadata.get("source") or "") in {"external_flat_sync", "live_order_execution"}
+        return str(metadata.get("source") or "") in {"external_flat_sync", "exchange_fill_sync", "live_order_execution"}
 
     def _telegram_profit_text(self, *, daily: bool) -> str:
         events = self._realized_pnl_events(daily=daily)
@@ -5040,6 +5057,248 @@ class OkxExecutionEngine:
             pass
         return float(fallback)
 
+    def _entry_time_to_ms(self, value: Any) -> int | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        normalized = text.replace("Z", "+00:00")
+        parsed: datetime | None = None
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    parsed = datetime.strptime(text, fmt)
+                    break
+                except ValueError:
+                    parsed = None
+        if parsed is None:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = parsed.astimezone(timezone.utc)
+        return int(parsed.timestamp() * 1000)
+
+    def _trade_fill_timestamp_ms(self, trade: dict[str, Any]) -> int | None:
+        candidates: list[Any] = [
+            trade.get("timestamp"),
+            trade.get("datetime"),
+        ]
+        info = trade.get("info")
+        if isinstance(info, dict):
+            candidates.extend([info.get("fillTime"), info.get("uTime"), info.get("cTime"), info.get("ts")])
+        for candidate in candidates:
+            if candidate in (None, ""):
+                continue
+            if isinstance(candidate, (int, float)):
+                value = float(candidate)
+                if value > 1e12:
+                    return int(value)
+                if value > 1e9:
+                    return int(value * 1000)
+                continue
+            text = str(candidate).strip()
+            if not text:
+                continue
+            if text.isdigit():
+                value = int(text)
+                if value > 1_000_000_000_000:
+                    return value
+                if value > 1_000_000_000:
+                    return value * 1000
+                continue
+            normalized = text.replace("Z", "+00:00")
+            try:
+                parsed = datetime.fromisoformat(normalized)
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            else:
+                parsed = parsed.astimezone(timezone.utc)
+            return int(parsed.timestamp() * 1000)
+        return None
+
+    def _trade_fill_fee_abs(self, trade: dict[str, Any]) -> float:
+        info = trade.get("info")
+        candidates: list[Any] = [trade.get("fee")]
+        if isinstance(info, dict):
+            candidates.extend([info.get("fee"), info.get("fillFee")])
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                numeric = self._safe_float(candidate.get("cost"))
+                if numeric is not None:
+                    return abs(numeric)
+                continue
+            numeric = self._safe_float(candidate)
+            if numeric is not None:
+                return abs(numeric)
+        return 0.0
+
+    def _trade_fill_realized_pnl(self, trade: dict[str, Any]) -> float:
+        info = trade.get("info")
+        candidates: list[Any] = []
+        if isinstance(info, dict):
+            candidates.extend([info.get("fillPnl"), info.get("pnl")])
+        candidates.append(trade.get("profit"))
+        for candidate in candidates:
+            numeric = self._safe_float(candidate)
+            if numeric is not None:
+                return float(numeric)
+        return 0.0
+
+    def _trade_fill_order_id(self, trade: dict[str, Any]) -> str | None:
+        candidates: list[Any] = [trade.get("order"), trade.get("orderId"), trade.get("id")]
+        info = trade.get("info")
+        if isinstance(info, dict):
+            candidates.extend([info.get("ordId"), info.get("orderId"), info.get("tradeId")])
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return None
+
+    def _trade_fill_pos_side(self, trade: dict[str, Any]) -> str:
+        info = trade.get("info")
+        candidates: list[Any] = [trade.get("posSide")]
+        if isinstance(info, dict):
+            candidates.append(info.get("posSide"))
+        candidates.extend([trade.get("side")])
+        if isinstance(info, dict):
+            candidates.append(info.get("side"))
+        for candidate in candidates:
+            text = str(candidate or "").strip().lower()
+            if text:
+                return text
+        return ""
+
+    def _trade_fill_side(self, trade: dict[str, Any]) -> str:
+        side = str(trade.get("side") or "").strip().lower()
+        if side:
+            return side
+        info = trade.get("info")
+        if isinstance(info, dict):
+            side = str(info.get("side") or "").strip().lower()
+        return side
+
+    def _market_inst_id(self) -> str:
+        market = self._market()
+        inst_id = market.get("id")
+        if inst_id:
+            return str(inst_id)
+        return str(self.config.symbol)
+
+    def _fetch_external_flat_fill_close(self, position: Any) -> ExternalFlatFillClose | None:
+        entry_time_ms = self._entry_time_to_ms(getattr(position, "entry_time", None))
+        if entry_time_ms is None:
+            return None
+        order_id = str(getattr(position, "exchange_order_id", "") or "").strip()
+        direction = getattr(position, "direction", None)
+        expected_pos_side = "long" if direction == Direction.BULL else "short"
+        expected_close_side = "sell" if direction == Direction.BULL else "buy"
+        window_since = max(0, entry_time_ms - 6 * 60 * 60 * 1000)
+        entry_fills: list[dict[str, Any]] = []
+        if order_id:
+            try:
+                entry_fills = self.client.fetch_order_fills(inst_id=self._market_inst_id(), order_id=order_id)
+            except Exception:
+                entry_fills = []
+        try:
+            trades = self.client.fetch_my_trades(self.config.symbol, since=window_since, limit=200)
+        except Exception:
+            return None
+        if not isinstance(trades, list) or not trades:
+            return None
+
+        close_fills: list[dict[str, Any]] = []
+        for trade in trades:
+            if not isinstance(trade, dict):
+                continue
+            fill_ts = self._trade_fill_timestamp_ms(trade)
+            if fill_ts is not None and fill_ts + 60_000 < entry_time_ms:
+                continue
+            pos_side = self._trade_fill_pos_side(trade)
+            if pos_side and pos_side != expected_pos_side:
+                continue
+            side = self._trade_fill_side(trade)
+            if not side:
+                continue
+            trade_order_id = self._trade_fill_order_id(trade)
+            if order_id and trade_order_id == order_id and not entry_fills:
+                entry_fills.append(trade)
+                continue
+            if side == expected_close_side:
+                close_fills.append(trade)
+
+        if not close_fills:
+            return None
+
+        close_fills.sort(key=lambda item: self._trade_fill_timestamp_ms(item) or 0)
+        if not entry_fills and order_id:
+            for trade in trades:
+                if not isinstance(trade, dict):
+                    continue
+                if self._trade_fill_order_id(trade) == order_id:
+                    entry_fills.append(trade)
+
+        exit_notional = 0.0
+        exit_quantity = 0.0
+        exit_fee = 0.0
+        gross_pnl = 0.0
+        close_order_ids: list[str] = []
+        close_exit_time_ms: int | None = None
+        for trade in close_fills:
+            price = self._safe_float(trade.get("price"))
+            amount = self._safe_float(trade.get("amount"))
+            if price is None or amount is None or price <= 0 or amount <= 0:
+                info = trade.get("info")
+                if isinstance(info, dict):
+                    price = self._safe_float(info.get("fillPx"))
+                    amount = self._safe_float(info.get("fillSz"))
+            if price is None or amount is None or price <= 0 or amount <= 0:
+                continue
+            exit_notional += float(price) * float(amount)
+            exit_quantity += float(amount)
+            exit_fee += self._trade_fill_fee_abs(trade)
+            gross_pnl += self._trade_fill_realized_pnl(trade)
+            order_ref = self._trade_fill_order_id(trade)
+            if order_ref:
+                close_order_ids.append(order_ref)
+            fill_ts = self._trade_fill_timestamp_ms(trade)
+            if fill_ts is not None:
+                close_exit_time_ms = max(close_exit_time_ms or fill_ts, fill_ts)
+
+        if exit_quantity <= 0:
+            return None
+
+        entry_fee = sum(self._trade_fill_fee_abs(trade) for trade in entry_fills)
+        net_pnl = gross_pnl - entry_fee - exit_fee
+        capital_at_entry = float(getattr(position, "capital_at_entry", 0.0) or 0.0)
+        live_total = capital_at_entry + net_pnl if capital_at_entry > 0 else net_pnl
+        exit_price = exit_notional / exit_quantity
+        exit_time = (
+            datetime.fromtimestamp(close_exit_time_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            if close_exit_time_ms is not None
+            else None
+        )
+        close_order_id = close_order_ids[-1] if close_order_ids else None
+        return ExternalFlatFillClose(
+            exit_price=exit_price,
+            gross_pnl=gross_pnl,
+            fees=entry_fee + exit_fee,
+            net_pnl=net_pnl,
+            live_total=live_total,
+            source="exchange_fill_sync",
+            synthetic=False,
+            entry_fee=entry_fee,
+            exit_fee=exit_fee,
+            close_order_id=close_order_id,
+            close_fill_count=len(close_fills),
+            entry_fill_count=len(entry_fills),
+            exit_time=exit_time,
+        )
+
     def _estimate_external_exit_price(self, position: Any, net_pnl: float) -> tuple[float, float, float]:
         quantity = abs(float(getattr(position, "quantity", 0.0) or 0.0))
         entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
@@ -5057,6 +5316,31 @@ class OkxExecutionEngine:
             gross_pnl = quantity * (entry_price - exit_price)
         exit_fee = quantity * max(exit_price, 0.0) * fee_rate
         return exit_price, gross_pnl, entry_fee + exit_fee
+
+    def _estimate_external_flat_close(self, engine: Any, position: Any) -> ExternalFlatFillClose | None:
+        fill_close = self._fetch_external_flat_fill_close(position)
+        if fill_close is not None:
+            return fill_close
+        quantity = abs(float(getattr(position, "quantity", 0.0) or 0.0))
+        capital_at_entry = float(getattr(position, "capital_at_entry", 0.0) or 0.0)
+        if quantity <= 0 or capital_at_entry <= 0:
+            return None
+        live_total = self._current_live_total_usdt(float(getattr(engine, "capital", 0.0) or capital_at_entry))
+        net_pnl = live_total - capital_at_entry
+        exit_price, gross_pnl, fees = self._estimate_external_exit_price(position, net_pnl)
+        entry_fee = float(getattr(position, "entry_fee", 0.0) or 0.0)
+        exit_fee = max(0.0, fees - entry_fee)
+        return ExternalFlatFillClose(
+            exit_price=exit_price,
+            gross_pnl=gross_pnl,
+            fees=fees,
+            net_pnl=net_pnl,
+            live_total=live_total,
+            source="external_flat_sync",
+            synthetic=True,
+            entry_fee=entry_fee,
+            exit_fee=exit_fee,
+        )
 
     def _external_flat_exit_reason(self, position: Any, exit_price: float) -> str:
         stop_price = self._safe_float(getattr(position, "sl_price", None))
@@ -5093,17 +5377,23 @@ class OkxExecutionEngine:
         capital_at_entry = float(getattr(position, "capital_at_entry", 0.0) or 0.0)
         if quantity <= 0 or capital_at_entry <= 0:
             return None
-        live_total = self._current_live_total_usdt(float(getattr(engine, "capital", 0.0) or capital_at_entry))
-        net_pnl = live_total - capital_at_entry
-        exit_price, gross_pnl, fees = self._estimate_external_exit_price(position, net_pnl)
+        close = self._estimate_external_flat_close(engine, position)
+        if close is None:
+            return None
+        exit_price = close.exit_price
+        gross_pnl = close.gross_pnl
+        fees = close.fees
+        net_pnl = close.net_pnl
+        live_total = close.live_total
         slippage_cost = float(getattr(position, "entry_slippage_cost", 0.0) or 0.0)
         risk_amount = float(getattr(position, "risk_amount", 0.0) or 0.0)
         rr_ratio = net_pnl / risk_amount if risk_amount > 0 else 0.0
         pnl_pct = net_pnl / capital_at_entry if capital_at_entry > 0 else 0.0
         reason = self._external_flat_exit_reason(position, exit_price)
+        exit_timestamp = close.exit_time or timestamp
         trade = Trade(
             entry_time=str(getattr(position, "entry_time", "")),
-            exit_time=timestamp,
+            exit_time=exit_timestamp,
             direction=str(getattr(position, "direction", "")),
             signal_entry_price=float(getattr(position, "signal_entry_price", 0.0) or 0.0),
             entry_price=float(getattr(position, "entry_price", 0.0) or 0.0),
@@ -5158,16 +5448,18 @@ class OkxExecutionEngine:
         engine.capital = live_total
         action = StrategyAction(
             type=ActionType.CLOSE_POSITION,
-            timestamp=timestamp,
+            timestamp=exit_timestamp,
             direction=getattr(position, "direction", None),
             exit_price=exit_price,
             reason=reason,
             metadata={
-                "synthetic": True,
-                "source": "external_flat_sync",
+                "synthetic": close.synthetic,
+                "source": close.source,
                 "context": context,
                 "gross_pnl": gross_pnl,
                 "fees": fees,
+                "entry_fee": close.entry_fee,
+                "exit_fee": close.exit_fee,
                 "slippage_cost": slippage_cost,
                 "net_pnl": net_pnl,
                 "signal_exit_price": exit_price,
@@ -5183,6 +5475,10 @@ class OkxExecutionEngine:
                 "execution_effective_leverage": self._safe_float(getattr(position, "execution_effective_leverage", None)),
                 "execution_risk_mode": getattr(position, "execution_risk_mode", None),
                 "execution_leverage_reasons": getattr(position, "execution_leverage_reasons", None),
+                "exchange_order_id": getattr(position, "exchange_order_id", None),
+                "exchange_close_order_id": close.close_order_id,
+                "exchange_close_fill_count": close.close_fill_count,
+                "exchange_entry_fill_count": close.entry_fill_count,
             },
         )
         self.record_action(action)

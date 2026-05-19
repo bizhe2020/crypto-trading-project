@@ -62,6 +62,29 @@ class OkxClient:
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> list[list[float]]:
         return self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
 
+    def fetch_my_trades(
+        self,
+        symbol: str,
+        *,
+        since: int | None = None,
+        limit: int | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.exchange.fetch_my_trades(symbol, since=since, limit=limit, params=params or {})
+
+    def fetch_order_fills(
+        self,
+        *,
+        inst_id: str,
+        order_id: str,
+        inst_type: str = "SWAP",
+    ) -> list[dict[str, Any]]:
+        response = self.exchange.privateGetTradeFills(
+            {"instType": inst_type, "ordId": order_id, "instId": inst_id}
+        )
+        data = response.get("data") if isinstance(response, dict) else None
+        return data if isinstance(data, list) else []
+
     def set_leverage(
         self,
         leverage: int,

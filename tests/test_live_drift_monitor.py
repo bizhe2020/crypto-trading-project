@@ -189,6 +189,95 @@ class LiveDriftMonitorTest(unittest.TestCase):
         self.assertEqual(trades[0].entry_execution_time.isoformat(), "2026-04-01T00:15:00+00:00")
         self.assertEqual(trades[0].exit_execution_time.isoformat(), "2026-04-01T03:00:00+00:00")
 
+    def test_build_live_trades_preserves_exchange_fill_sync_realized_pnl(self) -> None:
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        db_path = Path(tmpdir.name) / "state.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE action_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            insert_action(
+                conn,
+                "2026-05-19 10:45:00",
+                "OPEN_SHORT",
+                {
+                    "type": "OPEN_SHORT",
+                    "timestamp": "2026-05-19 10:45:00",
+                    "direction": "BEAR",
+                    "entry_price": 77006.5,
+                    "stop_price": 77297.340263,
+                    "target_price": 76309.3097,
+                    "metadata": {
+                        "signal_entry_price": 77006.5,
+                        "capital_at_entry": 1000.0,
+                        "notional": 71470.52,
+                        "risk_amount": 100.0,
+                    },
+                },
+            )
+            insert_action(
+                conn,
+                "2026-05-19 11:01:17",
+                "MANUAL_POSITION_SYNC",
+                {
+                    "context": "after_execute",
+                    "snapshot": {
+                        "position": {
+                            "direction": "BEAR",
+                            "entry_time": "2026-05-19 11:01:17",
+                            "signal_entry_price": 77006.5,
+                            "entry_price": 77026.96357273609,
+                            "sl_price": 76959.37946592011,
+                            "target_price": 76309.3097,
+                            "capital_at_entry": 1000.0,
+                            "notional": 71470.52,
+                            "risk_amount": 100.0,
+                        }
+                    },
+                },
+            )
+            insert_action(
+                conn,
+                "2026-05-19 12:55:07",
+                "CLOSE_POSITION",
+                {
+                    "type": "CLOSE_POSITION",
+                    "timestamp": "2026-05-19 12:55:07",
+                    "direction": "BEAR",
+                    "exit_price": 76957.6,
+                    "reason": "external_stop_loss",
+                    "metadata": {
+                        "source": "exchange_fill_sync",
+                        "synthetic": False,
+                        "signal_exit_price": 76957.6,
+                        "entry_fee": 35.767470535,
+                        "exit_fee": 35.73526156,
+                        "fees": 71.502732095,
+                        "gross_pnl": 64.41795,
+                        "net_pnl": -7.084782095,
+                    },
+                },
+                created_at="2026-05-19 15:22:58",
+            )
+
+        trades, diagnostics = build_live_trades(load_action_log(db_path))
+
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(diagnostics["orphan_closes"], 0)
+        self.assertAlmostEqual(trades[0].net_pnl, -7.084782095)
+        self.assertAlmostEqual(trades[0].pnl_pct or 0.0, -0.007084782095)
+        self.assertEqual(trades[0].exit_time.isoformat(), "2026-05-19T12:55:07+00:00")
+        self.assertEqual(trades[0].exit_execution_time.isoformat(), "2026-05-19T15:22:58+00:00")
+
     def test_trade_metrics_uses_account_return_distribution(self) -> None:
         trades, _ = build_live_trades(load_action_log(self.build_db()))
 
