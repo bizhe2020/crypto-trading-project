@@ -1829,7 +1829,7 @@ class OkxExecutionEngine:
             "bear_total_6_light_boost": "bear=6轻放大",
             "fvg_near_bear6_target20": "fvg近场 bear=6 20x",
             "fvg_near_bear5_target8": "fvg近场 bear=5 8x",
-            "fvg_near_bear3_target3": "fvg近场 bear=3 3x",
+            "fvg_near_bear3_target5": "fvg近场 bear=3 5x",
             "fvg_hg_net8_target4": "fvg高增长 net=8 4x",
         }
         return labels.get(str(name or ""), str(name or "-"))

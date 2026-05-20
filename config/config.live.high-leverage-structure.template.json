@@ -300,9 +300,9 @@
       "continue": true
     },
     {
-      "name": "fvg_near_bear3_target3",
+      "name": "fvg_near_bear3_target5",
       "bear_eq": 3,
-      "target_effective_leverage": 3.0,
+      "target_effective_leverage": 5.0,
       "required_true_features": [
         "recent_fvg_near_entry"
       ],

@@ -15,7 +15,7 @@ var/log/*
 !var/log/.gitkeep
 var/run/
 var/live_readiness/
-var/high_leverage_expansion/
+var/high_leverage_expansion/*
 var/high_leverage_scan/
 var/pa_ict_liquidity/
 var/tokyo_audit/
@@ -31,6 +31,7 @@ config/config.live*.json
 !config/config.live.high-leverage-structure.fallback-b.template.json
 !config/config.live.high-leverage-structure.fallback-c.template.json
 !var/high_leverage_expansion/frozen_live_core_20260515.json
+!var/high_leverage_expansion/frozen_live_core_20260520.json
 !var/high_leverage_expansion/fallback_plan_20260516.json
 config/*.bak*
 live_bot*.log
