@@ -3545,11 +3545,38 @@ class OkxExecutionEngine:
 
         sizing = self._resolve_order_sizing(action, engine)
         if sizing.get("status") != "ok":
+            if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+                self._rollback_unexecuted_open(
+                    action,
+                    engine,
+                    reason=str(sizing.get("reason") or sizing.get("status") or "sizing_failed"),
+                )
+                self.store.append_action(
+                    action.timestamp,
+                    "EXECUTION_SKIPPED",
+                    {
+                        "action": asdict(action),
+                        "decision": sizing,
+                    },
+                )
             return sizing
         overlay_skipped_dynamic = False
         if not (self._is_overlay_open_action(action) and bool(self.config.overlay_skip_dynamic_high_leverage)):
             sizing, dynamic_decision = self._dynamic_high_leverage_pre_open(action, sizing, engine)
             if dynamic_decision is not None:
+                self._rollback_unexecuted_open(
+                    action,
+                    engine,
+                    reason=str(dynamic_decision.get("status") or "skipped_open"),
+                )
+                self.store.append_action(
+                    action.timestamp,
+                    "EXECUTION_SKIPPED",
+                    {
+                        "action": asdict(action),
+                        "decision": dynamic_decision,
+                    },
+                )
                 return dynamic_decision
         else:
             overlay_skipped_dynamic = True
@@ -3557,6 +3584,19 @@ class OkxExecutionEngine:
         exit_profile_decision = self._apply_open_exit_profile_metadata(engine, action)
         high_leverage_decision = self._high_leverage_guard_pre_open(action, sizing)
         if high_leverage_decision is not None:
+            self._rollback_unexecuted_open(
+                action,
+                engine,
+                reason=str(high_leverage_decision.get("status") or "skipped_open"),
+            )
+            self.store.append_action(
+                action.timestamp,
+                "EXECUTION_SKIPPED",
+                {
+                    "action": asdict(action),
+                    "decision": high_leverage_decision,
+                },
+            )
             return high_leverage_decision
         soft_stop_decision = None
         if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT} and bool(self.config.enable_sota_soft_stop_recovery_overlay_live):
@@ -3723,6 +3763,30 @@ class OkxExecutionEngine:
 
         self.record_action(action)
         return {"status": "recorded_only", "action": action.type.value}
+
+    def _rollback_unexecuted_open(self, action: StrategyAction, engine: Any, *, reason: str) -> None:
+        rolled_back = False
+        position = getattr(engine, "position", None)
+        if position is not None:
+            entry_time = str(getattr(position, "entry_time", "") or "")
+            direction = str(getattr(position, "direction", "") or "")
+            direction_matches = not action.direction or direction == str(action.direction)
+            if entry_time == action.timestamp and direction_matches:
+                engine.position = None
+                rolled_back = True
+
+        self.store.append_action(
+            action.timestamp,
+            "UNEXECUTED_OPEN_ROLLBACK",
+            {
+                "reason": reason,
+                "rolled_back": rolled_back,
+                "direction": action.direction,
+                "entry_price": action.entry_price,
+                "stop_price": action.stop_price,
+                "target_price": action.target_price,
+            },
+        )
 
     def _rollback_unexecuted_close(self, action: StrategyAction, engine: Any, *, reason: str) -> None:
         metadata = action.metadata or {}
@@ -3925,7 +3989,7 @@ class OkxExecutionEngine:
             state = self._load_shadow_gate_state()
             state["real_position_open"] = False
             state["real_position_direction"] = None
-            state["paper_entry_time"] = action.timestamp
+            state["paper_entry_time"] = None
             self._shadow_append_event(
                 state,
                 {
@@ -4523,7 +4587,7 @@ class OkxExecutionEngine:
                 shadow_state = self._load_shadow_gate_state(engine)
                 shadow_state["real_position_open"] = False
                 shadow_state["real_position_direction"] = None
-                shadow_state["paper_entry_time"] = action.timestamp
+                shadow_state["paper_entry_time"] = None
                 self._shadow_append_event(
                     shadow_state,
                     {
