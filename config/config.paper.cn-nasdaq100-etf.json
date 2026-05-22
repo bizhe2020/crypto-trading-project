@@ -1,0 +1,49 @@
+{
+  "mode": "paper",
+  "signal_symbol": "QQQ",
+  "execution_symbol": "513100.SS",
+  "regime_symbols": {
+    "spy": "SPY",
+    "ixic": "^IXIC",
+    "vix": "^VIX"
+  },
+  "timeframe": "1d",
+  "data_root": "data/public/etf",
+  "execution_price_mode": "next_open",
+  "entry_fast_window": 25,
+  "entry_slow_window": 200,
+  "regime_filter": "vix_ixic",
+  "vix_allowed_labels": [
+    "vix_low",
+    "vix_normal"
+  ],
+  "ixic_trend_required": "ixic_up",
+  "max_hold_days": 90,
+  "trailing_lookback_days": 5,
+  "trailing_drawdown_pct": 8.0,
+  "hold_mode": "hard_exit",
+  "conditional_leverage_enabled": false,
+  "conditional_leverage_trigger": "vix_low",
+  "conditional_leverage_value": 2.0,
+  "tiered_leverage_enabled": true,
+  "tiered_leverage_rules": [
+    {
+      "vix_label": "vix_low",
+      "rel_strength_label": "qqq_strong",
+      "leverage": 2.0
+    },
+    {
+      "vix_label": "vix_low",
+      "leverage": 2.0
+    },
+    {
+      "vix_label": "vix_normal",
+      "rel_strength_label": "qqq_strong",
+      "leverage": 1.75
+    }
+  ],
+  "switch_cost_bps": 10.0,
+  "initial_capital": 1000.0,
+  "paper_state_path": "state/cn_nasdaq100_paper_state.json",
+  "paper_decisions_path": "var/reports/cn_nasdaq100_paper_decisions.jsonl"
+}

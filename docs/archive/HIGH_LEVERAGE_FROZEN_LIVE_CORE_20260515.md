@@ -98,8 +98,8 @@ PY
 
 python3 scripts/replay_sota_smc_live_shadow.py \
   --config config/config.live.high-leverage-structure.json \
-  --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather \
-  --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather \
+  --data-15m data/futures/BTC_USDT_USDT-15m-futures.feather \
+  --data-4h data/futures/BTC_USDT_USDT-4h-futures.feather \
   --start-date 2022-01-01 \
   --confirmed-4h-only \
   --replay-sync-entry-to-signal-price \

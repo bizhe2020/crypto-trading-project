@@ -24,8 +24,8 @@ Use:
 ```bash
 python3 scripts/reproduce_shadow_gate_best.py \
   --config config/config.live.5x-3pct.json \
-  --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather \
-  --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather \
+  --data-15m data/futures/BTC_USDT_USDT-15m-futures.feather \
+  --data-4h data/futures/BTC_USDT_USDT-4h-futures.feather \
   --start-date 2022-01-01 \
   --end-ts "2026-04-25 03:45:00+00:00" \
   --daily-loss-stop-pct 6 \
@@ -56,8 +56,8 @@ The exact target result assumes the input data is available from `2022-01-01` th
 
 | File | Required cutoff |
 |---|---|
-| `data/okx/futures/BTC_USDT_USDT-15m-futures.feather` | `2026-04-25 03:45:00+00:00` |
-| `data/okx/futures/BTC_USDT_USDT-4h-futures.feather` | last 4h candle at or before the 15m cutoff |
+| `data/futures/BTC_USDT_USDT-15m-futures.feather` | `2026-04-25 03:45:00+00:00` |
+| `data/futures/BTC_USDT_USDT-4h-futures.feather` | last 4h candle at or before the 15m cutoff |
 
 The script accepts newer data files, but it truncates them with `--end-ts` before running. If you omit `--end-ts` or use a later cutoff, the 60d/30d windows and final metrics can change.
 

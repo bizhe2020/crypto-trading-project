@@ -4,4 +4,4 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT"
 
-exec python3 scripts/replay_tokyo_full_snapshot_anchor.py "$@"
+echo "Tokyo snapshot replay is not part of the current CN ETF branch."

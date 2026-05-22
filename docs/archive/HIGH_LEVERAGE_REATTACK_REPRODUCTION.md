@@ -48,7 +48,7 @@ It records the expected result, data paths, pressure-level target-cap params, sh
 The script expands to the fixed one-parameter command:
 
 ```bash
-python3 scripts/scan_pressure_level_trailing.py --config config/config.live.5x-3pct.json --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather --start-date 2022-01-01 --pressure-min-rr-values 2.0 --pressure-lock-rr-values 0.4 --pressure-atr-multiplier-values 3.0 --pressure-proximity-pct-values 0.15 --pressure-rejection-min-rr-values 3.0 --pressure-take-profit-on-rejection-values false --pressure-enable-target-cap-values true --pressure-target-min-rr-values 1.25 --pressure-target-buffer-pct-values 0.03 --pressure-dynamic-target-min-rr-enabled-values false --pressure-regime-label-sets flat --pressure-touch-lock-enabled-values true --pressure-touch-lock-min-rr-values 1.0 --pressure-touch-lock-buffer-pct-values 0.03 --pressure-touch-lock-atr-multiplier-values 0.0 --pressure-touch-lock-requires-touch-values false --top 1 --output var/high_leverage_expansion/pressure_approach_lock_retarget_best_full.json
+python3 scripts/scan_pressure_level_trailing.py --config config/config.live.5x-3pct.json --data-15m data/futures/BTC_USDT_USDT-15m-futures.feather --data-4h data/futures/BTC_USDT_USDT-4h-futures.feather --start-date 2022-01-01 --pressure-min-rr-values 2.0 --pressure-lock-rr-values 0.4 --pressure-atr-multiplier-values 3.0 --pressure-proximity-pct-values 0.15 --pressure-rejection-min-rr-values 3.0 --pressure-take-profit-on-rejection-values false --pressure-enable-target-cap-values true --pressure-target-min-rr-values 1.25 --pressure-target-buffer-pct-values 0.03 --pressure-dynamic-target-min-rr-enabled-values false --pressure-regime-label-sets flat --pressure-touch-lock-enabled-values true --pressure-touch-lock-min-rr-values 1.0 --pressure-touch-lock-buffer-pct-values 0.03 --pressure-touch-lock-atr-multiplier-values 0.0 --pressure-touch-lock-requires-touch-values false --top 1 --output var/high_leverage_expansion/pressure_approach_lock_retarget_best_full.json
 ```
 
 Expected terminal line:
@@ -217,7 +217,7 @@ The fixed high-leverage overlay parameters used by the command above are embedde
 
 Runtime implementation files:
 
-- `bot/okx_executor.py`: adds `enable_dynamic_high_leverage_structure`. When enabled, the executor updates a persisted `dynamic_high_leverage_structure_state` after closes and recalculates the next open's target effective leverage before sending the order.
+- `execution engine`: adds `enable_dynamic_high_leverage_structure`. When enabled, the executor updates a persisted `dynamic_high_leverage_structure_state` after closes and recalculates the next open's target effective leverage before sending the order.
 - `config/config.paper.high-leverage-structure.json`: paper runtime config with the current best dynamic parameters and shadow gate params.
 - `config/config.live.high-leverage-structure.template.json`: live template with the same parameters. Fill API credentials in a real `config/config.live.high-leverage-structure.json`; do not commit the filled file.
 - `scripts/run_high_leverage_structure_live.sh`: live run-loop wrapper.
@@ -319,8 +319,8 @@ Run from repo root:
 ```bash
 python3 scripts/scan_high_leverage_expansion.py \
   --config config/config.live.5x-3pct.json \
-  --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather \
-  --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather \
+  --data-15m data/futures/BTC_USDT_USDT-15m-futures.feather \
+  --data-4h data/futures/BTC_USDT_USDT-4h-futures.feather \
   --start-date 2022-01-01 \
   --base-leverage 4 \
   --high-growth-leverage 6 \
@@ -475,8 +475,8 @@ The best result above was found with this smaller search grid:
 ```bash
 python3 scripts/scan_high_leverage_expansion.py \
   --config config/config.live.5x-3pct.json \
-  --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather \
-  --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather \
+  --data-15m data/futures/BTC_USDT_USDT-15m-futures.feather \
+  --data-4h data/futures/BTC_USDT_USDT-4h-futures.feather \
   --start-date 2022-01-01 \
   --base-leverage 4 \
   --high-growth-leverage 6 \
@@ -518,7 +518,7 @@ That grid has `27648` candidates and is slower than the fixed reproduction comma
 ## Caveats
 
 - This is a research overlay, not live execution code.
-- The result is sensitive to the data snapshot. Different OKX downloads or a later data cutoff can change the compounded return.
+- The result is sensitive to the data snapshot. Different downloads or a later data cutoff can change the compounded return.
 - The 2026 YTD return remains weak at `0.83%`; the edge in this candidate is mainly full-window expansion with controlled drawdown.
 - Compare against the current reproducible main baseline `8241.56% / 36.02%`, not the older README historical record `9240.42% / 36.02%`, unless the original old data snapshot is recovered.
 
@@ -540,8 +540,8 @@ Fixed command:
 ```bash
 python3 scripts/scan_high_leverage_expansion.py \
   --config config/config.live.5x-3pct.json \
-  --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather \
-  --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather \
+  --data-15m data/futures/BTC_USDT_USDT-15m-futures.feather \
+  --data-4h data/futures/BTC_USDT_USDT-4h-futures.feather \
   --start-date 2022-01-01 \
   --base-leverage 4 \
   --high-growth-leverage 7.5 \
@@ -633,8 +633,8 @@ Reproduction command:
 ```bash
 python3 scripts/scan_shadow_on_fixed_high_leverage.py \
   --config config/config.live.5x-3pct.json \
-  --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather \
-  --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather \
+  --data-15m data/futures/BTC_USDT_USDT-15m-futures.feather \
+  --data-4h data/futures/BTC_USDT_USDT-4h-futures.feather \
   --start-date 2022-01-01 \
   --daily-loss-values 6 \
   --equity-dd-values 15 \
@@ -649,8 +649,8 @@ Refined local search command:
 ```bash
 python3 scripts/scan_shadow_on_fixed_high_leverage.py \
   --config config/config.live.5x-3pct.json \
-  --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather \
-  --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather \
+  --data-15m data/futures/BTC_USDT_USDT-15m-futures.feather \
+  --data-4h data/futures/BTC_USDT_USDT-4h-futures.feather \
   --start-date 2022-01-01 \
   --daily-loss-values 4,5,6,7,8 \
   --equity-dd-values 12,13,14,15,16,17,18,20 \

@@ -6,8 +6,8 @@ This report analyzes the current high-leverage retarget strategy with the active
 python3 scripts/report_2026_pressure_loss_buckets.py \
   --config config/config.live.5x-3pct.json \
   --pressure-params config/high_leverage_pressure_target_cap_best.params.json \
-  --data-15m data/okx/futures/BTC_USDT_USDT-15m-futures.feather \
-  --data-4h data/okx/futures/BTC_USDT_USDT-4h-futures.feather \
+  --data-15m data/futures/BTC_USDT_USDT-15m-futures.feather \
+  --data-4h data/futures/BTC_USDT_USDT-4h-futures.feather \
   --start-date 2022-01-01 \
   --year 2026 \
   --daily-loss-stop-pct 6.0 \

@@ -2,24 +2,27 @@
 
 Scope:
 
-- candidate generation
-- score-gated SOTA filtering
-- SMC short integration and arbitration checks
-- trailing mode sensitivity
+- CN Nasdaq-100 ETF parameter scans
+- next-open baseline optimization
+- conditional leverage and tiered sizing research
+- Kelly bucket audit
 
 Canonical entrypoints:
 
-- `bash scripts/workflows/research/run_confirmed_score_gate.sh`
-- `bash scripts/workflows/research/run_trailing_rr_scan.sh`
+- `python3 scripts/scan_cn_nasdaq100_params.py`
+- `python3 scripts/scan_cn_nasdaq100_next_open_baseline.py`
+- `python3 scripts/scan_cn_nasdaq100_next_open_exit_only.py`
+- `python3 scripts/scan_cn_nasdaq100_next_open_tiered_only.py`
 
 Primary scripts:
 
-- `scripts/replay_confirmed_score_gate.py`
-- `scripts/scan_confirmed_score_gates.py`
-- `scripts/scan_trailing_rr_modes_live_shadow.py`
+- `scripts/scan_cn_nasdaq100_params.py`
+- `scripts/scan_cn_nasdaq100_conditional_leverage.py`
+- `scripts/scan_cn_nasdaq100_conditional_leverage_refine.py`
+- `scripts/scan_cn_nasdaq100_tiered_sizing.py`
+- `scripts/scan_cn_nasdaq100_secondary_reentry.py`
 
 Current research rule:
 
-- Research may generate candidates and reports.
-- Promotion to `main` must happen only after replay/audit scripts confirm the live-aligned path.
-- Historical branch notes in `docs/archive/` are not the current source of truth.
+- Formal baseline lives in `docs/cn_nasdaq100_research_plan.md`.
+- New candidates should be evaluated under the same `next_open` execution rule before promotion.

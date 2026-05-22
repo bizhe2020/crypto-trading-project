@@ -4,4 +4,4 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT"
 
-exec python3 scripts/replay_confirmed_score_gate.py "$@"
+exec python3 scripts/scan_cn_nasdaq100_params.py "$@"

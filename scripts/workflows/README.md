@@ -2,8 +2,8 @@
 
 These wrappers are the stable human-facing entrypoints.
 
-- `live/`: local live bot and Tokyo deployment
-- `replay/`: replay and convergence audit
-- `research/`: parameter search and candidate generation
+- `live/`: CN ETF paper and live-shadow
+- `replay/`: CN ETF replay and audit
+- `research/`: CN ETF parameter search
 
 The wrappers call the underlying scripts in `scripts/` and keep the current canonical defaults in one place.
