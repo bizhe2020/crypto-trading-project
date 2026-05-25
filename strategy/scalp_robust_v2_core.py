@@ -359,28 +359,26 @@ def load_candles(path: str | Path) -> list[Candle]:
 
 def dataframe_to_candles(dataframe: pd.DataFrame) -> list[Candle]:
     df = dataframe.copy()
-    df.columns = [column.lower() for column in df.columns]
+    df.columns = [str(column).lower() for column in df.columns]
     if "date" in df.columns:
         ts_series = pd.to_datetime(df["date"], utc=True)
-        timestamps = ts_series.astype("int64") / 1_000_000_000
+        timestamps = (ts_series.astype("int64") / 1_000_000_000).to_numpy(dtype="float64")
     elif "timestamp" in df.columns:
-        timestamps = pd.to_numeric(df["timestamp"], errors="coerce") / 1000.0
+        timestamps = (pd.to_numeric(df["timestamp"], errors="coerce") / 1000.0).to_numpy(dtype="float64")
     else:
         raise ValueError("Dataframe must contain date or timestamp column")
 
-    candles: list[Candle] = []
-    for idx, row in df.iterrows():
-        candles.append(
-            Candle(
-                ts=float(timestamps.iloc[idx]),
-                o=float(row["open"]),
-                h=float(row["high"]),
-                l=float(row["low"]),
-                c=float(row["close"]),
-                v=float(row.get("volume", 0.0)),
-            )
-        )
-    return candles
+    volumes = df["volume"] if "volume" in df.columns else pd.Series(0.0, index=df.index)
+    opens = df["open"].astype(float).to_numpy(dtype="float64")
+    highs = df["high"].astype(float).to_numpy(dtype="float64")
+    lows = df["low"].astype(float).to_numpy(dtype="float64")
+    closes = df["close"].astype(float).to_numpy(dtype="float64")
+    volumes = volumes.astype(float).to_numpy(dtype="float64")
+
+    return [
+        Candle(ts=float(ts), o=float(o), h=float(h), l=float(l), c=float(c), v=float(v))
+        for ts, o, h, l, c, v in zip(timestamps, opens, highs, lows, closes, volumes)
+    ]
 
 
 def align_timeframes(c4h: list[Candle], c15m: list[Candle]) -> list[int]:
