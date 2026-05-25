@@ -266,6 +266,8 @@ class ExecutorConfig:
     telegram_drift_window_days: int = 30
     telegram_drift_recent_trades: int = 20
     telegram_drift_baseline_path: str = "config/live_drift_baseline.high_leverage.json"
+    live_evaluate_quiet_window_seconds: int = 90
+    live_latency_warning_seconds: float = 30.0
     enable_live_candidate_arbitration: bool = False
     live_candidate_priority: list[str] | None = None
     enable_sota_score_gate_live: bool = False
@@ -1469,7 +1471,14 @@ class OkxExecutionEngine:
     def _telegram_open_paused(self) -> bool:
         return str(self.store.get_value("telegram_open_paused") or "false").lower() in {"1", "true", "yes", "on"}
 
-    def _sleep_with_telegram(self, seconds: float, poll_interval_seconds: int) -> None:
+    def _sleep_with_telegram(
+        self,
+        seconds: float,
+        poll_interval_seconds: int,
+        *,
+        quiet_before_close_seconds: int | None = None,
+        close_buffer_seconds: int = 5,
+    ) -> None:
         deadline = time.time() + max(float(seconds), 0.0)
         interval = max(min(int(poll_interval_seconds), 30), 1)
         while True:
@@ -1477,6 +1486,11 @@ class OkxExecutionEngine:
             if remaining <= 0:
                 return
             time.sleep(min(remaining, interval))
+            if (
+                quiet_before_close_seconds is not None
+                and self.seconds_until_next_close(close_buffer_seconds) <= max(int(quiet_before_close_seconds), 0)
+            ):
+                continue
             self._run_telegram_background_tasks()
 
     def _send_startup_telegram(self, bootstrap_status: dict[str, Any]) -> None:
@@ -2272,6 +2286,13 @@ class OkxExecutionEngine:
                 if self._send_telegram(self._build_drift_report_message()):
                     self._mark_interval_sent(key)
 
+    def _live_evaluate_quiet_window_seconds(self) -> int:
+        return max(int(getattr(self.config, "live_evaluate_quiet_window_seconds", 0) or 0), 0)
+
+    def _inside_live_evaluate_quiet_window(self, close_buffer_seconds: int = 5) -> bool:
+        quiet_window = self._live_evaluate_quiet_window_seconds()
+        return quiet_window > 0 and self.seconds_until_next_close(close_buffer_seconds) <= quiet_window
+
     def bootstrap(self) -> dict[str, Any]:
         self.check_safety()
         markets = None
@@ -2341,9 +2362,18 @@ class OkxExecutionEngine:
         return engine, start_idx
 
     def evaluate_latest(self) -> dict[str, Any]:
+        timing_started_at = time.monotonic()
+        timing_marks: dict[str, float] = {}
+
+        def mark(name: str) -> None:
+            timing_marks[name] = round(time.monotonic() - timing_started_at, 6)
+
         engine, start_idx = self.load_engine()
+        mark("load_engine")
         live_capital = self._sync_live_capital(engine)
+        mark("sync_live_capital")
         latest_closed_idx = self._latest_closed_index(engine)
+        mark("latest_closed_index")
         if latest_closed_idx is None:
             return {
                 "status": "waiting_for_closed_candle",
@@ -2361,6 +2391,7 @@ class OkxExecutionEngine:
             timestamp=engine._timestamp_for_idx(latest_closed_idx),
             exit_idx=latest_closed_idx,
         )
+        mark("pre_state_sync")
         if latest_closed_idx < start_idx:
             snapshot = engine.snapshot()
             self.store.save_snapshot(snapshot)
@@ -2377,24 +2408,46 @@ class OkxExecutionEngine:
         # evaluate_range uses a right-open end index. Include latest_closed_idx;
         # otherwise live can mark a candle processed without evaluating it.
         actions = engine.evaluate_range(start_idx, latest_closed_idx + 1)
+        mark("evaluate_range")
         arbitration = None
         if self._live_candidate_arbitration_enabled():
             actions, arbitration = self._apply_live_candidate_arbitration(engine, actions, latest_closed_idx)
+        mark("candidate_arbitration")
         execution_results = []
         for action in actions:
             result = self.execute_action(action, engine)
             execution_results.append({"action": asdict(action), "result": result})
+        mark("execute_actions")
         self._assert_live_state_synced(
             engine,
             context="after_execute",
             timestamp=engine._timestamp_for_idx(latest_closed_idx),
             exit_idx=latest_closed_idx,
         )
+        mark("post_state_sync")
 
         last_timestamp = engine._timestamp_for_idx(latest_closed_idx)
         snapshot = engine.snapshot()
         self.store.set_value("last_processed_candle_time", last_timestamp)
         self.store.save_snapshot(snapshot)
+        mark("save_snapshot")
+
+        candle_close_ts = self._timestamp_for_idx_close_time(engine, latest_closed_idx)
+        now_ts = datetime.now(timezone.utc).timestamp()
+        evaluate_latency_seconds = round(max(now_ts - candle_close_ts, 0.0), 3) if candle_close_ts is not None else None
+        timing = {
+            "started_at_utc": datetime.fromtimestamp(
+                now_ts - (time.monotonic() - timing_started_at),
+                tz=timezone.utc,
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+            "duration_seconds": round(time.monotonic() - timing_started_at, 6),
+            "marks_seconds": timing_marks,
+            "candle_close_latency_seconds": evaluate_latency_seconds,
+            "warning": (
+                evaluate_latency_seconds is not None
+                and evaluate_latency_seconds > float(getattr(self.config, "live_latency_warning_seconds", 0.0) or 0.0)
+            ),
+        }
 
         status = {
             "status": "ok",
@@ -2407,6 +2460,7 @@ class OkxExecutionEngine:
             "position_open": engine.position is not None,
             "snapshot": asdict(snapshot),
             "live_capital": engine.capital,
+            "timing": timing,
         }
         self.store.append_action(last_timestamp, "EVALUATE", status)
         return status
@@ -3457,11 +3511,12 @@ class OkxExecutionEngine:
         self._run_telegram_background_tasks()
         while True:
             try:
-                self._run_telegram_background_tasks()
                 wait_seconds = self.seconds_until_next_close(close_buffer_seconds)
                 latest_closed_time = self.latest_closed_candle_time(close_buffer_seconds)
                 last_processed = self.store.get_value("last_processed_candle_time")
                 if last_processed == latest_closed_time:
+                    if not self._inside_live_evaluate_quiet_window(close_buffer_seconds):
+                        self._run_telegram_background_tasks()
                     sleep_seconds = max(wait_seconds, poll_interval_seconds)
                     payload = {
                         "event": "waiting",
@@ -3472,7 +3527,12 @@ class OkxExecutionEngine:
                     }
                     self.store.append_action(latest_closed_time, "WAIT", payload)
                     print(json.dumps(payload, ensure_ascii=False))
-                    self._sleep_with_telegram(max(wait_seconds, poll_interval_seconds), poll_interval_seconds)
+                    self._sleep_with_telegram(
+                        max(wait_seconds, poll_interval_seconds),
+                        poll_interval_seconds,
+                        quiet_before_close_seconds=self._live_evaluate_quiet_window_seconds(),
+                        close_buffer_seconds=close_buffer_seconds,
+                    )
                     continue
 
                 status = self.evaluate_latest()
@@ -6079,6 +6139,12 @@ class OkxExecutionEngine:
             if self._timestamp_from_ts(candles[idx].ts) <= latest_closed_time:
                 return idx
         return None
+
+    def _timestamp_for_idx_close_time(self, engine: Any, idx: int) -> float | None:
+        candles = self._engine_candles(engine)
+        if idx < 0 or idx >= len(candles):
+            return None
+        return float(candles[idx].ts) + float(self._timeframe_seconds())
 
     def latest_closed_candle_time(self, close_buffer_seconds: int = 5) -> str:
         now = datetime.now(timezone.utc) - timedelta(seconds=close_buffer_seconds)

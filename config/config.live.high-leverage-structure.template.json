@@ -229,6 +229,8 @@
   "telegram_drift_window_days": 30,
   "telegram_drift_recent_trades": 20,
   "telegram_drift_baseline_path": "config/live_drift_baseline.high_leverage.json",
+  "live_evaluate_quiet_window_seconds": 90,
+  "live_latency_warning_seconds": 30,
   "enable_live_candidate_arbitration": true,
   "live_candidate_priority": [
     "sota_long",
