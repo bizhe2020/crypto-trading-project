@@ -22,6 +22,7 @@ class FakeEngine:
         self.capital = 100.0
         self.position = None
         self.calls: list[tuple[int, int]] = []
+        self.c15m = [FakeCandle(1_700_000_000 + idx * 900) for idx in range(10)]
 
     def evaluate_range(self, start_idx: int, end_idx: int) -> list:
         self.calls.append((start_idx, end_idx))
@@ -55,6 +56,8 @@ class LiveEvaluateWindowTest(unittest.TestCase):
             {
                 "symbol": "BTC/USDT:USDT",
                 "enable_live_candidate_arbitration": False,
+                "timeframe": "15m",
+                "live_latency_warning_seconds": 30.0,
             },
         )()
         executor.load_engine = MethodType(lambda self: (engine, start_idx), executor)
@@ -74,6 +77,9 @@ class LiveEvaluateWindowTest(unittest.TestCase):
         self.assertEqual(engine.calls, [(4, 6)])
         self.assertEqual(status["processed_candle_time"], "t5")
         self.assertEqual(store.get_value("last_processed_candle_time"), "t5")
+        self.assertIn("timing", status)
+        self.assertIn("duration_seconds", status["timing"])
+        self.assertIn("evaluate_range", status["timing"]["marks_seconds"])
 
     def test_single_candle_window_is_evaluated(self) -> None:
         executor, engine, store = self.build_executor(start_idx=5, latest_closed_idx=5)
@@ -138,6 +144,38 @@ class LiveEvaluateWindowTest(unittest.TestCase):
         ]
 
         self.assertEqual(executor._find_resume_index(candles), 2)
+
+    def test_sleep_skips_telegram_tasks_inside_quiet_window(self) -> None:
+        executor = object.__new__(OkxExecutionEngine)
+        executor.config = type("Config", (), {"timeframe": "15m"})()
+        calls: list[str] = []
+        executor.seconds_until_next_close = MethodType(lambda self, close_buffer_seconds=5: 30, executor)
+        executor._run_telegram_background_tasks = MethodType(lambda self: calls.append("telegram"), executor)
+
+        executor._sleep_with_telegram(
+            0.01,
+            poll_interval_seconds=1,
+            quiet_before_close_seconds=90,
+            close_buffer_seconds=5,
+        )
+
+        self.assertEqual(calls, [])
+
+    def test_sleep_runs_telegram_tasks_outside_quiet_window(self) -> None:
+        executor = object.__new__(OkxExecutionEngine)
+        executor.config = type("Config", (), {"timeframe": "15m"})()
+        calls: list[str] = []
+        executor.seconds_until_next_close = MethodType(lambda self, close_buffer_seconds=5: 120, executor)
+        executor._run_telegram_background_tasks = MethodType(lambda self: calls.append("telegram"), executor)
+
+        executor._sleep_with_telegram(
+            0.01,
+            poll_interval_seconds=1,
+            quiet_before_close_seconds=90,
+            close_buffer_seconds=5,
+        )
+
+        self.assertGreaterEqual(len(calls), 1)
 
 
 if __name__ == "__main__":
