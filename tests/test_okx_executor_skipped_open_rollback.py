@@ -164,7 +164,8 @@ class SkippedOpenRollbackTest(unittest.TestCase):
         self.assertEqual(result["status"], "shadow_gate_skipped_close")
         state = __import__("json").loads(executor.store.values["dynamic_high_leverage_structure_state"])
         self.assertEqual(state["unit_returns"], [-0.02])
-        self.assertEqual(state["loss_streak"], 1)
+        self.assertEqual(state["loss_streak"], 0)
+        self.assertEqual(state["capital"], 1000.0)
         self.assertIsNone(state["paper_position"])
         action_types = [item[1] for item in executor.store.actions]
         self.assertIn("DYNAMIC_PAPER_CLOSE", action_types)
@@ -220,6 +221,8 @@ class SkippedOpenRollbackTest(unittest.TestCase):
         self.assertEqual(engine.trades, [])
         state = __import__("json").loads(executor.store.values["dynamic_high_leverage_structure_state"])
         self.assertEqual(state["unit_returns"], [-0.05])
+        self.assertEqual(state["loss_streak"], 0)
+        self.assertEqual(state["capital"], 1000.0)
         self.assertIsNone(state["paper_position"])
 
     def test_paper_dynamic_position_can_close_while_real_position_is_open(self) -> None:
@@ -274,6 +277,8 @@ class SkippedOpenRollbackTest(unittest.TestCase):
         self.assertEqual(engine.trades, [])
         state = __import__("json").loads(executor.store.values["dynamic_high_leverage_structure_state"])
         self.assertEqual(state["unit_returns"], [-0.05])
+        self.assertEqual(state["loss_streak"], 0)
+        self.assertEqual(state["capital"], 1000.0)
         self.assertIsNone(state["paper_position"])
 
     def test_paper_dynamic_evaluation_continues_after_stop_update(self) -> None:
@@ -345,6 +350,8 @@ class SkippedOpenRollbackTest(unittest.TestCase):
         self.assertEqual(payload["source"], "paper_skipped_close")
         state = __import__("json").loads(executor.store.values["dynamic_high_leverage_structure_state"])
         self.assertEqual(state["unit_returns"], [-0.01])
+        self.assertEqual(state["loss_streak"], 0)
+        self.assertEqual(state["capital"], 1000.0)
         self.assertIsNone(state["paper_position"])
         self.assertIsNone(engine.position)
         self.assertEqual(engine.trades, [])
