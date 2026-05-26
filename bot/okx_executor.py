@@ -4243,18 +4243,20 @@ class OkxExecutionEngine:
         notional: float,
         capital: float,
         source: str,
+        update_position_health: bool = True,
     ) -> dict[str, Any]:
         unit_returns = state.get("unit_returns") if isinstance(state.get("unit_returns"), list) else []
         unit_returns.append(unit_return)
         state["unit_returns"] = unit_returns[-100:]
-        if pnl > 0:
-            state["win_streak"] = int(state.get("win_streak", 0) or 0) + 1
-            state["loss_streak"] = 0
-        else:
-            state["loss_streak"] = int(state.get("loss_streak", 0) or 0) + 1
-            state["win_streak"] = 0
-        state["capital"] = capital
-        state["drawdown_peak"] = max(float(state.get("drawdown_peak", capital) or capital), capital)
+        if update_position_health:
+            if pnl > 0:
+                state["win_streak"] = int(state.get("win_streak", 0) or 0) + 1
+                state["loss_streak"] = 0
+            else:
+                state["loss_streak"] = int(state.get("loss_streak", 0) or 0) + 1
+                state["win_streak"] = 0
+            state["capital"] = capital
+            state["drawdown_peak"] = max(float(state.get("drawdown_peak", capital) or capital), capital)
         state["last_update_time"] = action.timestamp
         state["last_close"] = {
             "time": action.timestamp,
@@ -4296,6 +4298,7 @@ class OkxExecutionEngine:
             notional=float(notional),
             capital=capital,
             source="paper_skipped_close",
+            update_position_health=False,
         )
         state["paper_position"] = None
         state["paper_entry_time"] = None
