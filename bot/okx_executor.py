@@ -6,7 +6,7 @@ import random
 import time
 import uuid
 import requests
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ from strategy.scalp_robust_v2_core import (
     StrategyAction,
     StrategyConfig,
     Trade,
+    PositionState,
     align_timeframes,
     build_precomputed_state_confirmed_4h,
     dataframe_to_candles,
@@ -811,6 +812,9 @@ class OkxExecutionEngine:
         rule = bucket.get("rule") if isinstance(bucket.get("rule"), dict) else {}
         name = rule.get("name")
         return str(name) if name else None
+
+    def _apply_open_exit_profile_metadata(self, engine: Any, action: StrategyAction) -> dict[str, Any] | None:
+        return None
 
     def _sota_soft_stop_score_payload(self, action: StrategyAction) -> dict[str, Any] | None:
         score_gate = (action.metadata or {}).get("sota_score_gate")
@@ -2226,6 +2230,9 @@ class OkxExecutionEngine:
                 "live_capital": engine.capital,
             }
 
+        paper_dynamic_result = self._dynamic_evaluate_paper_position(engine, latest_closed_idx)
+        mark("paper_dynamic")
+
         # evaluate_range uses a right-open end index. Include latest_closed_idx;
         # otherwise live can mark a candle processed without evaluating it.
         actions = engine.evaluate_range(start_idx, latest_closed_idx + 1)
@@ -2276,6 +2283,7 @@ class OkxExecutionEngine:
             "processed_candle_time": last_timestamp,
             "actions": [asdict(action) for action in actions],
             "execution_results": execution_results,
+            "paper_dynamic": paper_dynamic_result,
             "live_candidate_arbitration": arbitration,
             "trade_count": snapshot.trade_count,
             "position_open": engine.position is not None,
@@ -3224,14 +3232,18 @@ class OkxExecutionEngine:
         shadow_decision = self._shadow_gate_pre_execute(action, engine)
         if shadow_decision is not None:
             if action.type == ActionType.CLOSE_POSITION:
+                paper_dynamic_close = self._dynamic_paper_after_skipped_close(action, engine)
                 self._rollback_unexecuted_close(action, engine, reason=str(shadow_decision.get("status") or "skipped_close"))
+                skipped_payload = {
+                    "action": asdict(action),
+                    "decision": shadow_decision,
+                }
+                if paper_dynamic_close is not None:
+                    skipped_payload["paper_dynamic_close"] = paper_dynamic_close
                 self.store.append_action(
                     action.timestamp,
                     "EXECUTION_SKIPPED",
-                    {
-                        "action": asdict(action),
-                        "decision": shadow_decision,
-                    },
+                    skipped_payload,
                 )
             return shadow_decision
         if action.type == ActionType.UPDATE_STOP:
@@ -3258,10 +3270,13 @@ class OkxExecutionEngine:
                     },
                 )
             return sizing
+        exit_profile_decision = None
         overlay_skipped_dynamic = False
         if not (self._is_overlay_open_action(action) and bool(self.config.overlay_skip_dynamic_high_leverage)):
             sizing, dynamic_decision = self._dynamic_high_leverage_pre_open(action, sizing, engine)
             if dynamic_decision is not None:
+                exit_profile_decision = self._apply_open_exit_profile_metadata(engine, action)
+                self._dynamic_record_paper_open(action, sizing, dynamic_decision, engine)
                 self._rollback_unexecuted_open(
                     action,
                     engine,
@@ -3279,6 +3294,8 @@ class OkxExecutionEngine:
         else:
             overlay_skipped_dynamic = True
             self._apply_overlay_execution_metadata(engine, action, sizing)
+        if exit_profile_decision is None:
+            exit_profile_decision = self._apply_open_exit_profile_metadata(engine, action)
         high_leverage_decision = self._high_leverage_guard_pre_open(action, sizing)
         if high_leverage_decision is not None:
             self._rollback_unexecuted_open(
@@ -3983,7 +4000,7 @@ class OkxExecutionEngine:
         return {"status": "ok", "amount": 0.0}
 
     def _dynamic_high_leverage_enabled(self) -> bool:
-        return bool(self.config.enable_dynamic_high_leverage_structure)
+        return bool(getattr(self.config, "enable_dynamic_high_leverage_structure", False))
 
     def _dynamic_high_leverage_default_state(self, engine: Any | None = None) -> dict[str, Any]:
         capital = float(getattr(engine, "capital", 0.0) or 0.0) if engine is not None else 0.0
@@ -4014,6 +4031,287 @@ class OkxExecutionEngine:
 
     def _save_dynamic_high_leverage_state(self, state: dict[str, Any]) -> None:
         self.store.set_value("dynamic_high_leverage_structure_state", json.dumps(state, ensure_ascii=False))
+
+    def _dynamic_paper_position_from_action(
+        self,
+        action: StrategyAction,
+        sizing: dict[str, Any],
+        decision: dict[str, Any],
+        engine: Any,
+    ) -> dict[str, Any]:
+        metadata = dict(action.metadata or {})
+        position = getattr(engine, "position", None)
+        return {
+            "entry_time": action.timestamp,
+            "direction": action.direction,
+            "entry_price": float(action.entry_price or 0.0),
+            "stop_price": float(action.stop_price or 0.0),
+            "target_price": float(action.target_price or 0.0),
+            "notional": self._safe_float(getattr(position, "notional", None))
+            or self._safe_float(sizing.get("notional_usdt"))
+            or self._safe_float(metadata.get("notional"))
+            or self._safe_float(sizing.get("risk_based_notional_usdt"))
+            or 0.0,
+            "quantity": self._safe_float(getattr(position, "quantity", None)) or self._safe_float(metadata.get("quantity")) or 0.0,
+            "capital_at_entry": self._safe_float(getattr(position, "capital_at_entry", None))
+            or self._safe_float(metadata.get("capital_at_entry"))
+            or self._safe_float(sizing.get("available_usdt"))
+            or self._safe_float(getattr(engine, "capital", None))
+            or 0.0,
+            "signal_entry_price": metadata.get("signal_entry_price") or action.entry_price,
+            "entry_idx": metadata.get("index"),
+            "entry_fee": self._safe_float(getattr(position, "entry_fee", None)) or self._safe_float(metadata.get("entry_fee")) or 0.0,
+            "entry_slippage_cost": self._safe_float(getattr(position, "entry_slippage_cost", None))
+            or self._safe_float(metadata.get("entry_slippage_cost"))
+            or 0.0,
+            "entry_regime_score": metadata.get("entry_regime_score"),
+            "target_rr": metadata.get("target_rr"),
+            "max_hold_bars": metadata.get("max_hold_bars"),
+            "trail_style": metadata.get("trail_style"),
+            "time_based_trailing_enabled": metadata.get("time_based_trailing_enabled"),
+            "auto_tit_reason": metadata.get("auto_tit_reason"),
+            "risk_regime": metadata.get("risk_regime"),
+            "regime_label": metadata.get("regime_label"),
+            "candidate_event_type": metadata.get("candidate_event_type"),
+            "exit_profile": metadata.get("exit_profile"),
+            "exit_profile_reason": metadata.get("exit_profile_reason"),
+            "exit_profile_overrides": (
+                dict(metadata["exit_profile_overrides"])
+                if isinstance(metadata.get("exit_profile_overrides"), dict)
+                else None
+            ),
+            "reason": str(decision.get("reason") or decision.get("status") or "skipped_open"),
+            "decision": decision,
+        }
+
+    def _dynamic_record_paper_open(
+        self,
+        action: StrategyAction,
+        sizing: dict[str, Any],
+        decision: dict[str, Any],
+        engine: Any,
+    ) -> dict[str, Any] | None:
+        if not self._dynamic_high_leverage_enabled() or action.type not in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+            return None
+        state = self._load_dynamic_high_leverage_state(engine)
+        paper = self._dynamic_paper_position_from_action(action, sizing, decision, engine)
+        state["paper_position"] = paper
+        state["paper_entry_time"] = paper["entry_time"]
+        state["last_update_time"] = action.timestamp
+        self._save_dynamic_high_leverage_state(state)
+        self.store.append_action(
+            action.timestamp,
+            "DYNAMIC_PAPER_OPEN",
+            {
+                "reason": paper["reason"],
+                "position": paper,
+            },
+        )
+        return paper
+
+    def _dynamic_position_state_from_paper(self, paper: dict[str, Any]) -> PositionState | None:
+        try:
+            direction = str(paper.get("direction") or "")
+            entry_price = float(paper.get("entry_price", 0.0) or 0.0)
+            stop_price = float(paper.get("stop_price", 0.0) or 0.0)
+            target_price = float(paper.get("target_price", 0.0) or 0.0)
+            notional = float(paper.get("notional", 0.0) or 0.0)
+            quantity = float(paper.get("quantity", 0.0) or 0.0)
+            capital_at_entry = float(paper.get("capital_at_entry", 0.0) or 0.0)
+            entry_idx = int(paper.get("entry_idx", 0) or 0)
+        except (TypeError, ValueError):
+            return None
+        if not direction or entry_price <= 0 or stop_price <= 0:
+            return None
+        if quantity <= 0 and notional > 0:
+            quantity = notional / entry_price
+        if notional <= 0 and quantity > 0:
+            notional = quantity * entry_price
+        if quantity <= 0 or notional <= 0:
+            return None
+        risk_amount = abs(entry_price - stop_price) * quantity
+        if risk_amount <= 0:
+            return None
+        decision = paper.get("decision") if isinstance(paper.get("decision"), dict) else {}
+        leverage_reasons = decision.get("leverage_reasons")
+        payload = {
+            "direction": direction,
+            "signal_entry_price": float(paper.get("signal_entry_price", entry_price) or entry_price),
+            "entry_price": entry_price,
+            "sl_price": stop_price,
+            "initial_sl_price": stop_price,
+            "target_price": target_price,
+            "entry_time": str(paper.get("entry_time") or ""),
+            "capital_at_entry": capital_at_entry,
+            "risk_amount": risk_amount,
+            "notional": notional,
+            "quantity": quantity,
+            "entry_fee": float(paper.get("entry_fee", 0.0) or 0.0),
+            "entry_slippage_cost": float(paper.get("entry_slippage_cost", 0.0) or 0.0),
+            "entry_idx": entry_idx,
+            "entry_regime_score": int(paper.get("entry_regime_score", 0) or 0),
+            "target_rr": float(paper.get("target_rr", 0.0) or 0.0),
+            "max_hold_bars": paper.get("max_hold_bars"),
+            "trail_style": str(paper.get("trail_style") or "normal"),
+            "time_based_trailing_enabled": bool(paper.get("time_based_trailing_enabled", False)),
+            "auto_tit_reason": paper.get("auto_tit_reason"),
+            "risk_regime": paper.get("risk_regime"),
+            "regime_label": paper.get("regime_label"),
+            "candidate_event_type": paper.get("candidate_event_type"),
+            "exit_profile": paper.get("exit_profile"),
+            "exit_profile_reason": paper.get("exit_profile_reason"),
+            "exit_profile_overrides": (
+                dict(paper["exit_profile_overrides"])
+                if isinstance(paper.get("exit_profile_overrides"), dict)
+                else None
+            ),
+            "execution_effective_leverage": self._safe_float(decision.get("effective_leverage")),
+            "execution_risk_mode": decision.get("risk_mode"),
+            "execution_leverage_reasons": list(leverage_reasons) if isinstance(leverage_reasons, list) else None,
+            "execution_requested_notional": self._safe_float(paper.get("notional")),
+            "execution_target_notional": self._safe_float(paper.get("notional")),
+            "execution_guard_diagnostics": decision.get("diagnostics") if isinstance(decision.get("diagnostics"), dict) else None,
+        }
+        position_fields = {field.name for field in fields(PositionState)}
+        return PositionState(**{key: value for key, value in payload.items() if key in position_fields})
+
+    def _dynamic_evaluate_paper_position(self, engine: Any, latest_closed_idx: int) -> dict[str, Any] | None:
+        if not self._dynamic_high_leverage_enabled():
+            return None
+        state = self._load_dynamic_high_leverage_state(engine)
+        paper = state.get("paper_position") if isinstance(state.get("paper_position"), dict) else None
+        if not paper:
+            return None
+        paper_position = self._dynamic_position_state_from_paper(paper)
+        if paper_position is None:
+            return None
+        entry_idx = int(getattr(paper_position, "entry_idx", 0) or 0)
+        if latest_closed_idx <= entry_idx:
+            return None
+
+        original_position = getattr(engine, "position", None)
+        original_capital = float(getattr(engine, "capital", 0.0) or 0.0)
+        original_trade_count = len(engine.trades) if isinstance(getattr(engine, "trades", None), list) else 0
+        original_exit_reasons = dict(engine.exit_reasons) if isinstance(getattr(engine, "exit_reasons", None), dict) else {}
+        try:
+            engine.position = paper_position
+            close_action: StrategyAction | None = None
+            update_count = 0
+            for idx in range(entry_idx + 1, latest_closed_idx + 1):
+                if hasattr(engine, "_apply_regime_switch_for_idx"):
+                    engine._apply_regime_switch_for_idx(idx)
+                actions = engine.manage_position(idx)
+                update_count += sum(1 for item in actions if item.type == ActionType.UPDATE_STOP)
+                close_action = next((item for item in actions if item.type == ActionType.CLOSE_POSITION), None)
+                if close_action is not None:
+                    break
+            if close_action is None:
+                current_position = getattr(engine, "position", None)
+                return {
+                    "status": "paper_position_open",
+                    "entry_time": paper.get("entry_time"),
+                    "stop_price": self._safe_float(getattr(current_position, "sl_price", None)),
+                    "update_count": update_count,
+                }
+            payload = self._dynamic_paper_after_skipped_close(close_action, engine)
+            return payload or {"status": "paper_close_ignored", "entry_time": paper.get("entry_time")}
+        finally:
+            engine.position = original_position
+            engine.capital = original_capital
+            if isinstance(getattr(engine, "trades", None), list):
+                del engine.trades[original_trade_count:]
+            if isinstance(getattr(engine, "exit_reasons", None), dict):
+                engine.exit_reasons.clear()
+                engine.exit_reasons.update(original_exit_reasons)
+
+    def _dynamic_paper_matches_close(self, paper: dict[str, Any], action: StrategyAction) -> bool:
+        direction = str(paper.get("direction") or "")
+        if action.direction and direction and direction != str(action.direction):
+            return False
+        entry_time = str(paper.get("entry_time") or "")
+        metadata = action.metadata or {}
+        close_entry_time = str(metadata.get("entry_time") or metadata.get("paper_entry_time") or "")
+        return not close_entry_time or not entry_time or close_entry_time == entry_time
+
+    def _dynamic_apply_unit_return(
+        self,
+        state: dict[str, Any],
+        *,
+        action: StrategyAction,
+        unit_return: float,
+        pnl: float,
+        notional: float,
+        capital: float,
+        source: str,
+    ) -> dict[str, Any]:
+        unit_returns = state.get("unit_returns") if isinstance(state.get("unit_returns"), list) else []
+        unit_returns.append(unit_return)
+        state["unit_returns"] = unit_returns[-100:]
+        if pnl > 0:
+            state["win_streak"] = int(state.get("win_streak", 0) or 0) + 1
+            state["loss_streak"] = 0
+        else:
+            state["loss_streak"] = int(state.get("loss_streak", 0) or 0) + 1
+            state["win_streak"] = 0
+        state["capital"] = capital
+        state["drawdown_peak"] = max(float(state.get("drawdown_peak", capital) or capital), capital)
+        state["last_update_time"] = action.timestamp
+        state["last_close"] = {
+            "time": action.timestamp,
+            "pnl": pnl,
+            "notional": notional,
+            "unit_return": unit_return,
+            "capital": capital,
+            "source": source,
+        }
+        return state
+
+    def _dynamic_paper_after_skipped_close(self, action: StrategyAction, engine: Any) -> dict[str, Any] | None:
+        if not self._dynamic_high_leverage_enabled() or action.type != ActionType.CLOSE_POSITION:
+            return None
+        state = self._load_dynamic_high_leverage_state(engine)
+        paper = state.get("paper_position") if isinstance(state.get("paper_position"), dict) else None
+        if not paper or not self._dynamic_paper_matches_close(paper, action):
+            return None
+        metadata = action.metadata or {}
+        pnl = self._safe_float(metadata.get("net_pnl"))
+        if pnl is None:
+            return None
+        latest_trade = engine.trades[-1] if getattr(engine, "trades", None) else None
+        notional = (
+            self._safe_float(getattr(latest_trade, "notional", None))
+            or self._safe_float(paper.get("notional"))
+            or 0.0
+        )
+        if notional <= 0:
+            return None
+        unit_return = float(pnl) / float(notional)
+        previous_capital = float(state.get("capital", 0.0) or paper.get("capital_at_entry", 0.0) or getattr(engine, "capital", 0.0) or 0.0)
+        capital = max(0.0, previous_capital + float(pnl))
+        state = self._dynamic_apply_unit_return(
+            state,
+            action=action,
+            unit_return=unit_return,
+            pnl=float(pnl),
+            notional=float(notional),
+            capital=capital,
+            source="paper_skipped_close",
+        )
+        state["paper_position"] = None
+        state["paper_entry_time"] = None
+        self._save_dynamic_high_leverage_state(state)
+        payload = {
+            "source": "paper_skipped_close",
+            "entry_time": paper.get("entry_time"),
+            "exit_time": action.timestamp,
+            "direction": action.direction,
+            "pnl": float(pnl),
+            "notional": float(notional),
+            "unit_return": unit_return,
+            "capital": capital,
+        }
+        self.store.append_action(action.timestamp, "DYNAMIC_PAPER_CLOSE", payload)
+        return payload
 
     def _dynamic_recent_stats(self, unit_returns: list[Any], lookback: int) -> dict[str, float]:
         values = [float(item) for item in unit_returns[-max(lookback, 0):] if item is not None]
@@ -4389,26 +4687,16 @@ class OkxExecutionEngine:
         pnl = float((action.metadata or {}).get("net_pnl", 0.0) or 0.0)
         notional = float(getattr(latest_trade, "notional", 0.0) or 0.0) if latest_trade is not None else 0.0
         unit_return = pnl / notional if notional > 0 else 0.0
-        unit_returns = state.get("unit_returns") if isinstance(state.get("unit_returns"), list) else []
-        unit_returns.append(unit_return)
-        state["unit_returns"] = unit_returns[-100:]
-        if pnl > 0:
-            state["win_streak"] = int(state.get("win_streak", 0) or 0) + 1
-            state["loss_streak"] = 0
-        else:
-            state["loss_streak"] = int(state.get("loss_streak", 0) or 0) + 1
-            state["win_streak"] = 0
         capital = float(getattr(engine, "capital", 0.0) or state.get("capital", 0.0) or 0.0)
-        state["capital"] = capital
-        state["drawdown_peak"] = max(float(state.get("drawdown_peak", capital) or capital), capital)
-        state["last_update_time"] = action.timestamp
-        state["last_close"] = {
-            "time": action.timestamp,
-            "pnl": pnl,
-            "notional": notional,
-            "unit_return": unit_return,
-            "capital": capital,
-        }
+        state = self._dynamic_apply_unit_return(
+            state,
+            action=action,
+            unit_return=unit_return,
+            pnl=pnl,
+            notional=notional,
+            capital=capital,
+            source="real_close",
+        )
         self._save_dynamic_high_leverage_state(state)
 
     def _load_markets(self) -> dict[str, Any]:
