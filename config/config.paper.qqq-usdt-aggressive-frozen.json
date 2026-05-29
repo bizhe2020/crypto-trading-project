@@ -3,6 +3,8 @@
   "signal_source": "config/config.paper.tqqq-only-strict-recovery-frozen.json",
   "execution_symbol": "QQQ/USDT:USDT",
   "execution_timeframe": "4h",
+  "use_closed_execution_bars": true,
+  "closed_bar_grace_seconds": 30,
   "entry_overlay_timeframe": "1h",
   "leverage_profile_name": "base10_off10_def1",
   "base_leverage": 10.0,

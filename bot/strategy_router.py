@@ -57,6 +57,11 @@ class StrategyRouterConfig:
     qqq_rebalance_on_leverage_change: bool = True
     qqq_rebalance_on_notional_gap: bool = False
     qqq_enable_exchange_stop: bool = False
+    qqq_rebalance_risk_on_market_hours_only: bool = False
+    qqq_market_hours_timezone: str = "America/New_York"
+    qqq_market_hours_start: str = "09:30"
+    qqq_market_hours_end: str = "16:00"
+    qqq_market_calendar: str = "NYSE"
     okx_markets_cache_path: str = "var/okx/markets_cache.json"
     telegram_enabled: bool = False
     telegram_token: str | None = None

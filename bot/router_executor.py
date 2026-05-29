@@ -44,6 +44,21 @@ class StrategyRouterExecutionEngine:
         selected_strategy = route.get("selected_strategy")
         selected_candidate = route.get("selected_candidate") if isinstance(route.get("selected_candidate"), dict) else None
         execution_results: list[dict[str, Any]] = []
+        risk_on_window = None
+        if selected_strategy == "qqq_usdt_aggressive" and previous_executed != "qqq_usdt_aggressive":
+            risk_on_window = self.qqq_executor.risk_on_window_status()
+            if not bool(risk_on_window.get("open")):
+                execution_results.append(
+                    {
+                        "strategy": "qqq_usdt_aggressive",
+                        "result": {
+                            "status": "skipped",
+                            "reason": "qqq_risk_on_window_closed_before_switch",
+                            "market_window": risk_on_window,
+                        },
+                    }
+                )
+                selected_strategy = previous_executed
 
         if selected_strategy != previous_executed and bool(self.config.flatten_before_switch):
             execution_results.extend(self._flatten_strategy(previous_executed, reason=f"router_switch_to_{selected_strategy or 'cash'}"))

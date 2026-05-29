@@ -9,6 +9,7 @@ import requests
 
 from bot.market_data import OhlcvRepository
 from bot.okx_client import OkxClient
+from bot.qqq_runtime_policy import filter_closed_bars
 from bot.strategy_router import RoutedSignalCandidate
 from scripts.fetch_public_etf_history import fetch_timeframe, output_path_for
 from scripts.scan_qqq_usdt_4h_triggers import attach_daily_state, load_okx_4h, load_signal_path
@@ -55,11 +56,17 @@ class QqqUsdtSignalAdapter:
                 },
             )
         bars = enrich_bars(attach_daily_state(load_okx_4h(data_4h), signal_path))
+        if bool(config.get("use_closed_execution_bars", True)):
+            bars = filter_closed_bars(
+                bars,
+                timeframe=str(config.get("execution_timeframe", "4h")),
+                grace_seconds=int(config.get("closed_bar_grace_seconds", 30) or 0),
+            )
         bars = self._attach_daily_columns(bars, signal_path)
         if bars.empty:
             return self._inactive_candidate(
                 config,
-                reason="no_bars",
+                reason="no_closed_bars" if bool(config.get("use_closed_execution_bars", True)) else "no_bars",
                 metadata={
                     "data_refresh": refresh_status,
                     "daily_signal_refresh": signal_refresh_status,

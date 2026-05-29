@@ -12,6 +12,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from bot.okx_client import OkxClient, OkxCredentials
+from bot.qqq_runtime_policy import filter_closed_bars, market_time_window_status
 from bot.state_store import StateStore
 from bot.strategy_router import RoutedSignalCandidate, StrategyRouterConfig
 from scripts.scan_qqq_usdt_4h_triggers import attach_daily_state, load_okx_4h, load_signal_path
@@ -176,6 +177,19 @@ class QqqUsdtExecutionEngine:
             return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": True}
 
         if exchange_position["contracts"] <= 0:
+            risk_on_status = self._risk_on_window_status()
+            if not bool(risk_on_status["open"]):
+                actions.append(
+                    {
+                        "status": "skipped",
+                        "reason": "qqq_risk_on_window_closed",
+                        "action": "open_qqq_usdt_long",
+                        "target_leverage": context.leverage,
+                        "market_window": risk_on_status,
+                    }
+                )
+                self.save_state({"position": None, "last_candidate": context.candidate})
+                return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
             if self._same_signal_stop_locked(context):
                 actions.append(
                     {
@@ -212,6 +226,12 @@ class QqqUsdtExecutionEngine:
         ) and (
             notional_gap >= float(self.router_config.qqq_min_rebalance_notional_usdt)
         )
+        risk_on_blocked = False
+        risk_on_status: dict[str, Any] | None = None
+        if should_rebalance and float(context.leverage) > current_leverage:
+            risk_on_status = self._risk_on_window_status()
+            risk_on_blocked = not bool(risk_on_status["open"])
+            should_rebalance = should_rebalance and not risk_on_blocked
         next_position_state = self._state_from_context(context)
         if should_rebalance:
             rebalance_result = self.rebalance_position(
@@ -227,7 +247,23 @@ class QqqUsdtExecutionEngine:
                 next_position_state = self._with_exchange_stop_fields(
                     next_position_state,
                     rebalance_result.get("exchange_stop"),
-                )
+            )
+            position_open = True
+        elif risk_on_blocked:
+            actions.append(
+                {
+                    "status": "skipped",
+                    "action": "rebalance_qqq_position",
+                    "reason": "qqq_risk_on_window_closed",
+                    "current_leverage": current_leverage,
+                    "target_leverage": context.leverage,
+                    "current_notional_usdt": float(exchange_position["notional_usdt"]),
+                    "target_notional_usdt": target_notional,
+                    "notional_gap_usdt": notional_gap,
+                    "market_window": risk_on_status,
+                }
+            )
+            next_position_state = current
             position_open = True
         elif leverage_changed:
             actions.append(
@@ -330,8 +366,14 @@ class QqqUsdtExecutionEngine:
         data_4h = self._resolve_path(str(self.qqq_config["data_4h"]))
         _, signal_path = load_signal_path(signal_source)
         bars = enrich_bars(attach_daily_state(load_okx_4h(data_4h), signal_path))
+        if bool(self.qqq_config.get("use_closed_execution_bars", True)):
+            bars = filter_closed_bars(
+                bars,
+                timeframe=str(self.qqq_config.get("execution_timeframe", "4h")),
+                grace_seconds=int(self.qqq_config.get("closed_bar_grace_seconds", 30) or 0),
+            )
         if bars.empty:
-            raise RuntimeError("No QQQ/USDT bars available")
+            raise RuntimeError("No closed QQQ/USDT bars available")
         return bars.iloc[-1]
 
     def _build_context(self, candidate: RoutedSignalCandidate) -> QqqOrderContext:
@@ -362,6 +404,18 @@ class QqqUsdtExecutionEngine:
             route_score=float(candidate.route_score),
             candidate=candidate_payload,
         )
+
+    def _risk_on_window_status(self) -> dict[str, Any]:
+        return market_time_window_status(
+            enabled=bool(self.router_config.qqq_rebalance_risk_on_market_hours_only),
+            timezone_name=str(self.router_config.qqq_market_hours_timezone),
+            start_time=str(self.router_config.qqq_market_hours_start),
+            end_time=str(self.router_config.qqq_market_hours_end),
+            trading_calendar=str(self.router_config.qqq_market_calendar),
+        )
+
+    def risk_on_window_status(self) -> dict[str, Any]:
+        return self._risk_on_window_status()
 
     def _state_from_context(self, context: QqqOrderContext) -> dict[str, Any]:
         state = self.load_state()
