@@ -1,0 +1,550 @@
+{
+  "config": {
+    "signal_frozen_label": "tqqq_only_strict_recovery_frozen_20260526",
+    "stop_loss_pct": 2.0,
+    "taker_fee_rate": 0.0005,
+    "slippage_bps": 5.0
+  },
+  "results": [
+    {
+      "leverage_profile": "base8_off10_def2",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 130.28,
+        "max_drawdown_pct": 8.58,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 4.05,
+        "invested_bars": 144,
+        "avg_leverage_when_in": 5.4
+      }
+    },
+    {
+      "leverage_profile": "base8_off10_def2",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 130.28,
+        "max_drawdown_pct": 8.58,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 4.05,
+        "invested_bars": 144,
+        "avg_leverage_when_in": 5.4
+      }
+    },
+    {
+      "leverage_profile": "fixed10",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 124.03,
+        "max_drawdown_pct": 23.94,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 10.46,
+        "invested_bars": 144,
+        "avg_leverage_when_in": 8.67
+      }
+    },
+    {
+      "leverage_profile": "fixed10",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 104.59,
+        "max_drawdown_pct": 29.92,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 11.21,
+        "invested_bars": 144,
+        "avg_leverage_when_in": 10.0
+      }
+    },
+    {
+      "leverage_profile": "base6_off10_def3",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 83.7,
+        "max_drawdown_pct": 9.88,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 4.17,
+        "invested_bars": 144,
+        "avg_leverage_when_in": 4.58
+      }
+    },
+    {
+      "leverage_profile": "base6_off10_def3",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 81.74,
+        "max_drawdown_pct": 10.78,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 4.27,
+        "invested_bars": 144,
+        "avg_leverage_when_in": 4.74
+      }
+    },
+    {
+      "leverage_profile": "base4_off8_def2",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 51.33,
+        "max_drawdown_pct": 7.29,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 2.85,
+        "invested_bars": 144,
+        "avg_leverage_when_in": 3.18
+      }
+    },
+    {
+      "leverage_profile": "base4_off8_def2",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 51.33,
+        "max_drawdown_pct": 7.29,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 2.85,
+        "invested_bars": 144,
+        "avg_leverage_when_in": 3.18
+      }
+    },
+    {
+      "leverage_profile": "fixed10",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 19.26,
+        "max_drawdown_pct": 4.04,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 20.47,
+        "funding_cost_pct_est": 2.97,
+        "invested_bars": 17,
+        "avg_leverage_when_in": 9.06
+      }
+    },
+    {
+      "leverage_profile": "fixed10",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 15.98,
+        "max_drawdown_pct": 10.59,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 17.15,
+        "funding_cost_pct_est": 2.97,
+        "invested_bars": 36,
+        "avg_leverage_when_in": 10.0
+      }
+    },
+    {
+      "leverage_profile": "fixed10",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 15.56,
+        "max_drawdown_pct": 6.5,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 16.72,
+        "funding_cost_pct_est": 2.97,
+        "invested_bars": 17,
+        "avg_leverage_when_in": 10.0
+      }
+    },
+    {
+      "leverage_profile": "fixed10",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 15.43,
+        "max_drawdown_pct": 11.23,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 16.59,
+        "funding_cost_pct_est": 2.97,
+        "invested_bars": 36,
+        "avg_leverage_when_in": 8.67
+      }
+    },
+    {
+      "leverage_profile": "base8_off10_def2",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 13.83,
+        "max_drawdown_pct": 2.72,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 14.75,
+        "funding_cost_pct_est": 0.95,
+        "invested_bars": 17,
+        "avg_leverage_when_in": 5.53
+      }
+    },
+    {
+      "leverage_profile": "base8_off10_def2",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 13.83,
+        "max_drawdown_pct": 2.72,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 14.75,
+        "funding_cost_pct_est": 0.95,
+        "invested_bars": 17,
+        "avg_leverage_when_in": 5.53
+      }
+    },
+    {
+      "leverage_profile": "base8_off10_def2",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 13.65,
+        "max_drawdown_pct": 6.9,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 14.56,
+        "funding_cost_pct_est": 0.95,
+        "invested_bars": 36,
+        "avg_leverage_when_in": 6.0
+      }
+    },
+    {
+      "leverage_profile": "base8_off10_def2",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 13.65,
+        "max_drawdown_pct": 6.9,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 14.56,
+        "funding_cost_pct_est": 0.95,
+        "invested_bars": 36,
+        "avg_leverage_when_in": 6.0
+      }
+    },
+    {
+      "leverage_profile": "fixed10",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 12.22,
+        "max_drawdown_pct": 4.04,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 13.35,
+        "funding_cost_pct_est": 2.97,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 10.0
+      }
+    },
+    {
+      "leverage_profile": "fixed10",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 12.22,
+        "max_drawdown_pct": 4.04,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 13.35,
+        "funding_cost_pct_est": 2.97,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 10.0
+      }
+    },
+    {
+      "leverage_profile": "fixed10",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 12.22,
+        "max_drawdown_pct": 4.04,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 13.35,
+        "funding_cost_pct_est": 2.97,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 10.0
+      }
+    },
+    {
+      "leverage_profile": "base6_off10_def3",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 10.42,
+        "max_drawdown_pct": 2.25,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 11.08,
+        "funding_cost_pct_est": 1.07,
+        "invested_bars": 17,
+        "avg_leverage_when_in": 4.65
+      }
+    },
+    {
+      "leverage_profile": "base6_off10_def3",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 10.1,
+        "max_drawdown_pct": 5.44,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 10.76,
+        "funding_cost_pct_est": 1.07,
+        "invested_bars": 36,
+        "avg_leverage_when_in": 5.0
+      }
+    },
+    {
+      "leverage_profile": "base6_off10_def3",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 10.02,
+        "max_drawdown_pct": 5.49,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 10.68,
+        "funding_cost_pct_est": 1.07,
+        "invested_bars": 36,
+        "avg_leverage_when_in": 4.83
+      }
+    },
+    {
+      "leverage_profile": "base6_off10_def3",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 9.99,
+        "max_drawdown_pct": 2.67,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 10.65,
+        "funding_cost_pct_est": 1.07,
+        "invested_bars": 17,
+        "avg_leverage_when_in": 4.76
+      }
+    },
+    {
+      "leverage_profile": "base8_off10_def2",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 9.18,
+        "max_drawdown_pct": 0.82,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 10.06,
+        "funding_cost_pct_est": 0.95,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 4.25
+      }
+    },
+    {
+      "leverage_profile": "base8_off10_def2",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 9.18,
+        "max_drawdown_pct": 0.82,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 10.06,
+        "funding_cost_pct_est": 0.95,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 4.25
+      }
+    },
+    {
+      "leverage_profile": "base8_off10_def2",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 9.18,
+        "max_drawdown_pct": 0.82,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 10.06,
+        "funding_cost_pct_est": 0.95,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 4.25
+      }
+    },
+    {
+      "leverage_profile": "base6_off10_def3",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 7.01,
+        "max_drawdown_pct": 1.23,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 7.65,
+        "funding_cost_pct_est": 1.07,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 4.12
+      }
+    },
+    {
+      "leverage_profile": "base6_off10_def3",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 7.01,
+        "max_drawdown_pct": 1.23,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 7.65,
+        "funding_cost_pct_est": 1.07,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 4.12
+      }
+    },
+    {
+      "leverage_profile": "base6_off10_def3",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 7.01,
+        "max_drawdown_pct": 1.23,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 7.65,
+        "funding_cost_pct_est": 1.07,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 4.12
+      }
+    },
+    {
+      "leverage_profile": "base4_off8_def2",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 6.75,
+        "max_drawdown_pct": 3.65,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 7.17,
+        "funding_cost_pct_est": 0.71,
+        "invested_bars": 36,
+        "avg_leverage_when_in": 3.33
+      }
+    },
+    {
+      "leverage_profile": "base4_off8_def2",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 6.75,
+        "max_drawdown_pct": 3.65,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 7.17,
+        "funding_cost_pct_est": 0.71,
+        "invested_bars": 36,
+        "avg_leverage_when_in": 3.33
+      }
+    },
+    {
+      "leverage_profile": "base4_off8_def2",
+      "failed_breakout_profile": "off",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 6.62,
+        "max_drawdown_pct": 1.79,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 7.05,
+        "funding_cost_pct_est": 0.71,
+        "invested_bars": 17,
+        "avg_leverage_when_in": 3.18
+      }
+    },
+    {
+      "leverage_profile": "base4_off8_def2",
+      "failed_breakout_profile": "reduce2",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 6.62,
+        "max_drawdown_pct": 1.79,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 7.05,
+        "funding_cost_pct_est": 0.71,
+        "invested_bars": 17,
+        "avg_leverage_when_in": 3.18
+      }
+    },
+    {
+      "leverage_profile": "base4_off8_def2",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "off",
+      "summary": {
+        "total_return_pct": 4.65,
+        "max_drawdown_pct": 0.82,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 5.07,
+        "funding_cost_pct_est": 0.71,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 2.75
+      }
+    },
+    {
+      "leverage_profile": "base4_off8_def2",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "lock_1r_0.8",
+      "summary": {
+        "total_return_pct": 4.65,
+        "max_drawdown_pct": 0.82,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 5.07,
+        "funding_cost_pct_est": 0.71,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 2.75
+      }
+    },
+    {
+      "leverage_profile": "base4_off8_def2",
+      "failed_breakout_profile": "flat",
+      "touch_lock_profile": "lock_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 4.65,
+        "max_drawdown_pct": 0.82,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 5.07,
+        "funding_cost_pct_est": 0.71,
+        "invested_bars": 8,
+        "avg_leverage_when_in": 2.75
+      }
+    }
+  ]
+}

@@ -1,0 +1,1621 @@
+{
+  "candidate": {
+    "signal_frozen_label": "tqqq_only_strict_recovery_frozen_20260526",
+    "stop_loss_pct": 2.5,
+    "base_profile": "dyn_cap10"
+  },
+  "baseline": {
+    "funding_threshold_bps": 999.0,
+    "reduce_base_to": 8.0,
+    "reduce_offense_to": 10.0,
+    "summary": {
+      "total_return_pct": 96.81,
+      "max_drawdown_pct": 7.99,
+      "score": 80.83,
+      "trades": 1,
+      "win_rate_pct": 100.0,
+      "avg_trade_return_pct": 98.39,
+      "funding_cost_pct_est": 2.66,
+      "invested_bars": 120,
+      "funding_hot_bars": 0,
+      "avg_leverage_when_in": 5.63
+    },
+    "mode": "baseline_no_funding_gate",
+    "delta_vs_baseline": {
+      "total_return_pct": 0.0,
+      "max_drawdown_pct": 0.0,
+      "funding_cost_pct_est": 0.0
+    }
+  },
+  "top_by_score": [
+    {
+      "funding_threshold_bps": 999.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 0,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "baseline_no_funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    }
+  ],
+  "results": [
+    {
+      "funding_threshold_bps": 999.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 0,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "baseline_no_funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 88.75,
+        "max_drawdown_pct": 8.88,
+        "score": 70.99,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 89.89,
+        "funding_cost_pct_est": 2.28,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.5
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -8.06,
+        "max_drawdown_pct": 0.89,
+        "funding_cost_pct_est": -0.38
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 88.75,
+        "max_drawdown_pct": 8.88,
+        "score": 70.99,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 89.89,
+        "funding_cost_pct_est": 2.28,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.5
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -8.06,
+        "max_drawdown_pct": 0.89,
+        "funding_cost_pct_est": -0.38
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 88.75,
+        "max_drawdown_pct": 8.88,
+        "score": 70.99,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 89.89,
+        "funding_cost_pct_est": 2.28,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.5
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -8.06,
+        "max_drawdown_pct": 0.89,
+        "funding_cost_pct_est": -0.38
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 80.94,
+        "max_drawdown_pct": 9.78,
+        "score": 61.38,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 81.67,
+        "funding_cost_pct_est": 1.9,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.37
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -15.87,
+        "max_drawdown_pct": 1.79,
+        "funding_cost_pct_est": -0.76
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 80.94,
+        "max_drawdown_pct": 9.78,
+        "score": 61.38,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 81.67,
+        "funding_cost_pct_est": 1.9,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.37
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -15.87,
+        "max_drawdown_pct": 1.79,
+        "funding_cost_pct_est": -0.76
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 80.94,
+        "max_drawdown_pct": 9.78,
+        "score": 61.38,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 81.67,
+        "funding_cost_pct_est": 1.9,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.37
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -15.87,
+        "max_drawdown_pct": 1.79,
+        "funding_cost_pct_est": -0.76
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 4.0,
+      "summary": {
+        "total_return_pct": 80.94,
+        "max_drawdown_pct": 9.78,
+        "score": 61.38,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 81.67,
+        "funding_cost_pct_est": 1.9,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.37
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -15.87,
+        "max_drawdown_pct": 1.79,
+        "funding_cost_pct_est": -0.76
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 73.37,
+        "max_drawdown_pct": 10.67,
+        "score": 52.03,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 73.71,
+        "funding_cost_pct_est": 1.52,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.23
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -23.44,
+        "max_drawdown_pct": 2.68,
+        "funding_cost_pct_est": -1.14
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 73.37,
+        "max_drawdown_pct": 10.67,
+        "score": 52.03,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 73.71,
+        "funding_cost_pct_est": 1.52,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.23
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -23.44,
+        "max_drawdown_pct": 2.68,
+        "funding_cost_pct_est": -1.14
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 73.37,
+        "max_drawdown_pct": 10.67,
+        "score": 52.03,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 73.71,
+        "funding_cost_pct_est": 1.52,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.23
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -23.44,
+        "max_drawdown_pct": 2.68,
+        "funding_cost_pct_est": -1.14
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 4.0,
+      "summary": {
+        "total_return_pct": 73.37,
+        "max_drawdown_pct": 10.67,
+        "score": 52.03,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 73.71,
+        "funding_cost_pct_est": 1.52,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.23
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -23.44,
+        "max_drawdown_pct": 2.68,
+        "funding_cost_pct_est": -1.14
+      }
+    },
+    {
+      "funding_threshold_bps": 1.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 2.0,
+      "summary": {
+        "total_return_pct": 73.37,
+        "max_drawdown_pct": 10.67,
+        "score": 52.03,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 73.71,
+        "funding_cost_pct_est": 1.52,
+        "invested_bars": 120,
+        "funding_hot_bars": 42,
+        "avg_leverage_when_in": 5.23
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -23.44,
+        "max_drawdown_pct": 2.68,
+        "funding_cost_pct_est": -1.14
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 94.7,
+        "max_drawdown_pct": 7.99,
+        "score": 78.72,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 95.87,
+        "funding_cost_pct_est": 2.43,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.58
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -2.11,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.23
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 94.7,
+        "max_drawdown_pct": 7.99,
+        "score": 78.72,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 95.87,
+        "funding_cost_pct_est": 2.43,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.58
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -2.11,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.23
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 94.7,
+        "max_drawdown_pct": 7.99,
+        "score": 78.72,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 95.87,
+        "funding_cost_pct_est": 2.43,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.58
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -2.11,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.23
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 92.57,
+        "max_drawdown_pct": 7.99,
+        "score": 76.59,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 93.34,
+        "funding_cost_pct_est": 2.2,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.53
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -4.24,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.46
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 92.57,
+        "max_drawdown_pct": 7.99,
+        "score": 76.59,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 93.34,
+        "funding_cost_pct_est": 2.2,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.53
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -4.24,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.46
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 92.57,
+        "max_drawdown_pct": 7.99,
+        "score": 76.59,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 93.34,
+        "funding_cost_pct_est": 2.2,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.53
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -4.24,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.46
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 4.0,
+      "summary": {
+        "total_return_pct": 92.57,
+        "max_drawdown_pct": 7.99,
+        "score": 76.59,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 93.34,
+        "funding_cost_pct_est": 2.2,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.53
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -4.24,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.46
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 90.43,
+        "max_drawdown_pct": 7.99,
+        "score": 74.45,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 90.81,
+        "funding_cost_pct_est": 1.97,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.48
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -6.38,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.69
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 90.43,
+        "max_drawdown_pct": 7.99,
+        "score": 74.45,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 90.81,
+        "funding_cost_pct_est": 1.97,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.48
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -6.38,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.69
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 90.43,
+        "max_drawdown_pct": 7.99,
+        "score": 74.45,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 90.81,
+        "funding_cost_pct_est": 1.97,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.48
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -6.38,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.69
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 4.0,
+      "summary": {
+        "total_return_pct": 90.43,
+        "max_drawdown_pct": 7.99,
+        "score": 74.45,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 90.81,
+        "funding_cost_pct_est": 1.97,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.48
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -6.38,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.69
+      }
+    },
+    {
+      "funding_threshold_bps": 2.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 2.0,
+      "summary": {
+        "total_return_pct": 90.43,
+        "max_drawdown_pct": 7.99,
+        "score": 74.45,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 90.81,
+        "funding_cost_pct_est": 1.97,
+        "invested_bars": 120,
+        "funding_hot_bars": 26,
+        "avg_leverage_when_in": 5.48
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -6.38,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.69
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.77,
+        "max_drawdown_pct": 7.99,
+        "score": 80.79,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.96,
+        "funding_cost_pct_est": 2.55,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.62
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.04,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.11
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.77,
+        "max_drawdown_pct": 7.99,
+        "score": 80.79,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.96,
+        "funding_cost_pct_est": 2.55,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.62
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.04,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.11
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 96.77,
+        "max_drawdown_pct": 7.99,
+        "score": 80.79,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.96,
+        "funding_cost_pct_est": 2.55,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.62
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.04,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.11
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.73,
+        "max_drawdown_pct": 7.99,
+        "score": 80.75,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.52,
+        "funding_cost_pct_est": 2.43,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.6
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.08,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.23
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.73,
+        "max_drawdown_pct": 7.99,
+        "score": 80.75,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.52,
+        "funding_cost_pct_est": 2.43,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.6
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.08,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.23
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 96.73,
+        "max_drawdown_pct": 7.99,
+        "score": 80.75,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.52,
+        "funding_cost_pct_est": 2.43,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.6
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.08,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.23
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 4.0,
+      "summary": {
+        "total_return_pct": 96.73,
+        "max_drawdown_pct": 7.99,
+        "score": 80.75,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.52,
+        "funding_cost_pct_est": 2.43,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.6
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.08,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.23
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.68,
+        "max_drawdown_pct": 7.99,
+        "score": 80.7,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.08,
+        "funding_cost_pct_est": 2.31,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.58
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.13,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.35
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.68,
+        "max_drawdown_pct": 7.99,
+        "score": 80.7,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.08,
+        "funding_cost_pct_est": 2.31,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.58
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.13,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.35
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 96.68,
+        "max_drawdown_pct": 7.99,
+        "score": 80.7,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.08,
+        "funding_cost_pct_est": 2.31,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.58
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.13,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.35
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 4.0,
+      "summary": {
+        "total_return_pct": 96.68,
+        "max_drawdown_pct": 7.99,
+        "score": 80.7,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.08,
+        "funding_cost_pct_est": 2.31,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.58
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.13,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.35
+      }
+    },
+    {
+      "funding_threshold_bps": 4.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 2.0,
+      "summary": {
+        "total_return_pct": 96.68,
+        "max_drawdown_pct": 7.99,
+        "score": 80.7,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 97.08,
+        "funding_cost_pct_est": 2.31,
+        "invested_bars": 120,
+        "funding_hot_bars": 10,
+        "avg_leverage_when_in": 5.58
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": -0.13,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": -0.35
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 8.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 6.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 4.0,
+      "reduce_offense_to": 4.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 10.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 8.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 6.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 4.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    },
+    {
+      "funding_threshold_bps": 6.0,
+      "reduce_base_to": 2.0,
+      "reduce_offense_to": 2.0,
+      "summary": {
+        "total_return_pct": 96.81,
+        "max_drawdown_pct": 7.99,
+        "score": 80.83,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 98.39,
+        "funding_cost_pct_est": 2.66,
+        "invested_bars": 120,
+        "funding_hot_bars": 2,
+        "avg_leverage_when_in": 5.63
+      },
+      "mode": "funding_gate",
+      "delta_vs_baseline": {
+        "total_return_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "funding_cost_pct_est": 0.0
+      }
+    }
+  ]
+}

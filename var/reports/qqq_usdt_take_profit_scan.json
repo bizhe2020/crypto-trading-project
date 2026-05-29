@@ -1,0 +1,95 @@
+{
+  "config": {
+    "signal_frozen_label": "tqqq_only_strict_recovery_frozen_20260526",
+    "stop_loss_pct": 2.0,
+    "taker_fee_rate": 0.0005,
+    "slippage_bps": 5.0,
+    "dynamic_leverage_profile": "base8_off10_def2"
+  },
+  "results": [
+    {
+      "take_profit_profile": "none",
+      "summary": {
+        "total_return_pct": 131.67,
+        "max_drawdown_pct": 8.58,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 4.05,
+        "invested_bars": 144
+      }
+    },
+    {
+      "take_profit_profile": "tp_12",
+      "summary": {
+        "total_return_pct": 131.67,
+        "max_drawdown_pct": 8.58,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 4.05,
+        "invested_bars": 144
+      }
+    },
+    {
+      "take_profit_profile": "tp_20",
+      "summary": {
+        "total_return_pct": 131.67,
+        "max_drawdown_pct": 8.58,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 4.05,
+        "invested_bars": 144
+      }
+    },
+    {
+      "take_profit_profile": "tp_30",
+      "summary": {
+        "total_return_pct": 131.67,
+        "max_drawdown_pct": 8.58,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 4.05,
+        "invested_bars": 144
+      }
+    },
+    {
+      "take_profit_profile": "touch_1r_0.8",
+      "summary": {
+        "total_return_pct": 14.52,
+        "max_drawdown_pct": 2.72,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 14.75,
+        "funding_cost_pct_est": 0.95,
+        "invested_bars": 17
+      }
+    },
+    {
+      "take_profit_profile": "tp20_touch1r",
+      "summary": {
+        "total_return_pct": 14.52,
+        "max_drawdown_pct": 2.72,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 14.75,
+        "funding_cost_pct_est": 0.95,
+        "invested_bars": 17
+      }
+    },
+    {
+      "take_profit_profile": "touch_1.5r_1.0",
+      "summary": {
+        "total_return_pct": 14.33,
+        "max_drawdown_pct": 6.9,
+        "trades": 1,
+        "win_rate_pct": 100.0,
+        "avg_trade_return_pct": 14.56,
+        "funding_cost_pct_est": 0.95,
+        "invested_bars": 36
+      }
+    }
+  ]
+}

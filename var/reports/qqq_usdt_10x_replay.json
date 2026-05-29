@@ -1,0 +1,21 @@
+{
+  "config": {
+    "signal_frozen_label": "tqqq_only_strict_recovery_frozen_20260526",
+    "leverage": 10.0,
+    "taker_fee_rate": 0.0005,
+    "slippage_bps": 5.0,
+    "stop_loss_pct": 2.0
+  },
+  "summary": {
+    "total_return_pct": 74.14,
+    "max_drawdown_pct": 20.25,
+    "bars": 261,
+    "invested_bars": 83,
+    "trades": 1,
+    "win_rate_pct": 100.0,
+    "avg_trade_return_pct": 75.89,
+    "total_funding_cost_pct_est": 4.15,
+    "start": "2026-04-09 04:00:00+00:00",
+    "end": "2026-05-22 12:00:00+00:00"
+  }
+}

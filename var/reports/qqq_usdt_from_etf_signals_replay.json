@@ -1,0 +1,50 @@
+{
+  "config": {
+    "mode": "paper",
+    "data_root": "data/public/etf",
+    "execution_symbol": "TQQQ",
+    "entry_fast_window": 25,
+    "entry_slow_window": 150,
+    "regime_filter": "ixic_filter",
+    "max_hold_days": 90,
+    "trailing_lookback_days": 10,
+    "trailing_drawdown_pct": 12.0,
+    "de_risk_signal_name": "breakout_fail_score_le3_flat",
+    "recovery_reentry_rule": "score_ge3",
+    "recovery_reentry_cooldown_days": 0,
+    "switch_cost_bps": 10.0,
+    "initial_capital": 1000.0,
+    "frozen_label": "tqqq_only_strict_recovery_frozen_20260526"
+  },
+  "okx_replay_1d": {
+    "total_return_pct": 7.45,
+    "max_drawdown_pct": 2.25,
+    "days": 57,
+    "invested_days": 19,
+    "latest_position": "TQQQ",
+    "start": "2026-03-04 00:00:00+00:00",
+    "end": "2026-05-22 00:00:00+00:00"
+  },
+  "coverage": {
+    "signal_daily": {
+      "rows": 952,
+      "start": "2022-08-08 13:30:00+00:00",
+      "end": "2026-05-22 13:30:00+00:00"
+    },
+    "okx_1h": {
+      "rows": 300,
+      "start": "2026-05-16 16:00:00+00:00",
+      "end": "2026-05-29 03:00:00+00:00"
+    },
+    "okx_4h": {
+      "rows": 300,
+      "start": "2026-04-09 04:00:00+00:00",
+      "end": "2026-05-29 00:00:00+00:00"
+    },
+    "okx_1d": {
+      "rows": 87,
+      "start": "2026-03-04 00:00:00+00:00",
+      "end": "2026-05-29 00:00:00+00:00"
+    }
+  }
+}

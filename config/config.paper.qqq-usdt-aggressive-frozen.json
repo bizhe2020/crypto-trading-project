@@ -1,0 +1,22 @@
+{
+  "mode": "paper",
+  "signal_source": "config/config.paper.tqqq-only-strict-recovery-frozen.json",
+  "execution_symbol": "QQQ/USDT:USDT",
+  "execution_timeframe": "4h",
+  "entry_overlay_timeframe": "1h",
+  "leverage_profile_name": "base10_off10_def2",
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "defense_leverage": 2.0,
+  "stop_loss_pct": 3.5,
+  "take_profit_mode": "none",
+  "taker_fee_rate": 0.0005,
+  "slippage_bps": 5.0,
+  "funding_history_path": "data/okx/futures/QQQ_USDT_USDT-8h-funding_rate.feather",
+  "data_1h": "data/okx/futures/QQQ_USDT_USDT-1h-futures.feather",
+  "data_4h": "data/okx/futures/QQQ_USDT_USDT-4h-futures.feather",
+  "data_1d": "data/okx/futures/QQQ_USDT_USDT-1d-futures.feather",
+  "initial_capital": 1000.0,
+  "frozen_label": "qqq_usdt_aggressive_frozen_20260529",
+  "notes": "ETF daily frozen signal bridged into QQQ/USDT execution. Reward-priority candidate from short-history OKX sample."
+}

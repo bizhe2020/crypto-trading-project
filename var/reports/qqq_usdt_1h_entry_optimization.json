@@ -1,0 +1,143 @@
+{
+  "config": {
+    "signal_frozen_label": "tqqq_only_strict_recovery_frozen_20260526",
+    "base_structure": "base10_off10_def2",
+    "stop_loss_pct": 3.5,
+    "coverage_start_1h": "2026-05-16 16:00:00+00:00",
+    "coverage_end_4h": "2026-05-22 12:00:00+00:00"
+  },
+  "results": [
+    {
+      "entry_profile": "4h_open",
+      "summary": {
+        "total_return_pct": 20.4,
+        "max_drawdown_pct": 6.9,
+        "score": 6.6,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 1.95,
+        "invested_bars": 36
+      }
+    },
+    {
+      "entry_profile": "1h_immediate",
+      "summary": {
+        "total_return_pct": 20.4,
+        "max_drawdown_pct": 6.9,
+        "score": 6.6,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 1.95,
+        "invested_bars": 36
+      }
+    },
+    {
+      "entry_profile": "1h_pullback_ema20",
+      "summary": {
+        "total_return_pct": 20.4,
+        "max_drawdown_pct": 6.9,
+        "score": 6.6,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 1.95,
+        "invested_bars": 36
+      }
+    },
+    {
+      "entry_profile": "1h_breakout_6",
+      "summary": {
+        "total_return_pct": 20.4,
+        "max_drawdown_pct": 6.9,
+        "score": 6.6,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 1.95,
+        "invested_bars": 36
+      }
+    },
+    {
+      "entry_profile": "1h_pullback_or_breakout",
+      "summary": {
+        "total_return_pct": 20.4,
+        "max_drawdown_pct": 6.9,
+        "score": 6.6,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 1.95,
+        "invested_bars": 36
+      }
+    }
+  ],
+  "top_by_score": [
+    {
+      "entry_profile": "4h_open",
+      "summary": {
+        "total_return_pct": 20.4,
+        "max_drawdown_pct": 6.9,
+        "score": 6.6,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 1.95,
+        "invested_bars": 36
+      }
+    },
+    {
+      "entry_profile": "1h_immediate",
+      "summary": {
+        "total_return_pct": 20.4,
+        "max_drawdown_pct": 6.9,
+        "score": 6.6,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 1.95,
+        "invested_bars": 36
+      }
+    },
+    {
+      "entry_profile": "1h_pullback_ema20",
+      "summary": {
+        "total_return_pct": 20.4,
+        "max_drawdown_pct": 6.9,
+        "score": 6.6,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 1.95,
+        "invested_bars": 36
+      }
+    },
+    {
+      "entry_profile": "1h_breakout_6",
+      "summary": {
+        "total_return_pct": 20.4,
+        "max_drawdown_pct": 6.9,
+        "score": 6.6,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 1.95,
+        "invested_bars": 36
+      }
+    },
+    {
+      "entry_profile": "1h_pullback_or_breakout",
+      "summary": {
+        "total_return_pct": 20.4,
+        "max_drawdown_pct": 6.9,
+        "score": 6.6,
+        "trades": 0,
+        "win_rate_pct": 0.0,
+        "avg_trade_return_pct": 0.0,
+        "funding_cost_pct_est": 1.95,
+        "invested_bars": 36
+      }
+    }
+  ]
+}
