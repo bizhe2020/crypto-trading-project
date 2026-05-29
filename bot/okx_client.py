@@ -115,6 +115,12 @@ class OkxClient:
     def amend_algo_order(self, request: dict[str, Any]) -> dict[str, Any]:
         return self.exchange.privatePostTradeAmendAlgos(request)
 
+    def create_algo_order(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self.exchange.privatePostTradeOrderAlgo(request)
+
+    def cancel_algo_orders(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self.exchange.privatePostTradeCancelAlgos(request)
+
     def fetch_pending_algo_orders(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.exchange.privateGetTradeOrdersAlgoPending(params or {})
 

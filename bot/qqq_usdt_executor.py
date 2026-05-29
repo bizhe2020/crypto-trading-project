@@ -246,6 +246,44 @@ class QqqUsdtExecutionEngine:
             position_open = True
         else:
             stop_update = self.update_trailing_stop(context, exchange_position)
+            pending_count = 0
+            pending_contracts = 0.0
+            try:
+                pending_orders = self._select_all_qqq_pending_algo_orders()
+                pending_count = len(pending_orders)
+                pending_contracts = sum(float(order.get("sz") or 0.0) for order in pending_orders)
+            except Exception:
+                pending_count = 0
+                pending_contracts = 0.0
+            local_contracts = float(current.get("exchange_contracts", 0.0) or 0.0)
+            exchange_contracts = float(exchange_position.get("contracts", 0.0) or 0.0)
+            stop_needs_replacement = (
+                self.router_config.mode != "paper"
+                and bool(self.router_config.qqq_enable_exchange_stop)
+                and exchange_contracts > 0
+                and (
+                    pending_count != 1
+                    or abs(pending_contracts - exchange_contracts) / max(exchange_contracts, 1e-9) > 0.001
+                    or local_contracts <= 0
+                    or abs(local_contracts - exchange_contracts) / max(exchange_contracts, 1e-9) > 0.001
+                )
+            )
+            if stop_needs_replacement:
+                stop_replace = self._replace_exchange_stop(context, exchange_position)
+                actions.append(
+                    {
+                        "status": stop_replace.get("status"),
+                        "action": "replace_qqq_full_position_stop",
+                        "reason": "stop_size_or_count_mismatch",
+                        "pending_stop_count": pending_count,
+                        "pending_stop_contracts": pending_contracts,
+                        "local_contracts": local_contracts,
+                        "exchange_contracts": exchange_contracts,
+                        "exchange_stop": stop_replace,
+                    }
+                )
+                if stop_replace.get("status") != "error":
+                    next_position_state = self._with_exchange_stop_fields(next_position_state, stop_replace)
             if stop_update is not None:
                 actions.append(stop_update)
                 if stop_update.get("status") == "error":
@@ -683,16 +721,11 @@ class QqqUsdtExecutionEngine:
                 return {"status": "skipped", "action": "rebalance_qqq_position", "reason": "non_positive_add_amount"}
             params: dict[str, Any] = {"tdMode": context.margin_mode, "posSide": "long"}
             try:
-                attach_algo_client_ids = []
-                params_factory = None
-                if bool(self.router_config.qqq_enable_exchange_stop) and context.stop_price > 0:
-                    params_factory = self._chunk_params_factory(context, generated_client_ids=attach_algo_client_ids)
                 orders = self._submit_market_orders(
                     context.symbol,
                     "buy",
                     amount,
                     params=params,
-                    params_factory=params_factory,
                 )
             except PartialOrderSubmissionError as exc:
                 refreshed_position = self.fetch_position_state()
@@ -715,11 +748,7 @@ class QqqUsdtExecutionEngine:
                 self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "REBALANCE_QQQ_POSITION_PARTIAL_FAILED", payload)
                 return payload
             order = orders[-1] if orders else {}
-            exchange_stop = self._refresh_exchange_stop_identity(
-                attach_algo_client_id=attach_algo_client_ids[0] if attach_algo_client_ids else None,
-                attach_algo_client_ids=attach_algo_client_ids,
-                order_id=self._extract_order_id(order),
-            )
+            exchange_stop = self._replace_exchange_stop(context, self.fetch_position_state())
             payload = {
                 "status": "submitted",
                 "action": "rebalance_qqq_position",
@@ -1145,13 +1174,97 @@ class QqqUsdtExecutionEngine:
             raise RuntimeError("; ".join(errors))
         return orders
 
+    def _cancel_pending_algo_orders(self, orders: list[dict[str, Any]]) -> dict[str, Any]:
+        cancellable = []
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+            algo_id = order.get("algoId")
+            if not algo_id:
+                continue
+            cancellable.append({"instId": order.get("instId") or self._market()["id"], "algoId": str(algo_id)})
+        if not cancellable:
+            return {"status": "skipped", "reason": "no_algo_orders_to_cancel", "count": 0}
+        response = self.client.cancel_algo_orders(cancellable)
+        return {"status": "submitted", "count": len(cancellable), "response": response}
+
+    def _create_position_stop_order(self, context: QqqOrderContext, contracts: float) -> dict[str, Any]:
+        amount = float(self._amount_to_precision(self._market(), contracts))
+        if amount <= 0:
+            return {"status": "skipped", "reason": "non_positive_stop_amount", "contracts": contracts}
+        algo_client_id = self._generate_attach_algo_client_id()
+        request = {
+            "instId": self._market()["id"],
+            "tdMode": context.margin_mode,
+            "side": "sell",
+            "posSide": "long",
+            "ordType": "conditional",
+            "sz": self._amount_to_precision(self._market(), amount),
+            "triggerPx": self._price_to_precision(self._market(), context.stop_price),
+            "triggerPxType": "mark",
+            "orderPx": "-1",
+            "reduceOnly": "true",
+            "algoClOrdId": algo_client_id,
+        }
+        response = self.client.create_algo_order(request)
+        algo_id = None
+        data = response.get("data") if isinstance(response, dict) else None
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            algo_id = data[0].get("algoId")
+        return {
+            "status": "submitted",
+            "algo_id": str(algo_id) if algo_id else None,
+            "algo_client_id": algo_client_id,
+            "stop_price": context.stop_price,
+            "contracts": amount,
+            "request": request,
+            "response": response,
+        }
+
+    def _replace_exchange_stop(self, context: QqqOrderContext, exchange_position: dict[str, Any]) -> dict[str, Any]:
+        if self.router_config.mode == "paper" or not bool(self.router_config.qqq_enable_exchange_stop):
+            return {"status": "disabled"}
+        pending_orders = self._select_all_qqq_pending_algo_orders()
+        cancel_result = self._cancel_pending_algo_orders(pending_orders)
+        refreshed_position = self.fetch_position_state()
+        contracts = float(refreshed_position.get("contracts", 0.0) or exchange_position.get("contracts", 0.0) or 0.0)
+        create_result = self._create_position_stop_order(context, contracts)
+        return {
+            "status": create_result.get("status"),
+            "mode": "replace_full_position_stop",
+            "cancel": cancel_result,
+            "algo_id": create_result.get("algo_id"),
+            "algo_client_id": create_result.get("algo_client_id"),
+            "algo_ids": [create_result["algo_id"]] if create_result.get("algo_id") else [],
+            "algo_client_ids": [create_result["algo_client_id"]] if create_result.get("algo_client_id") else [],
+            "stop_price": create_result.get("stop_price"),
+            "contracts": create_result.get("contracts"),
+            "create": create_result,
+        }
+
     def _select_pending_algo_order(self, local_position: dict[str, Any] | None = None) -> dict[str, Any] | None:
         candidates = self._select_pending_algo_orders(local_position)
         return candidates[0] if candidates else None
 
-    def _select_pending_algo_orders(self, local_position: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        pending_orders = self._fetch_pending_algo_orders()
+    def _select_all_qqq_pending_algo_orders(self) -> list[dict[str, Any]]:
         market_id = self._market().get("id")
+        candidates = []
+        for order in self._fetch_pending_algo_orders():
+            if not isinstance(order, dict):
+                continue
+            if market_id and order.get("instId") != market_id:
+                continue
+            if order.get("ordType") not in {"oco", "conditional"}:
+                continue
+            if order.get("state") not in {"live", "effective"}:
+                continue
+            if order.get("posSide") not in (None, "", "long"):
+                continue
+            candidates.append(order)
+        return candidates
+
+    def _select_pending_algo_orders(self, local_position: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        pending_orders = self._select_all_qqq_pending_algo_orders()
         local_algo_id = str((local_position or {}).get("exchange_attach_algo_id") or "")
         local_algo_client_id = str((local_position or {}).get("exchange_attach_algo_client_id") or "")
         local_algo_ids = {
@@ -1164,21 +1277,8 @@ class QqqUsdtExecutionEngine:
             for item in (local_position or {}).get("exchange_attach_algo_client_ids", [])
             if item not in (None, "")
         }
-        candidates = []
-        for order in pending_orders:
-            if not isinstance(order, dict):
-                continue
-            if market_id and order.get("instId") != market_id:
-                continue
-            if order.get("ordType") not in {"oco", "conditional"}:
-                continue
-            if order.get("state") not in {"live", "effective"}:
-                continue
-            if order.get("posSide") not in (None, "", "long"):
-                continue
-            candidates.append(order)
         matched = []
-        for order in candidates:
+        for order in pending_orders:
             algo_id = str(order.get("algoId") or "")
             algo_client_id = str(order.get("algoClOrdId") or "")
             if local_algo_id and algo_id == local_algo_id:
@@ -1192,7 +1292,7 @@ class QqqUsdtExecutionEngine:
                 continue
             if local_algo_client_ids and algo_client_id in local_algo_client_ids:
                 matched.append(order)
-        return matched or candidates
+        return matched or pending_orders
 
     def _refresh_exchange_stop_identity(
         self,
