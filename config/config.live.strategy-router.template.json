@@ -21,6 +21,7 @@
   "qqq_margin_mode": "isolated",
   "qqq_position_size_pct": 1.0,
   "qqq_sizing_basis": "total_equity",
+  "qqq_sizing_cash_buffer_usdt": 1000.0,
   "qqq_max_notional_usdt": null,
   "qqq_min_order_notional_usdt": 10.0,
   "qqq_min_rebalance_notional_usdt": 25.0,

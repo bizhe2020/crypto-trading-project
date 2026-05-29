@@ -50,6 +50,7 @@ class StrategyRouterConfig:
     qqq_margin_mode: str = "isolated"
     qqq_position_size_pct: float = 1.0
     qqq_sizing_basis: str = "available"
+    qqq_sizing_cash_buffer_usdt: float = 0.0
     qqq_max_notional_usdt: float | None = None
     qqq_min_order_notional_usdt: float = 10.0
     qqq_min_rebalance_notional_usdt: float = 10.0

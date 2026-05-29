@@ -409,6 +409,8 @@ class QqqUsdtExecutionEngine:
             sizing_usdt = 1000.0
         else:
             sizing_usdt = self._sizing_usdt(self.client.fetch_balance())
+        cash_buffer = max(float(getattr(self.router_config, "qqq_sizing_cash_buffer_usdt", 0.0) or 0.0), 0.0)
+        sizing_usdt = max(float(sizing_usdt) - cash_buffer, 0.0)
         notional = sizing_usdt * float(self.router_config.qqq_position_size_pct) * float(context.leverage)
         if self.router_config.qqq_max_notional_usdt is not None:
             notional = min(notional, float(self.router_config.qqq_max_notional_usdt))
