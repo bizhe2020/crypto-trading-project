@@ -163,12 +163,22 @@ class StrategyRouter:
         candidates: list[RoutedSignalCandidate],
         current_strategy: str | None,
     ) -> tuple[RoutedSignalCandidate | None, str]:
+        current_candidate = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.strategy_id == current_strategy and candidate.active
+            ),
+            None,
+        )
         eligible = [
             candidate
             for candidate in candidates
             if candidate.active and float(candidate.route_score) >= self._min_score_for(candidate.strategy_id)
         ]
         if not eligible:
+            if current_candidate is not None:
+                return current_candidate, "hold_current_active_below_threshold"
             return None, "no_eligible_candidates"
 
         eligible.sort(
@@ -179,7 +189,7 @@ class StrategyRouter:
             reverse=True,
         )
         best = eligible[0]
-        current = next((item for item in eligible if item.strategy_id == current_strategy), None)
+        current = current_candidate or next((item for item in eligible if item.strategy_id == current_strategy), None)
         if current is not None and current.strategy_id != best.strategy_id:
             score_delta = float(best.route_score) - float(current.route_score)
             if score_delta < float(self.config.switch_advantage):

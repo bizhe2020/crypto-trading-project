@@ -60,6 +60,15 @@ def test_router_returns_none_when_no_candidate_clears_threshold() -> None:
     assert reason == "no_eligible_candidates"
 
 
+def test_router_keeps_current_active_candidate_below_new_entry_threshold() -> None:
+    router = build_router()
+    btc = RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0)
+    qqq = RoutedSignalCandidate("qqq_usdt_aggressive", "QQQ/USDT:USDT", True, 52.0, leverage=1.0)
+    selected, reason = router._choose_candidate([btc, qqq], current_strategy="qqq_usdt_aggressive")
+    assert selected is qqq
+    assert reason == "hold_current_active_below_threshold"
+
+
 def test_btc_route_score_uses_quality_layers() -> None:
     weak = {
         "event_type": "sota_long",
@@ -384,6 +393,57 @@ def test_qqq_live_rebalance_reduces_position_instead_of_reopen(tmp_path: Path) -
     assert calls[0][3] == "sell"
     assert calls[0][5]["reduceOnly"] is True
     assert calls[1] == ("set_leverage", 2, "QQQ/USDT:USDT", "isolated", "long")
+
+
+def test_qqq_market_orders_split_by_okx_max_market_size(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+        ),
+        config_path,
+    )
+    engine._markets_cache = {
+        "QQQ/USDT:USDT": {
+            "id": "QQQ-USDT-SWAP",
+            "contract": True,
+            "contractSize": 1.0,
+            "precision": {"amount": 0.01, "price": 0.01},
+            "limits": {"amount": {"min": 0.01}},
+            "info": {"maxMktSz": "210"},
+        }
+    }
+    calls = []
+
+    class FakeClient:
+        def create_order(self, symbol, order_type, side, amount, price=None, *, params=None):
+            calls.append((symbol, order_type, side, amount, params))
+            return {"id": f"order-{len(calls)}", "amount": amount}
+
+    engine.client = FakeClient()
+    orders = engine._submit_market_orders(
+        "QQQ/USDT:USDT",
+        "sell",
+        302.14,
+        params={"reduceOnly": True, "tdMode": "isolated", "posSide": "long"},
+    )
+
+    assert [item["amount"] for item in orders] == [210.0, 92.14]
+    assert [call[3] for call in calls] == [210.0, 92.14]
 
 
 def test_qqq_live_rebalance_adds_only_delta_position(tmp_path: Path) -> None:

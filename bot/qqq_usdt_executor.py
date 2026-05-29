@@ -506,7 +506,8 @@ class QqqUsdtExecutionEngine:
                     "attachAlgoClOrdId": attach_algo_client_id,
                 }
             ]
-        order = self.client.create_order(context.symbol, "market", "buy", amount, params=params)
+        orders = self._submit_market_orders(context.symbol, "buy", amount, params=params)
+        order = orders[-1] if orders else {}
         exchange_stop = self._refresh_exchange_stop_identity(
             attach_algo_client_id=attach_algo_client_id,
             order_id=self._extract_order_id(order),
@@ -515,6 +516,7 @@ class QqqUsdtExecutionEngine:
             "status": "submitted",
             "action": "open_qqq_usdt_long",
             "order": order,
+            "orders": orders,
             "amount": amount,
             "notional_usdt": round(notional, 6),
             "leverage": context.leverage,
@@ -616,13 +618,15 @@ class QqqUsdtExecutionEngine:
                 return {"status": "skipped", "action": "rebalance_qqq_position", "reason": "non_positive_add_amount"}
             params: dict[str, Any] = {"tdMode": context.margin_mode, "posSide": "long"}
             exchange_stop = self._attach_stop_to_order_params(params, context)
-            order = self.client.create_order(context.symbol, "market", "buy", amount, params=params)
+            orders = self._submit_market_orders(context.symbol, "buy", amount, params=params)
+            order = orders[-1] if orders else {}
             payload = {
                 "status": "submitted",
                 "action": "rebalance_qqq_position",
                 "side": "buy",
                 "amount": amount,
                 "order": order,
+                "orders": orders,
                 "current_notional_usdt": round(current_notional, 6),
                 "target_notional_usdt": round(float(target_notional), 6),
                 "delta_notional_usdt": round(delta_notional, 6),
@@ -639,13 +643,13 @@ class QqqUsdtExecutionEngine:
         amount = min(float(amount), contracts)
         if amount <= 0:
             return {"status": "skipped", "action": "rebalance_qqq_position", "reason": "non_positive_reduce_amount"}
-        order = self.client.create_order(
+        orders = self._submit_market_orders(
             context.symbol,
-            "market",
             "sell",
             amount,
             params={"reduceOnly": True, "tdMode": context.margin_mode, "posSide": "long"},
         )
+        order = orders[-1] if orders else {}
         leverage_result = self.sync_leverage_setting(context)
         status = "submitted_with_leverage_error" if leverage_result.get("status") == "error" else "submitted"
         payload = {
@@ -654,6 +658,7 @@ class QqqUsdtExecutionEngine:
             "side": "sell",
             "amount": amount,
             "order": order,
+            "orders": orders,
             "current_notional_usdt": round(current_notional, 6),
             "target_notional_usdt": round(float(target_notional), 6),
             "delta_notional_usdt": round(delta_notional, 6),
@@ -677,6 +682,9 @@ class QqqUsdtExecutionEngine:
         exchange_stop = self._extract_exchange_stop_fields(exchange_position)
         if exchange_stop.get("stop_price"):
             position_state["stop_price"] = float(exchange_stop["stop_price"])
+        exchange_leverage = self._extract_exchange_leverage(exchange_position)
+        if exchange_leverage > 0:
+            position_state["leverage"] = exchange_leverage
         position_state["exchange_contracts"] = float(exchange_position.get("contracts", 0.0) or 0.0)
         position_state["exchange_notional_usdt"] = float(exchange_position.get("notional_usdt", 0.0) or 0.0)
         position_state = self._with_exchange_stop_fields(position_state, exchange_stop)
@@ -702,14 +710,21 @@ class QqqUsdtExecutionEngine:
         if self.router_config.mode == "paper":
             self.save_state({"position": None})
             return {"status": "paper_closed", "symbol": self.symbol, "amount": amount, "reason": reason}
-        order = self.client.create_order(
+        orders = self._submit_market_orders(
             self.symbol,
-            "market",
             "sell",
             amount,
             params={"reduceOnly": True, "tdMode": self.router_config.qqq_margin_mode, "posSide": "long"},
         )
-        payload = {"status": "submitted", "action": "close_qqq_usdt_long", "order": order, "amount": amount, "reason": reason}
+        order = orders[-1] if orders else {}
+        payload = {
+            "status": "submitted",
+            "action": "close_qqq_usdt_long",
+            "order": order,
+            "orders": orders,
+            "amount": amount,
+            "reason": reason,
+        }
         self.store.append_action("runtime", "CLOSE_QQQ_USDT", payload)
         self.save_state({"position": None})
         return payload
@@ -845,6 +860,20 @@ class QqqUsdtExecutionEngine:
                 return numeric
         return 0.0
 
+    def _extract_exchange_leverage(self, exchange_position: dict[str, Any]) -> float:
+        raw = exchange_position.get("raw") if isinstance(exchange_position, dict) else None
+        candidates: list[Any] = []
+        if isinstance(raw, dict):
+            candidates.append(raw.get("leverage"))
+            info = raw.get("info")
+            if isinstance(info, dict):
+                candidates.append(info.get("lever"))
+        for value in candidates:
+            numeric = self._positive_float(value)
+            if numeric is not None:
+                return numeric
+        return 0.0
+
     def _extract_stop_price_from_algo(self, algo: dict[str, Any] | None) -> float | None:
         if not isinstance(algo, dict):
             return None
@@ -883,6 +912,48 @@ class QqqUsdtExecutionEngine:
             "algo_client_id": identity["algo_client_id"],
             "stop_price": stop_price,
         }
+
+    def _max_market_order_amount(self) -> float | None:
+        market = self._market()
+        candidates = [
+            ((market.get("limits") or {}).get("amount") or {}).get("max"),
+            (market.get("info") or {}).get("maxMktSz"),
+        ]
+        for value in candidates:
+            numeric = self._positive_float(value)
+            if numeric is not None:
+                return numeric
+        return None
+
+    def _split_order_amount(self, amount: float) -> list[float]:
+        total = Decimal(str(amount))
+        if total <= 0:
+            return []
+        max_amount = self._max_market_order_amount()
+        if max_amount is None or max_amount <= 0 or total <= Decimal(str(max_amount)):
+            return [float(total)]
+        chunks: list[float] = []
+        remaining = total
+        max_decimal = Decimal(str(max_amount))
+        while remaining > max_decimal:
+            chunks.append(float(self._amount_to_precision(self._market(), float(max_decimal))))
+            remaining -= max_decimal
+        if remaining > 0:
+            chunks.append(float(self._amount_to_precision(self._market(), float(remaining))))
+        return [chunk for chunk in chunks if chunk > 0]
+
+    def _submit_market_orders(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        orders = []
+        for chunk in self._split_order_amount(float(amount)):
+            orders.append(self.client.create_order(symbol, "market", side, chunk, params=params))
+        return orders
 
     def _fetch_pending_algo_orders(self) -> list[dict[str, Any]]:
         orders: list[dict[str, Any]] = []
