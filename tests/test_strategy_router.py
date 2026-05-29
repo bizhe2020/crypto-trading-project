@@ -524,3 +524,54 @@ def test_router_data_warning_detects_stale_qqq_signal() -> None:
     warning = StrategyRouterExecutionEngine._data_warning(route)
     assert warning is not None
     assert "QQQ 日线信号过期" in warning["message"]
+
+
+def test_router_audit_log_appends_jsonl(tmp_path: Path) -> None:
+    config = StrategyRouterConfig(
+        mode="paper",
+        state_path=str(tmp_path / "router.json"),
+        btc_strategy_config="config/config.paper.high-leverage-structure.json",
+        qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+        qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+        router_audit_log_path=str(tmp_path / "router_audit.jsonl"),
+        router_audit_log_enabled=True,
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.config = config
+    engine.audit_log_path = Path(config.router_audit_log_path)
+    engine.execution_state_path = tmp_path / "router.json.execution"
+    engine.router = type("RouterStub", (), {"config_path": tmp_path / "router_config.json", "state_path": tmp_path / "router.json"})()
+
+    class FakeBtc:
+        def _load_snapshot_payload(self):
+            return {"position": {"direction": "BULL"}, "trade_count": 1}
+
+    class FakeQqq:
+        symbol = "QQQ/USDT:USDT"
+
+        def load_state(self):
+            return {"position": {"leverage": 10.0, "stop_price": 700.0}}
+
+        def fetch_position_state(self):
+            return {"contracts": 1.0, "notional_usdt": 1000.0, "raw": {"id": "pos"}}
+
+    engine.btc_executor = FakeBtc()
+    engine.qqq_executor = FakeQqq()
+
+    payload = {
+        "route": {"selected_strategy": "qqq_usdt_aggressive", "selected_route_score": 96.0},
+        "previous_executed_strategy": "btc_sota",
+        "current_executed_strategy": "qqq_usdt_aggressive",
+        "execution_results": [{"strategy": "qqq_usdt_aggressive", "result": {"status": "paper_opened"}}],
+        "updated_at": 1780065600,
+    }
+    engine._append_audit_log(payload)
+
+    lines = engine.audit_log_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    record = __import__("json").loads(lines[0])
+    assert record["event"] == "strategy_router_evaluate"
+    assert record["route"]["selected_strategy"] == "qqq_usdt_aggressive"
+    assert record["local_state"]["btc_snapshot"]["trade_count"] == 1
+    assert record["local_state"]["qqq_state"]["position"]["leverage"] == 10.0
+    assert record["exchange_state"]["qqq"]["position"]["notional_usdt"] == 1000.0

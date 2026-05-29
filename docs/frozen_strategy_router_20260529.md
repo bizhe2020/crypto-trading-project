@@ -110,6 +110,25 @@ QQQ route score：
 
 - 当前不是 BTC 分数低输给 QQQ，而是 BTC 没有可执行候选。
 
+## Audit Log
+
+Router 执行层已启用 append-only JSONL 审计日志：
+
+- paper：`var/log/strategy_router_paper_audit.jsonl`
+- live：`var/log/strategy_router_live_audit.jsonl`
+
+每轮 `evaluate_latest` 追加一行，核心字段包括：
+
+- `route`：完整 candidates、selected strategy、route score、decision reason
+- `execution_results`：本轮实际开仓、平仓、调仓、stop 更新结果
+- `local_state.router_execution`：router 当前执行策略和 last status
+- `local_state.btc_snapshot`：BTC executor 本地 snapshot
+- `local_state.qqq_state`：QQQ/USDT 本地 position / stop / leverage state
+- `exchange_state.btc`：BTC long/short 交易所仓位快照
+- `exchange_state.qqq`：QQQ/USDT 交易所仓位快照
+
+审计日志只追加，不参与交易决策；采集失败会写入 `audit_errors`，不会阻断下单。
+
 ## Verification
 
 已通过：

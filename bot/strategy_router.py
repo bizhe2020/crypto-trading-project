@@ -64,6 +64,8 @@ class StrategyRouterConfig:
     telegram_notify_execution: bool = True
     telegram_notify_data_warnings: bool = True
     telegram_notify_errors: bool = True
+    router_audit_log_enabled: bool = True
+    router_audit_log_path: str | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "StrategyRouterConfig":
@@ -98,6 +100,7 @@ class StrategyRouter:
             "execution_credentials_config",
             "qqq_state_db_path",
             "okx_markets_cache_path",
+            "router_audit_log_path",
         ]:
             value = resolved.get(key)
             if not isinstance(value, str) or not value:

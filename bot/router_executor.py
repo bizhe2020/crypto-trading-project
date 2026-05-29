@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ class StrategyRouterExecutionEngine:
         self.btc_executor = OkxExecutionEngine.from_file(self.config.btc_strategy_config)
         self.qqq_executor = QqqUsdtExecutionEngine(self.config, self.config.qqq_strategy_config)
         self.execution_state_path = self.router.state_path.with_suffix(self.router.state_path.suffix + ".execution")
+        self.audit_log_path = self._resolve_audit_log_path()
 
     @classmethod
     def from_file(cls, path: str | Path) -> "StrategyRouterExecutionEngine":
@@ -77,6 +79,7 @@ class StrategyRouterExecutionEngine:
             }
         )
         self._save_execution_state(execution_state)
+        self._append_audit_log(payload)
         return payload
 
     def run_loop(self, poll_interval_seconds: int = 30) -> None:
@@ -162,6 +165,87 @@ class StrategyRouterExecutionEngine:
         tmp = self.execution_state_path.with_suffix(self.execution_state_path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
         tmp.replace(self.execution_state_path)
+
+    def _resolve_audit_log_path(self) -> Path:
+        configured = self.config.router_audit_log_path
+        if configured:
+            return Path(configured)
+        return self.router.state_path.with_suffix(self.router.state_path.suffix + ".audit.jsonl")
+
+    def _append_audit_log(self, payload: dict[str, Any]) -> None:
+        if not bool(self.config.router_audit_log_enabled):
+            return
+        record = self._build_audit_record(payload)
+        try:
+            self.audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.audit_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            return
+
+    def _build_audit_record(self, payload: dict[str, Any]) -> dict[str, Any]:
+        errors: list[dict[str, str]] = []
+        record = {
+            "event": "strategy_router_evaluate",
+            "schema_version": 1,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "mode": self.config.mode,
+            "router_config": str(self.router.config_path),
+            "state_path": str(self.router.state_path),
+            "execution_state_path": str(self.execution_state_path),
+            "route": payload.get("route"),
+            "previous_executed_strategy": payload.get("previous_executed_strategy"),
+            "current_executed_strategy": payload.get("current_executed_strategy"),
+            "execution_results": payload.get("execution_results", []),
+            "runtime": {
+                "updated_at": payload.get("updated_at"),
+                "pid": self._safe_pid(),
+            },
+            "local_state": {
+                "router_execution": self._safe_call("router_execution_state", self._load_execution_state, errors),
+                "btc_snapshot": self._safe_call("btc_snapshot", self.btc_executor._load_snapshot_payload, errors),
+                "qqq_state": self._safe_call("qqq_state", self.qqq_executor.load_state, errors),
+            },
+            "exchange_state": {
+                "btc": self._safe_call("btc_exchange_state", self._btc_exchange_state, errors),
+                "qqq": self._safe_call("qqq_exchange_state", self._qqq_exchange_state, errors),
+            },
+        }
+        if errors:
+            record["audit_errors"] = errors
+        return record
+
+    @staticmethod
+    def _safe_pid() -> int | None:
+        try:
+            import os
+
+            return int(os.getpid())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _safe_call(name: str, callback: Any, errors: list[dict[str, str]]) -> Any:
+        try:
+            return callback()
+        except Exception as exc:
+            errors.append({"section": name, "error": str(exc)})
+            return None
+
+    def _btc_exchange_state(self) -> dict[str, Any]:
+        if self.config.mode == "paper":
+            return {"mode": "paper", "enabled": False}
+        return {
+            "symbol": self.btc_executor.config.symbol,
+            "long": self.btc_executor._fetch_position_state("long"),
+            "short": self.btc_executor._fetch_position_state("short"),
+        }
+
+    def _qqq_exchange_state(self) -> dict[str, Any]:
+        return {
+            "symbol": self.qqq_executor.symbol,
+            "position": self.qqq_executor.fetch_position_state(),
+        }
 
     def _flatten_strategy(self, strategy_id: str | None, *, reason: str) -> list[dict[str, Any]]:
         if strategy_id == "qqq_usdt_aggressive":
