@@ -56,6 +56,10 @@ class StrategyRouterConfig:
     qqq_min_rebalance_notional_usdt: float = 10.0
     qqq_rebalance_on_leverage_change: bool = True
     qqq_rebalance_on_notional_gap: bool = False
+    qqq_max_market_order_contracts: float | None = None
+    qqq_market_order_chunk_delay_seconds: float = 0.0
+    qqq_close_confirm_timeout_seconds: float = 15.0
+    qqq_close_confirm_poll_seconds: float = 1.0
     qqq_enable_exchange_stop: bool = False
     qqq_rebalance_risk_on_market_hours_only: bool = False
     qqq_market_hours_timezone: str = "America/New_York"

@@ -1114,3 +1114,129 @@ def test_router_audit_log_appends_jsonl(tmp_path: Path) -> None:
     assert record["local_state"]["btc_snapshot"]["trade_count"] == 1
     assert record["local_state"]["qqq_state"]["position"]["leverage"] == 10.0
     assert record["exchange_state"]["qqq"]["position"]["notional_usdt"] == 1000.0
+
+
+def test_qqq_close_position_chunks_and_confirms_flat(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_max_market_order_contracts=3.0,
+            qqq_close_confirm_timeout_seconds=0.0,
+            qqq_close_confirm_poll_seconds=0.1,
+            qqq_market_order_chunk_delay_seconds=0.0,
+        ),
+        config_path,
+    )
+    engine._markets_cache = {
+        "QQQ/USDT:USDT": {
+            "id": "QQQ-USDT-SWAP",
+            "contract": True,
+            "contractSize": 1.0,
+            "precision": {"amount": 0.01, "price": 0.01},
+            "limits": {"amount": {"min": 0.01}},
+        }
+    }
+    calls = []
+    position_contracts = {"value": 7.0}
+
+    class FakeClient:
+        def create_order(self, symbol, order_type, side, amount, price=None, *, params=None):
+            calls.append((symbol, order_type, side, amount, params))
+            position_contracts["value"] = max(0.0, position_contracts["value"] - float(amount))
+            return {"id": f"close-{len(calls)}"}
+
+    engine.client = FakeClient()
+    engine.fetch_position_state = lambda: {  # type: ignore[method-assign]
+        "contracts": position_contracts["value"],
+        "notional_usdt": position_contracts["value"] * 700.0,
+        "raw": None,
+    }
+
+    result = engine.close_position(reason="router_switch_to_btc_sota")
+
+    assert result["status"] == "closed_confirmed"
+    assert result["amount"] == 7.0
+    assert result["remaining_contracts"] == 0.0
+    assert [call[3] for call in calls] == [3.0, 3.0, 1.0]
+    assert all(call[4]["reduceOnly"] is True for call in calls)
+
+
+def test_router_blocks_btc_open_when_qqq_flatten_unconfirmed(tmp_path: Path) -> None:
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router_state.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            persist_state=False,
+            execution_enabled=True,
+            flatten_before_switch=True,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.execution_state_path = tmp_path / "router_state.execution"
+    engine.audit_log_path = tmp_path / "router_audit.jsonl"
+    btc_calls = []
+    execution_state = {"current_executed_strategy": "qqq_usdt_aggressive"}
+
+    engine._load_execution_state = lambda: dict(execution_state)  # type: ignore[method-assign]
+
+    def save_execution_state(payload):
+        execution_state.clear()
+        execution_state.update(payload)
+
+    engine._save_execution_state = save_execution_state  # type: ignore[method-assign]
+    engine._maybe_send_telegram_notifications = lambda payload: None  # type: ignore[method-assign]
+    engine._append_audit_log = lambda payload: None  # type: ignore[method-assign]
+    engine._flatten_strategy = lambda strategy, *, reason: [  # type: ignore[method-assign]
+        {
+            "strategy": strategy,
+            "result": {
+                "status": "submitted_but_unconfirmed",
+                "action": "close_qqq_usdt_long",
+                "remaining_contracts": 1.0,
+                "reason": reason,
+            },
+        }
+    ]
+    engine.router.evaluate_latest = lambda current_strategy_override=None: {  # type: ignore[method-assign]
+        "selected_strategy": "btc_sota",
+        "selected_candidate": {
+            "strategy_id": "btc_sota",
+            "symbol": "BTC/USDT:USDT",
+            "active": True,
+            "route_score": 96.0,
+        },
+    }
+
+    class FakeBtcExecutor:
+        def evaluate_latest(self):
+            btc_calls.append("btc.evaluate_latest")
+            return {"status": "mock_btc_opened"}
+
+    engine.btc_executor = FakeBtcExecutor()
+    engine.qqq_executor = object()
+
+    result = engine.evaluate_latest()
+
+    assert result["status"] == "blocked"
+    assert result["blocked_reason"] == "flatten_not_confirmed"
+    assert result["current_executed_strategy"] == "qqq_usdt_aggressive"
+    assert btc_calls == []

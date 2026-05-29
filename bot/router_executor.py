@@ -62,6 +62,30 @@ class StrategyRouterExecutionEngine:
 
         if selected_strategy != previous_executed and bool(self.config.flatten_before_switch):
             execution_results.extend(self._flatten_strategy(previous_executed, reason=f"router_switch_to_{selected_strategy or 'cash'}"))
+            if not self._flatten_confirmed(execution_results):
+                self._set_current_executed_strategy(previous_executed)
+                payload = {
+                    "status": "blocked",
+                    "mode": self.config.mode,
+                    "route": route,
+                    "previous_executed_strategy": previous_executed,
+                    "current_executed_strategy": self._current_executed_strategy(),
+                    "execution_results": execution_results,
+                    "blocked_reason": "flatten_not_confirmed",
+                    "updated_at": int(time.time()),
+                }
+                self._maybe_send_telegram_notifications(payload)
+                execution_state = self._load_execution_state()
+                execution_state.update(
+                    {
+                        "current_executed_strategy": self._current_executed_strategy(),
+                        "last_status": payload,
+                        "updated_at": int(time.time()),
+                    }
+                )
+                self._save_execution_state(execution_state)
+                self._append_audit_log(payload)
+                return payload
 
         if selected_strategy == "btc_sota":
             execution_results.append({"strategy": "btc_sota", "result": self.btc_executor.evaluate_latest()})
@@ -96,6 +120,17 @@ class StrategyRouterExecutionEngine:
         self._save_execution_state(execution_state)
         self._append_audit_log(payload)
         return payload
+
+    @staticmethod
+    def _flatten_confirmed(results: list[dict[str, Any]]) -> bool:
+        for item in results:
+            result = item.get("result") if isinstance(item, dict) else None
+            if not isinstance(result, dict):
+                continue
+            status = str(result.get("status") or "")
+            if status in {"submitted_but_unconfirmed", "partial_submitted_error", "error"}:
+                return False
+        return True
 
     def run_loop(self, poll_interval_seconds: int = 30) -> None:
         bootstrap = self.bootstrap()

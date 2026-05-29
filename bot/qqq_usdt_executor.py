@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass
@@ -1129,24 +1130,58 @@ class QqqUsdtExecutionEngine:
         if self.router_config.mode == "paper":
             self.save_state({"position": None})
             return {"status": "paper_closed", "symbol": self.symbol, "amount": amount, "reason": reason}
-        orders = self._submit_market_orders(
-            self.symbol,
-            "sell",
-            amount,
-            params={"reduceOnly": True, "tdMode": self.router_config.qqq_margin_mode, "posSide": "long"},
-        )
+        try:
+            orders = self._submit_market_orders(
+                self.symbol,
+                "sell",
+                amount,
+                params={"reduceOnly": True, "tdMode": self.router_config.qqq_margin_mode, "posSide": "long"},
+            )
+        except PartialOrderSubmissionError as exc:
+            refreshed = self._safe_refreshed_position(position)
+            payload = {
+                "status": "partial_submitted_error",
+                "action": "close_qqq_usdt_long",
+                "reason": "partial_order_submission_failed",
+                "error": str(exc),
+                "failed_chunk": exc.failed_chunk,
+                "orders": exc.orders,
+                "amount": amount,
+                "remaining_contracts": float(refreshed.get("contracts", 0.0) or 0.0),
+                "remaining_notional_usdt": float(refreshed.get("notional_usdt", 0.0) or 0.0),
+                "switch_reason": reason,
+            }
+            self.store.append_action("runtime", "CLOSE_QQQ_USDT_PARTIAL_FAILED", payload)
+            return payload
         order = orders[-1] if orders else {}
+        confirmed = self._wait_until_flat()
+        status = "closed_confirmed" if confirmed["contracts"] <= 0 else "submitted_but_unconfirmed"
         payload = {
-            "status": "submitted",
+            "status": status,
             "action": "close_qqq_usdt_long",
             "order": order,
             "orders": orders,
             "amount": amount,
+            "remaining_contracts": confirmed["contracts"],
+            "remaining_notional_usdt": confirmed["notional_usdt"],
             "reason": reason,
         }
         self.store.append_action("runtime", "CLOSE_QQQ_USDT", payload)
-        self.save_state({"position": None})
+        if confirmed["contracts"] <= 0:
+            self.save_state({"position": None})
         return payload
+
+    def _wait_until_flat(self) -> dict[str, float]:
+        deadline = time.time() + max(0.0, float(self.router_config.qqq_close_confirm_timeout_seconds))
+        poll = max(0.1, float(self.router_config.qqq_close_confirm_poll_seconds))
+        latest = self.fetch_position_state()
+        while float(latest.get("contracts", 0.0) or 0.0) > 0 and time.time() < deadline:
+            time.sleep(poll)
+            latest = self.fetch_position_state()
+        return {
+            "contracts": float(latest.get("contracts", 0.0) or 0.0),
+            "notional_usdt": float(latest.get("notional_usdt", 0.0) or 0.0),
+        }
 
     def _attach_stop_to_order_params(self, params: dict[str, Any], context: QqqOrderContext) -> dict[str, Any] | None:
         if not bool(self.router_config.qqq_enable_exchange_stop) or context.stop_price <= 0:
@@ -1401,6 +1436,7 @@ class QqqUsdtExecutionEngine:
     def _max_market_order_amount(self) -> float | None:
         market = self._market()
         candidates = [
+            getattr(self.router_config, "qqq_max_market_order_contracts", None),
             ((market.get("limits") or {}).get("amount") or {}).get("max"),
             (market.get("info") or {}).get("maxMktSz"),
         ]
@@ -1437,7 +1473,9 @@ class QqqUsdtExecutionEngine:
         params_factory: Callable[[int, float], dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         orders = []
-        for index, chunk in enumerate(self._split_order_amount(float(amount))):
+        chunks = self._split_order_amount(float(amount))
+        delay = max(0.0, float(getattr(self.router_config, "qqq_market_order_chunk_delay_seconds", 0.0) or 0.0))
+        for index, chunk in enumerate(chunks):
             chunk_params = params_factory(index, chunk) if params_factory is not None else deepcopy(params or {})
             try:
                 orders.append(self.client.create_order(symbol, "market", side, chunk, params=chunk_params))
@@ -1445,6 +1483,8 @@ class QqqUsdtExecutionEngine:
                 if orders:
                     raise PartialOrderSubmissionError(str(exc), orders=orders, failed_chunk=float(chunk)) from exc
                 raise
+            if delay > 0 and index < len(chunks) - 1:
+                time.sleep(delay)
         return orders
 
     def _fetch_pending_algo_orders(self) -> list[dict[str, Any]]:
