@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 from bot.btc_route_scoring import btc_effective_leverage, btc_route_score  # noqa: E402
 from bot.okx_executor import ExecutorConfig  # noqa: E402
+from bot.qqq_runtime_policy import market_time_window_status  # noqa: E402
 from scripts.backtest_config_report import load_dataframe, parse_end_timestamp  # noqa: E402
 from scripts.replay_qqq_usdt_10x import load_funding  # noqa: E402
 from scripts.scan_qqq_usdt_4h_triggers import attach_daily_state, load_okx_4h, load_signal_path  # noqa: E402
@@ -82,6 +83,39 @@ def summarize_path(path: pd.DataFrame, equity_column: str, return_column: str) -
         "positive_days_pct": round(float((frame[return_column] > 0).mean() * 100.0), 2),
         "annual_returns_pct": yearly,
     }
+
+
+def _safe_bool(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return bool(value)
+
+
+def qqq_replay_signal_leverage(signal: dict[str, Any], lev_profile: dict[str, float]) -> float:
+    if not _safe_bool(signal.get("allow_long")):
+        return 0.0
+    if _safe_bool(signal.get("high_growth")):
+        return float(lev_profile["offense"])
+    if _safe_bool(signal.get("defense_state")):
+        return float(lev_profile["defense"])
+    return float(lev_profile["base"])
+
+
+def qqq_replay_risk_on_allowed(config: dict[str, Any], timestamp: Any) -> tuple[bool, dict[str, Any]]:
+    status = market_time_window_status(
+        enabled=bool(config.get("qqq_rebalance_risk_on_market_hours_only", False)),
+        timezone_name=str(config.get("qqq_market_hours_timezone", "America/New_York")),
+        start_time=str(config.get("qqq_market_hours_start", "09:30")),
+        end_time=str(config.get("qqq_market_hours_end", "16:00")),
+        trading_calendar=str(config.get("qqq_market_calendar", "NYSE")),
+        now=pd.Timestamp(timestamp),
+    )
+    return bool(status["open"]), status
 
 
 def slim_btc_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -449,6 +483,10 @@ def build_qqq_usdt_leveraged_path(
         allow_exact_matches=True,
     )
     merged["funding_rate_value"] = merged["funding_rate_value"].fillna(0.0)
+    merged = merged.sort_values("date").reset_index(drop=True)
+    for column in ("allow_long", "high_growth", "defense_state", "breakout_12"):
+        merged[f"signal_{column}"] = merged[column].shift(1)
+    merged["signal_date"] = merged["date"].shift(1)
 
     lev_profile = {
         "base": float(config["base_leverage"]),
@@ -460,35 +498,44 @@ def build_qqq_usdt_leveraged_path(
 
     capital = float(initial_capital)
     holding = False
-    prev_allow = False
     entry_price = 0.0
     stop_price = 0.0
     peak_close = 0.0
+    current_leverage = 0.0
     rows: list[dict[str, Any]] = []
     trades: list[dict[str, Any]] = []
     current_trade: dict[str, Any] | None = None
+    risk_on_blocked_entries = 0
+    risk_on_blocked_leverage_increases = 0
+    risk_off_rebalance_bars = 0
+    risk_on_rebalance_bars = 0
 
     for row in merged.itertuples(index=False):
         start_capital = capital
-        allow_now = bool(row.allow_long)
+        signal = {
+            "allow_long": row.signal_allow_long,
+            "high_growth": row.signal_high_growth,
+            "defense_state": row.signal_defense_state,
+            "breakout_12": row.signal_breakout_12,
+        }
+        allow_now = _safe_bool(signal["allow_long"])
+        signal_high_growth = _safe_bool(signal["high_growth"])
+        signal_defense = _safe_bool(signal["defense_state"])
+        target_leverage = qqq_replay_signal_leverage(signal, lev_profile)
         entered = False
         exited = False
         stop_hit = False
+        risk_on_blocked = False
+        risk_on_open: bool | None = None
+        risk_on_reason: str | None = None
         funding_cost = 0.0
         fee_cost = 0.0
-        leverage_now = 0.0
-
-        if holding:
-            if bool(row.high_growth):
-                leverage_now = lev_profile["offense"]
-            elif bool(row.defense_state):
-                leverage_now = lev_profile["defense"]
-            else:
-                leverage_now = lev_profile["base"]
+        rebalance_fee_cost = 0.0
+        leverage_now = current_leverage
 
         if holding and not allow_now:
-            fee_cost = per_side_cost
-            capital *= 1.0 - fee_cost * leverage_now
+            fee_cost += per_side_cost * current_leverage
+            capital *= 1.0 - fee_cost
             holding = False
             exited = True
             if current_trade is not None:
@@ -500,26 +547,49 @@ def build_qqq_usdt_leveraged_path(
                     }
                 )
             current_trade = None
+            current_leverage = 0.0
+            leverage_now = 0.0
 
-        if allow_now and not holding and not prev_allow:
-            leverage_now = lev_profile["base"]
-            fee_cost = per_side_cost
-            capital *= 1.0 - fee_cost * leverage_now
-            holding = True
-            entered = True
-            entry_price = float(row.open)
-            stop_price = entry_price * (1.0 - stop_loss_pct / 100.0)
-            peak_close = float(row.open)
-            current_trade = {"entry_date": str(pd.Timestamp(row.date)), "entry_capital": capital}
+        if allow_now and not holding and target_leverage > 0.0:
+            risk_on_open, risk_on_status = qqq_replay_risk_on_allowed(config, row.date)
+            risk_on_reason = str(risk_on_status.get("reason"))
+            if risk_on_open:
+                current_leverage = target_leverage
+                leverage_now = current_leverage
+                fee_cost += per_side_cost * current_leverage
+                capital *= 1.0 - fee_cost
+                holding = True
+                entered = True
+                entry_price = float(row.open)
+                stop_price = entry_price * (1.0 - stop_loss_pct / 100.0)
+                peak_close = float(row.open)
+                current_trade = {"entry_date": str(pd.Timestamp(row.date)), "entry_capital": capital}
+            else:
+                risk_on_blocked = True
+                risk_on_blocked_entries += 1
+
+        if holding and allow_now and target_leverage != current_leverage:
+            leverage_delta = abs(target_leverage - current_leverage)
+            if target_leverage < current_leverage:
+                rebalance_fee_cost += per_side_cost * leverage_delta
+                capital *= 1.0 - rebalance_fee_cost
+                current_leverage = target_leverage
+                risk_off_rebalance_bars += 1
+            elif target_leverage > current_leverage:
+                risk_on_open, risk_on_status = qqq_replay_risk_on_allowed(config, row.date)
+                risk_on_reason = str(risk_on_status.get("reason"))
+                if risk_on_open:
+                    rebalance_fee_cost += per_side_cost * leverage_delta
+                    capital *= 1.0 - rebalance_fee_cost
+                    current_leverage = target_leverage
+                    risk_on_rebalance_bars += 1
+                else:
+                    risk_on_blocked = True
+                    risk_on_blocked_leverage_increases += 1
+            leverage_now = current_leverage
 
         if holding:
-            if bool(row.high_growth):
-                leverage_now = lev_profile["offense"]
-            elif bool(row.defense_state):
-                leverage_now = lev_profile["defense"]
-            else:
-                leverage_now = lev_profile["base"]
-
+            leverage_now = current_leverage
             open_price = float(row.open)
             low_price = float(row.low)
             close_price = float(row.close)
@@ -531,7 +601,9 @@ def build_qqq_usdt_leveraged_path(
                 exit_price = stop_price
                 bar_ret = exit_price / open_price - 1.0 if open_price > 0 else 0.0
                 capital *= 1.0 + leverage_now * bar_ret
-                capital *= 1.0 - per_side_cost * leverage_now
+                exit_fee_cost = per_side_cost * leverage_now
+                fee_cost += exit_fee_cost
+                capital *= 1.0 - exit_fee_cost
                 holding = False
                 exited = True
                 if current_trade is not None:
@@ -543,6 +615,7 @@ def build_qqq_usdt_leveraged_path(
                         }
                     )
                 current_trade = None
+                current_leverage = 0.0
             else:
                 bar_ret = close_price / open_price - 1.0 if open_price > 0 else 0.0
                 capital *= 1.0 + leverage_now * bar_ret
@@ -552,6 +625,7 @@ def build_qqq_usdt_leveraged_path(
         rows.append(
             {
                 "date": pd.Timestamp(row.date),
+                "signal_date": pd.Timestamp(row.signal_date) if not pd.isna(row.signal_date) else pd.NaT,
                 "session_day": pd.Timestamp(row.date).floor("D"),
                 "bar_return": float(capital / start_capital - 1.0 if start_capital > 0 else 0.0),
                 "capital": float(capital),
@@ -560,14 +634,21 @@ def build_qqq_usdt_leveraged_path(
                 "entered": bool(entered),
                 "exited": bool(exited),
                 "stop_hit": bool(stop_hit),
-                "high_growth": bool(row.high_growth),
-                "defense_state": bool(row.defense_state),
+                "high_growth": bool(signal_high_growth),
+                "defense_state": bool(signal_defense),
+                "target_leverage": float(target_leverage),
                 "leverage_now": float(leverage_now),
+                "risk_on_window_open": risk_on_open,
+                "risk_on_window_reason": risk_on_reason,
+                "risk_on_blocked": bool(risk_on_blocked),
                 "funding_cost": float(funding_cost),
                 "fee_cost": float(fee_cost),
+                "rebalance_fee_cost": float(rebalance_fee_cost),
+                "raw_allow_long": bool(row.allow_long),
+                "raw_high_growth": bool(row.high_growth),
+                "raw_defense_state": bool(row.defense_state),
             }
         )
-        prev_allow = allow_now
 
     path_4h = pd.DataFrame(rows)
     if path_4h.empty:
@@ -575,7 +656,8 @@ def build_qqq_usdt_leveraged_path(
 
     daily_rows: list[dict[str, Any]] = []
     for day, group in path_4h.groupby("session_day", sort=True):
-        active = bool((group["holding"] | group["allow_long"] | group["entered"] | group["exited"]).any())
+        active = bool((group["holding"] | group["entered"] | group["exited"]).any())
+        candidate_active = bool(group["allow_long"].any())
         avg_leverage = float(group.loc[group["leverage_now"] > 0, "leverage_now"].mean()) if bool((group["leverage_now"] > 0).any()) else 0.0
         qqq_score = 0.0
         if active:
@@ -590,6 +672,7 @@ def build_qqq_usdt_leveraged_path(
                 "qqq_equity_raw": float(group["capital"].iloc[-1]),
                 "qqq_return": float((1.0 + group["bar_return"]).prod() - 1.0),
                 "qqq_active": active,
+                "qqq_candidate_active": candidate_active,
                 "qqq_score": round(float(qqq_score), 2),
                 "position": "QQQ_USDT_LONG" if active else "CASH",
                 "entry_type": "leveraged_contract",
@@ -616,7 +699,22 @@ def build_qqq_usdt_leveraged_path(
             "avg_trade_return_pct": round(float(trades_df["trade_return_pct"].mean()), 2) if not trades_df.empty else 0.0,
             "funding_cost_pct_est": round(float(path_4h["funding_cost"].sum() * 100.0), 2),
             "fee_cost_pct_est": round(float(path_4h["fee_cost"].sum() * 100.0), 2),
+            "rebalance_fee_cost_pct_est": round(float(path_4h["rebalance_fee_cost"].sum() * 100.0), 2),
             "avg_leverage_when_in": round(float(path_4h.loc[path_4h["holding"], "leverage_now"].mean()), 2) if bool(path_4h["holding"].any()) else 0.0,
+            "execution_policy": {
+                "signal_lag_4h_bars": 1,
+                "uses_prior_closed_4h_signal": True,
+                "risk_off_changes_immediate": True,
+                "risk_on_changes_market_window_only": bool(config.get("qqq_rebalance_risk_on_market_hours_only", False)),
+                "market_hours_timezone": str(config.get("qqq_market_hours_timezone", "America/New_York")),
+                "market_hours_start": str(config.get("qqq_market_hours_start", "09:30")),
+                "market_hours_end": str(config.get("qqq_market_hours_end", "16:00")),
+                "market_calendar": str(config.get("qqq_market_calendar", "NYSE")),
+            },
+            "risk_on_blocked_entries": int(risk_on_blocked_entries),
+            "risk_on_blocked_leverage_increases": int(risk_on_blocked_leverage_increases),
+            "risk_off_rebalance_bars": int(risk_off_rebalance_bars),
+            "risk_on_rebalance_bars": int(risk_on_rebalance_bars),
             "start": str(path_4h.iloc[0]["date"]),
             "end": str(path_4h.iloc[-1]["date"]),
         },
@@ -786,6 +884,7 @@ def main() -> None:
         "important_limitations": [
             "QQQ leg uses TQQQ/QQQ ETF proxy unless --qqq-source usdt_leveraged is selected.",
             "QQQ/USDT leveraged mode is limited by short OKX contract history.",
+            "QQQ/USDT leveraged mode uses the prior closed 4h signal and gates risk-on leverage increases to configured market hours.",
             "Default BTC path uses the research frozen live-shadow artifact events; use --btc-source report for the smoothed report fallback or --recompute-btc-engine for a slower engine path.",
             "Router is evaluated daily, not intraday.",
         ],
@@ -830,10 +929,14 @@ def main() -> None:
     if str(args.qqq_source) == "usdt_leveraged":
         qqq_label = "QQQ/USDT leveraged aggressive frozen"
         qqq_result_label = "QQQ/USDT-only"
+        qqq_beats_btc = summary["qqq_proxy_only"]["total_return_pct"] > summary["btc_only"]["total_return_pct"]
+        router_beats_btc = summary["router"]["total_return_pct"] > summary["btc_only"]["total_return_pct"]
+        router_dd_higher = summary["router"]["max_drawdown_pct"] > summary["btc_only"]["max_drawdown_pct"]
         interpretation = [
-            "This corrected replay uses the research frozen BTC strategy and the leveraged QQQ/USDT frozen candidate.",
-            "On the short OKX QQQ/USDT overlap window, the leveraged QQQ leg beats BTC frozen, and daily routing beats both standalone legs.",
-            "The result is promising for near-term routing, but the QQQ/USDT sample is still too short to prove long-cycle robustness.",
+            "This corrected replay uses the research frozen BTC strategy and the leveraged QQQ/USDT frozen candidate with prior-closed-4h signal execution.",
+            f"On the short OKX QQQ/USDT overlap window, the leveraged QQQ leg {'beats' if qqq_beats_btc else 'does not beat'} BTC frozen.",
+            f"Daily routing {'beats' if router_beats_btc else 'does not beat'} BTC frozen on return and has {'higher' if router_dd_higher else 'lower'} drawdown.",
+            "The QQQ/USDT sample is still too short to prove long-cycle robustness.",
         ]
     else:
         qqq_label = "TQQQ/QQQ ETF proxy path from the current recovery frozen strategy"

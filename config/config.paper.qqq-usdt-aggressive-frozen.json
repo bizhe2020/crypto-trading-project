@@ -5,11 +5,16 @@
   "execution_timeframe": "4h",
   "use_closed_execution_bars": true,
   "closed_bar_grace_seconds": 30,
+  "qqq_rebalance_risk_on_market_hours_only": true,
+  "qqq_market_hours_timezone": "America/New_York",
+  "qqq_market_hours_start": "09:30",
+  "qqq_market_hours_end": "16:00",
+  "qqq_market_calendar": "NYSE",
   "entry_overlay_timeframe": "1h",
-  "leverage_profile_name": "base10_off10_def1",
+  "leverage_profile_name": "fixed10",
   "base_leverage": 10.0,
   "offense_leverage": 10.0,
-  "defense_leverage": 1.0,
+  "defense_leverage": 10.0,
   "stop_loss_pct": 3.5,
   "take_profit_mode": "none",
   "taker_fee_rate": 0.0005,
@@ -28,5 +33,5 @@
   "daily_signal_max_stale_calendar_days": 5,
   "initial_capital": 1000.0,
   "frozen_label": "qqq_usdt_aggressive_frozen_20260529",
-  "notes": "ETF daily frozen signal bridged into QQQ/USDT execution. Main candidate fixed to base10/off10/def1 after defense-cost scan on 2026-05-29."
+  "notes": "ETF daily frozen signal bridged into QQQ/USDT execution. QQQ leg uses fixed 10x leverage; defense is recorded as context but no longer reduces leverage."
 }

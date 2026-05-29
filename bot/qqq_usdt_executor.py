@@ -281,6 +281,19 @@ class QqqUsdtExecutionEngine:
             next_position_state = current
             position_open = True
         else:
+            profit_roll = self.maybe_profit_roll_position(context, exchange_position, current)
+            if profit_roll is not None and profit_roll.get("status") != "skipped":
+                actions.append(profit_roll)
+                if profit_roll.get("status") == "error":
+                    next_position_state = current
+                else:
+                    next_position_state = self._state_after_profit_roll(next_position_state, profit_roll)
+                    next_position_state = self._with_exchange_stop_fields(
+                        next_position_state,
+                        profit_roll.get("exchange_stop"),
+                    )
+                    if profit_roll.get("status") in {"paper_rebalanced", "submitted"}:
+                        exchange_position = self.fetch_position_state()
             stop_update = self.update_trailing_stop(context, exchange_position)
             pending_count = 0
             pending_contracts = 0.0
@@ -435,6 +448,21 @@ class QqqUsdtExecutionEngine:
         for key in ("exchange_order_id", "exchange_attach_algo_id", "exchange_attach_algo_client_id"):
             if previous.get(key):
                 payload[key] = previous[key]
+        entry_price = float(previous.get("entry_price", 0.0) or previous.get("exchange_entry_price", 0.0) or 0.0)
+        if entry_price <= 0:
+            entry_price = float(context.reference_price)
+        payload["entry_price"] = entry_price
+        payload["profit_roll_count"] = int(previous.get("profit_roll_count", 0) or 0)
+        payload["profit_roll_last_candidate_timestamp"] = previous.get("profit_roll_last_candidate_timestamp")
+        payload["profit_roll_last_bar_timestamp"] = previous.get("profit_roll_last_bar_timestamp")
+        payload["profit_roll_last_updated_at"] = previous.get("profit_roll_last_updated_at")
+        payload["profit_roll_cooldown_remaining"] = int(previous.get("profit_roll_cooldown_remaining", 0) or 0)
+        if previous.get("exchange_entry_price"):
+            payload["exchange_entry_price"] = previous["exchange_entry_price"]
+        if previous.get("exchange_contracts"):
+            payload["exchange_contracts"] = previous["exchange_contracts"]
+        if previous.get("exchange_notional_usdt"):
+            payload["exchange_notional_usdt"] = previous["exchange_notional_usdt"]
         return payload
 
     def _same_signal_stop_locked(self, context: QqqOrderContext) -> bool:
@@ -527,6 +555,195 @@ class QqqUsdtExecutionEngine:
         if self.router_config.qqq_max_notional_usdt is not None:
             target = min(target, float(self.router_config.qqq_max_notional_usdt))
         return max(float(target), 0.0)
+
+    def _actual_leverage_from_position(self, exchange_position: dict[str, Any]) -> float:
+        notional = float(exchange_position.get("notional_usdt", 0.0) or 0.0)
+        if notional <= 0:
+            return 0.0
+        if self.router_config.mode == "paper":
+            state = self.load_state()
+            current = state.get("position") if isinstance(state.get("position"), dict) else {}
+            basis = float(current.get("paper_margin_basis_usdt", 0.0) or 1000.0)
+        else:
+            balance = self.client.fetch_balance()
+            cash_buffer = max(float(getattr(self.router_config, "qqq_sizing_cash_buffer_usdt", 0.0) or 0.0), 0.0)
+            basis = max(float(self._sizing_usdt(balance)) - cash_buffer, 0.0) * float(self.router_config.qqq_position_size_pct)
+        if basis <= 0:
+            return 0.0
+        return float(notional) / float(basis)
+
+    def _profit_roll_min_notional(self) -> float:
+        configured = getattr(self.router_config, "qqq_profit_roll_min_notional_usdt", None)
+        if configured is not None:
+            return float(configured)
+        return float(self.router_config.qqq_min_rebalance_notional_usdt)
+
+    def _profit_roll_trigger_met(self, context: QqqOrderContext, current: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        trigger = str(getattr(self.router_config, "qqq_profit_roll_trigger", "any") or "any").lower()
+        entry_price = float(current.get("entry_price", 0.0) or current.get("exchange_entry_price", 0.0) or 0.0)
+        if entry_price <= 0:
+            return False, {"reason": "missing_entry_price", "trigger": trigger}
+        profit_pct = (float(context.reference_price) / entry_price - 1.0) * 100.0
+        risk_pct = max(float(context.stop_loss_pct), 1e-9)
+        profit_r = profit_pct / risk_pct
+        stop_breakeven = float(context.stop_price) >= entry_price
+        if trigger == "any":
+            ok = profit_pct > 0.0
+        elif trigger in {"0.5r", "0_5r"}:
+            ok = profit_r >= 0.5
+        elif trigger in {"1r", "1.0r", "1_0r"}:
+            ok = profit_r >= 1.0
+        elif trigger in {"1.5r", "1_5r"}:
+            ok = profit_r >= 1.5
+        elif trigger == "breakeven_stop":
+            ok = stop_breakeven
+        elif trigger == "breakeven_or_1r":
+            ok = stop_breakeven or profit_r >= 1.0
+        else:
+            ok = False
+        return bool(ok), {
+            "trigger": trigger,
+            "entry_price": entry_price,
+            "reference_price": float(context.reference_price),
+            "profit_pct": round(float(profit_pct), 6),
+            "profit_r": round(float(profit_r), 6),
+            "stop_breakeven": bool(stop_breakeven),
+        }
+
+    def _profit_roll_cooldown_ok(self, current: dict[str, Any], context: QqqOrderContext) -> tuple[bool, dict[str, Any]]:
+        cooldown_bars = int(getattr(self.router_config, "qqq_profit_roll_cooldown_bars", 0) or 0)
+        if cooldown_bars <= 0:
+            return True, {"cooldown_bars": cooldown_bars}
+        last_candidate = current.get("profit_roll_last_candidate_timestamp")
+        candidate_timestamp = context.candidate.get("timestamp")
+        if not last_candidate or not candidate_timestamp:
+            return True, {"cooldown_bars": cooldown_bars, "last_candidate_timestamp": last_candidate}
+        try:
+            last_ts = pd.Timestamp(last_candidate)
+            current_ts = pd.Timestamp(candidate_timestamp)
+        except Exception:
+            return True, {"cooldown_bars": cooldown_bars, "last_candidate_timestamp": last_candidate}
+        timeframe = str(self.qqq_config.get("execution_timeframe", "4h"))
+        delta = pd.Timedelta(hours=4)
+        if timeframe.endswith("h"):
+            delta = pd.Timedelta(hours=int(timeframe[:-1]))
+        elif timeframe.endswith("m"):
+            delta = pd.Timedelta(minutes=int(timeframe[:-1]))
+        bars_since = int((current_ts - last_ts) / delta) if current_ts >= last_ts else 0
+        return bars_since >= cooldown_bars, {
+            "cooldown_bars": cooldown_bars,
+            "bars_since_last_roll": bars_since,
+            "last_candidate_timestamp": str(last_candidate),
+        }
+
+    def _state_after_profit_roll(self, position: dict[str, Any] | None, result: dict[str, Any]) -> dict[str, Any] | None:
+        if position is None or result.get("status") not in {"paper_rebalanced", "submitted"}:
+            return position
+        updated = dict(position)
+        updated["profit_roll_count"] = int(result.get("profit_roll_count", updated.get("profit_roll_count", 0)) or 0)
+        updated["profit_roll_last_candidate_timestamp"] = result.get("candidate_timestamp")
+        updated["profit_roll_last_bar_timestamp"] = result.get("candidate_timestamp")
+        updated["profit_roll_last_updated_at"] = datetime.now(timezone.utc).isoformat()
+        updated["profit_roll_cooldown_remaining"] = int(getattr(self.router_config, "qqq_profit_roll_cooldown_bars", 0) or 0)
+        updated["exchange_notional_usdt"] = float(result.get("target_notional_usdt", updated.get("exchange_notional_usdt", 0.0)) or 0.0)
+        return updated
+
+    def maybe_profit_roll_position(
+        self,
+        context: QqqOrderContext,
+        exchange_position: dict[str, Any],
+        current: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not bool(getattr(self.router_config, "qqq_profit_roll_enabled", False)):
+            return None
+        if float(exchange_position.get("contracts", 0.0) or 0.0) <= 0:
+            return None
+        if bool(getattr(self.router_config, "qqq_profit_roll_skip_defense", True)) and bool(
+            (context.candidate.get("metadata") or {}).get("defense_state", False)
+        ):
+            return {
+                "status": "skipped",
+                "action": "profit_roll_qqq_position",
+                "reason": "defense_state",
+            }
+        max_rolls = int(getattr(self.router_config, "qqq_profit_roll_max_rolls_per_trade", 0) or 0)
+        roll_count = int(current.get("profit_roll_count", 0) or 0)
+        if max_rolls <= 0 or roll_count >= max_rolls:
+            return {
+                "status": "skipped",
+                "action": "profit_roll_qqq_position",
+                "reason": "max_rolls_reached",
+                "profit_roll_count": roll_count,
+                "max_rolls_per_trade": max_rolls,
+            }
+        cooldown_ok, cooldown = self._profit_roll_cooldown_ok(current, context)
+        if not cooldown_ok:
+            return {
+                "status": "skipped",
+                "action": "profit_roll_qqq_position",
+                "reason": "cooldown",
+                **cooldown,
+            }
+        trigger_ok, trigger = self._profit_roll_trigger_met(context, current)
+        if not trigger_ok:
+            return {
+                "status": "skipped",
+                "action": "profit_roll_qqq_position",
+                "reason": "profit_trigger_not_met",
+                **trigger,
+            }
+        actual_leverage = self._actual_leverage_from_position(exchange_position)
+        min_actual = float(getattr(self.router_config, "qqq_profit_roll_min_actual_leverage", 9.5) or 9.5)
+        if actual_leverage >= min_actual:
+            return {
+                "status": "skipped",
+                "action": "profit_roll_qqq_position",
+                "reason": "actual_leverage_above_threshold",
+                "actual_leverage": round(actual_leverage, 6),
+                "min_actual_leverage": min_actual,
+                **trigger,
+            }
+        target_notional = self._target_notional(context)
+        current_notional = float(exchange_position.get("notional_usdt", 0.0) or 0.0)
+        delta_notional = max(float(target_notional) - current_notional, 0.0)
+        min_notional = self._profit_roll_min_notional()
+        if delta_notional < min_notional:
+            return {
+                "status": "skipped",
+                "action": "profit_roll_qqq_position",
+                "reason": "delta_notional_too_small",
+                "current_notional_usdt": round(current_notional, 6),
+                "target_notional_usdt": round(float(target_notional), 6),
+                "delta_notional_usdt": round(delta_notional, 6),
+                "min_notional_usdt": min_notional,
+                "actual_leverage": round(actual_leverage, 6),
+                **trigger,
+            }
+        risk_on_status = self._risk_on_window_status()
+        if not bool(risk_on_status["open"]):
+            return {
+                "status": "skipped",
+                "action": "profit_roll_qqq_position",
+                "reason": "qqq_risk_on_window_closed",
+                "market_window": risk_on_status,
+                "delta_notional_usdt": round(delta_notional, 6),
+                "actual_leverage": round(actual_leverage, 6),
+                **trigger,
+            }
+        result = self.rebalance_position(
+            context,
+            exchange_position,
+            current,
+            target_notional=target_notional,
+        )
+        result["action"] = "profit_roll_qqq_position"
+        result["reason"] = "profit_roll_to_target_leverage"
+        result["profit_roll_count"] = roll_count + 1 if result.get("status") in {"paper_rebalanced", "submitted"} else roll_count
+        result["candidate_timestamp"] = context.candidate.get("timestamp")
+        result["actual_leverage"] = round(actual_leverage, 6)
+        result["min_actual_leverage"] = min_actual
+        result["profit_trigger"] = trigger
+        return result
 
     def _order_amount(self, notional: float, reference_price: float) -> float:
         market = self._market()

@@ -62,6 +62,13 @@ class StrategyRouterConfig:
     qqq_market_hours_start: str = "09:30"
     qqq_market_hours_end: str = "16:00"
     qqq_market_calendar: str = "NYSE"
+    qqq_profit_roll_enabled: bool = False
+    qqq_profit_roll_min_actual_leverage: float = 9.5
+    qqq_profit_roll_trigger: str = "any"
+    qqq_profit_roll_max_rolls_per_trade: int = 4
+    qqq_profit_roll_cooldown_bars: int = 1
+    qqq_profit_roll_skip_defense: bool = True
+    qqq_profit_roll_min_notional_usdt: float | None = None
     okx_markets_cache_path: str = "var/okx/markets_cache.json"
     telegram_enabled: bool = False
     telegram_token: str | None = None

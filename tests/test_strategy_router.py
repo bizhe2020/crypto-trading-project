@@ -15,6 +15,7 @@ from bot.qqq_runtime_policy import filter_closed_bars, market_time_window_status
 from bot.qqq_usdt_signal_adapter import QqqUsdtSignalAdapter
 from bot.router_executor import StrategyRouterExecutionEngine
 from bot.strategy_router import RoutedSignalCandidate, StrategyRouter, StrategyRouterConfig
+from scripts.replay_proxy_strategy_router import qqq_replay_risk_on_allowed, qqq_replay_signal_leverage
 
 
 def build_router() -> StrategyRouter:
@@ -138,6 +139,27 @@ def test_btc_route_score_reads_nested_sota_score_gate() -> None:
     }
     assert btc_effective_leverage(nested) == 5.0
     assert btc_route_score(nested) > btc_route_score(flat) + 20.0
+
+
+def test_qqq_replay_signal_leverage_maps_closed_signal_state() -> None:
+    profile = {"base": 10.0, "offense": 12.0, "defense": 1.0}
+    assert qqq_replay_signal_leverage({"allow_long": False}, profile) == 0.0
+    assert qqq_replay_signal_leverage({"allow_long": True, "high_growth": False, "defense_state": False}, profile) == 10.0
+    assert qqq_replay_signal_leverage({"allow_long": True, "high_growth": True, "defense_state": False}, profile) == 12.0
+    assert qqq_replay_signal_leverage({"allow_long": True, "high_growth": False, "defense_state": True}, profile) == 1.0
+
+
+def test_qqq_replay_risk_on_window_matches_nyse_hours() -> None:
+    config = {
+        "qqq_rebalance_risk_on_market_hours_only": True,
+        "qqq_market_hours_timezone": "America/New_York",
+        "qqq_market_hours_start": "09:30",
+        "qqq_market_hours_end": "16:00",
+        "qqq_market_calendar": "NYSE",
+    }
+    assert qqq_replay_risk_on_allowed(config, pd.Timestamp("2026-05-29 14:00:00", tz="UTC"))[0] is True
+    assert qqq_replay_risk_on_allowed(config, pd.Timestamp("2026-05-29 20:01:00", tz="UTC"))[0] is False
+    assert qqq_replay_risk_on_allowed(config, pd.Timestamp("2026-05-30 14:00:00", tz="UTC"))[0] is False
 
 
 def test_qqq_same_signal_stop_lock_blocks_reopen(tmp_path: Path) -> None:
@@ -817,6 +839,126 @@ def test_qqq_risk_on_window_blocks_add_but_not_reduce(tmp_path: Path) -> None:
     engine.rebalance_position = lambda *args, **kwargs: {"status": "paper_rebalanced", "side": "sell"}  # type: ignore[method-assign]
     result = engine.evaluate_latest(RoutedSignalCandidate("qqq_usdt_aggressive", "QQQ/USDT:USDT", True, 60.0, leverage=1.0))
     assert result["actions"][0]["side"] == "sell"
+
+
+def test_qqq_profit_roll_adds_only_after_profit_and_low_actual_leverage(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "defense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_profit_roll_enabled=True,
+            qqq_profit_roll_min_actual_leverage=9.5,
+            qqq_profit_roll_trigger="any",
+            qqq_profit_roll_max_rolls_per_trade=4,
+            qqq_profit_roll_cooldown_bars=1,
+            qqq_profit_roll_skip_defense=True,
+            qqq_profit_roll_min_notional_usdt=10.0,
+        ),
+        config_path,
+    )
+    engine._risk_on_window_status = lambda: {"enabled": True, "open": True}  # type: ignore[method-assign]
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=740.0,
+        latest_low=730.0,
+        stop_price=714.1,
+        stop_hit=False,
+        route_score=100.0,
+        candidate={"timestamp": "2026-05-29 12:00:00+00:00", "metadata": {"defense_state": False}},
+    )
+    current = {
+        "leverage": 10.0,
+        "entry_price": 700.0,
+        "profit_roll_count": 0,
+        "paper_margin_basis_usdt": 1000.0,
+    }
+    exchange_position = {"contracts": 1.0, "notional_usdt": 9000.0, "raw": None}
+    result = engine.maybe_profit_roll_position(context, exchange_position, current)
+
+    assert result is not None
+    assert result["status"] == "paper_rebalanced"
+    assert result["action"] == "profit_roll_qqq_position"
+    assert result["side"] == "buy"
+    assert result["profit_roll_count"] == 1
+
+
+def test_qqq_profit_roll_skips_defense_and_closed_window(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "defense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_profit_roll_enabled=True,
+            qqq_profit_roll_min_actual_leverage=9.5,
+            qqq_profit_roll_trigger="any",
+            qqq_profit_roll_max_rolls_per_trade=4,
+            qqq_profit_roll_skip_defense=True,
+            qqq_profit_roll_min_notional_usdt=10.0,
+        ),
+        config_path,
+    )
+    current = {"leverage": 10.0, "entry_price": 700.0, "paper_margin_basis_usdt": 1000.0}
+    exchange_position = {"contracts": 1.0, "notional_usdt": 9000.0, "raw": None}
+    defense_context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=740.0,
+        latest_low=730.0,
+        stop_price=714.1,
+        stop_hit=False,
+        route_score=100.0,
+        candidate={"timestamp": "2026-05-29 12:00:00+00:00", "metadata": {"defense_state": True}},
+    )
+    assert engine.maybe_profit_roll_position(defense_context, exchange_position, current)["reason"] == "defense_state"
+
+    engine._risk_on_window_status = lambda: {"enabled": True, "open": False}  # type: ignore[method-assign]
+    normal_context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=740.0,
+        latest_low=730.0,
+        stop_price=714.1,
+        stop_hit=False,
+        route_score=100.0,
+        candidate={"timestamp": "2026-05-29 12:00:00+00:00", "metadata": {"defense_state": False}},
+    )
+    assert engine.maybe_profit_roll_position(normal_context, exchange_position, current)["reason"] == "qqq_risk_on_window_closed"
 
 
 def test_router_does_not_flatten_btc_before_blocked_qqq_risk_on_switch(tmp_path: Path) -> None:
