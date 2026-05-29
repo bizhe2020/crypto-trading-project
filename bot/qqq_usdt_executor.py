@@ -281,9 +281,11 @@ class QqqUsdtExecutionEngine:
             next_position_state = current
             position_open = True
         else:
+            profit_roll_replaced_stop = False
             profit_roll = self.maybe_profit_roll_position(context, exchange_position, current)
             if profit_roll is not None and profit_roll.get("status") != "skipped":
                 actions.append(profit_roll)
+                profit_roll_replaced_stop = bool(profit_roll.get("exchange_stop"))
                 if profit_roll.get("status") == "error":
                     next_position_state = current
                 else:
@@ -309,6 +311,7 @@ class QqqUsdtExecutionEngine:
             stop_needs_replacement = (
                 self.router_config.mode != "paper"
                 and bool(self.router_config.qqq_enable_exchange_stop)
+                and not profit_roll_replaced_stop
                 and exchange_contracts > 0
                 and (
                     pending_count != 1
