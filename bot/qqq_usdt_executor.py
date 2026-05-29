@@ -1200,9 +1200,9 @@ class QqqUsdtExecutionEngine:
             "posSide": "long",
             "ordType": "conditional",
             "sz": self._amount_to_precision(self._market(), amount),
-            "triggerPx": self._price_to_precision(self._market(), context.stop_price),
-            "triggerPxType": "mark",
-            "orderPx": "-1",
+            "slTriggerPx": self._price_to_precision(self._market(), context.stop_price),
+            "slTriggerPxType": "mark",
+            "slOrdPx": "-1",
             "reduceOnly": "true",
             "algoClOrdId": algo_client_id,
         }
