@@ -196,9 +196,9 @@ class StrategyRouter:
                 return current, "hold_current_hysteresis"
         return best, "best_route_score"
 
-    def evaluate_latest(self) -> dict[str, Any]:
+    def evaluate_latest(self, current_strategy_override: str | None = None) -> dict[str, Any]:
         state = self._load_state()
-        previous_strategy = state.get("selected_strategy")
+        previous_strategy = current_strategy_override if current_strategy_override is not None else state.get("selected_strategy")
         candidates = self._collect_candidates()
         selected, reason = self._choose_candidate(candidates, str(previous_strategy) if previous_strategy else None)
 

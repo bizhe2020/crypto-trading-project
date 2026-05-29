@@ -39,10 +39,10 @@ class StrategyRouterExecutionEngine:
         return payload
 
     def evaluate_latest(self) -> dict[str, Any]:
-        route = self.router.evaluate_latest()
+        previous_executed = self._current_executed_strategy()
+        route = self.router.evaluate_latest(current_strategy_override=previous_executed)
         selected_strategy = route.get("selected_strategy")
         selected_candidate = route.get("selected_candidate") if isinstance(route.get("selected_candidate"), dict) else None
-        previous_executed = self._current_executed_strategy()
         execution_results: list[dict[str, Any]] = []
 
         if selected_strategy != previous_executed and bool(self.config.flatten_before_switch):

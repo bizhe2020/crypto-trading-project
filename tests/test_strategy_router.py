@@ -69,6 +69,26 @@ def test_router_keeps_current_active_candidate_below_new_entry_threshold() -> No
     assert reason == "hold_current_active_below_threshold"
 
 
+def test_router_evaluate_uses_execution_strategy_override(tmp_path: Path) -> None:
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=60.0,
+            persist_state=True,
+        )
+    )
+    qqq = RoutedSignalCandidate("qqq_usdt_aggressive", "QQQ/USDT:USDT", True, 52.0, leverage=1.0)
+    router._collect_candidates = lambda: [RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0), qqq]  # type: ignore[method-assign]
+    payload = router.evaluate_latest(current_strategy_override="qqq_usdt_aggressive")
+    assert payload["selected_strategy"] == "qqq_usdt_aggressive"
+    assert payload["decision_reason"] == "hold_current_active_below_threshold"
+    assert payload["previous_selected_strategy"] == "qqq_usdt_aggressive"
+
+
 def test_btc_route_score_uses_quality_layers() -> None:
     weak = {
         "event_type": "sota_long",
