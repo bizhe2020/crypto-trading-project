@@ -156,6 +156,17 @@ class QqqUsdtExecutionEngine:
             )
             return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
 
+        if exchange_position["contracts"] > 0 and not isinstance(state.get("position"), dict):
+            sync_result = self.sync_existing_exchange_position(context, exchange_position)
+            actions.append(sync_result)
+            self.save_state(
+                {
+                    "position": sync_result.get("position"),
+                    "last_candidate": context.candidate,
+                }
+            )
+            return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": True}
+
         if exchange_position["contracts"] <= 0:
             if self._same_signal_stop_locked(context):
                 actions.append(
@@ -653,6 +664,36 @@ class QqqUsdtExecutionEngine:
         self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "REBALANCE_QQQ_POSITION", payload)
         return payload
 
+    def sync_existing_exchange_position(
+        self,
+        context: QqqOrderContext,
+        exchange_position: dict[str, Any],
+    ) -> dict[str, Any]:
+        position_state = self._state_from_context(context)
+        entry_price = self._extract_exchange_entry_price(exchange_position)
+        if entry_price > 0:
+            position_state["exchange_entry_price"] = entry_price
+            position_state["peak_price"] = max(float(position_state.get("peak_price", 0.0) or 0.0), entry_price)
+        exchange_stop = self._extract_exchange_stop_fields(exchange_position)
+        if exchange_stop.get("stop_price"):
+            position_state["stop_price"] = float(exchange_stop["stop_price"])
+        position_state["exchange_contracts"] = float(exchange_position.get("contracts", 0.0) or 0.0)
+        position_state["exchange_notional_usdt"] = float(exchange_position.get("notional_usdt", 0.0) or 0.0)
+        position_state = self._with_exchange_stop_fields(position_state, exchange_stop)
+        payload = {
+            "status": "synced",
+            "action": "sync_existing_qqq_usdt_position",
+            "reason": "exchange_position_without_local_state",
+            "contracts": position_state["exchange_contracts"],
+            "notional_usdt": position_state["exchange_notional_usdt"],
+            "leverage": position_state["leverage"],
+            "stop_price": position_state["stop_price"],
+            "exchange_stop": exchange_stop,
+            "position": position_state,
+        }
+        self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "SYNC_QQQ_POSITION", payload)
+        return payload
+
     def close_position(self, *, reason: str) -> dict[str, Any]:
         position = self.fetch_position_state()
         amount = float(position.get("contracts", 0.0) or 0.0)
@@ -779,6 +820,69 @@ class QqqUsdtExecutionEngine:
                     "algo_client_id": str(algo_client_id) if algo_client_id else None,
                 }
         return {"algo_id": None, "algo_client_id": None}
+
+    @staticmethod
+    def _positive_float(value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            numeric = abs(float(value))
+        except (TypeError, ValueError):
+            return None
+        return numeric if numeric > 0 else None
+
+    def _extract_exchange_entry_price(self, exchange_position: dict[str, Any]) -> float:
+        raw = exchange_position.get("raw") if isinstance(exchange_position, dict) else None
+        candidates: list[Any] = []
+        if isinstance(raw, dict):
+            candidates.extend(raw.get(key) for key in ("entryPrice", "avgPx", "markPrice"))
+            info = raw.get("info")
+            if isinstance(info, dict):
+                candidates.extend(info.get(key) for key in ("entryPrice", "avgPx", "markPx", "last"))
+        for value in candidates:
+            numeric = self._positive_float(value)
+            if numeric is not None:
+                return numeric
+        return 0.0
+
+    def _extract_stop_price_from_algo(self, algo: dict[str, Any] | None) -> float | None:
+        if not isinstance(algo, dict):
+            return None
+        for key in ("slTriggerPx", "triggerPx", "newSlTriggerPx", "newTriggerPx"):
+            numeric = self._positive_float(algo.get(key))
+            if numeric is not None:
+                return numeric
+        return None
+
+    def _extract_exchange_stop_fields(self, exchange_position: dict[str, Any]) -> dict[str, Any]:
+        identity = self._extract_attached_algo_identity(exchange_position)
+        stop_price = None
+        close_order_algos = exchange_position.get("close_order_algos") if isinstance(exchange_position, dict) else None
+        if not close_order_algos:
+            raw = exchange_position.get("raw") if isinstance(exchange_position, dict) else None
+            info = raw.get("info") if isinstance(raw, dict) and isinstance(raw.get("info"), dict) else {}
+            close_order_algos = info.get("closeOrderAlgo") if isinstance(info.get("closeOrderAlgo"), list) else []
+        for algo in close_order_algos or []:
+            stop_price = self._extract_stop_price_from_algo(algo)
+            if stop_price is not None:
+                break
+        if (not identity["algo_id"] and not identity["algo_client_id"]) or stop_price is None:
+            try:
+                pending = self._select_pending_algo_order()
+            except Exception:
+                pending = None
+            if pending:
+                if not identity["algo_id"] and pending.get("algoId"):
+                    identity["algo_id"] = str(pending.get("algoId"))
+                if not identity["algo_client_id"] and pending.get("algoClOrdId"):
+                    identity["algo_client_id"] = str(pending.get("algoClOrdId"))
+                stop_price = stop_price or self._extract_stop_price_from_algo(pending)
+        return {
+            "status": "found" if identity["algo_id"] or identity["algo_client_id"] or stop_price else "not_found",
+            "algo_id": identity["algo_id"],
+            "algo_client_id": identity["algo_client_id"],
+            "stop_price": stop_price,
+        }
 
     def _fetch_pending_algo_orders(self) -> list[dict[str, Any]]:
         orders: list[dict[str, Any]] = []

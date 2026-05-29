@@ -459,6 +459,86 @@ def test_qqq_live_rebalance_adds_only_delta_position(tmp_path: Path) -> None:
     assert calls[1][4] == 8.0
 
 
+def test_qqq_live_evaluate_syncs_existing_exchange_position_without_rebalance(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_enable_exchange_stop=True,
+        ),
+        config_path,
+    )
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=730.0,
+        latest_low=725.0,
+        stop_price=704.45,
+        stop_hit=False,
+        route_score=100.0,
+        candidate={"timestamp": "2026-05-29 12:00:00+00:00"},
+    )
+    engine._build_context = lambda candidate: context  # type: ignore[method-assign]
+    engine.fetch_position_state = lambda: {  # type: ignore[method-assign]
+        "contracts": 302.14,
+        "notional_usdt": 222907.19,
+        "close_order_algos": [
+            {
+                "attachAlgoId": "algo-1",
+                "attachAlgoClOrdId": "client-1",
+                "slTriggerPx": "710.00",
+            }
+        ],
+        "raw": {"entryPrice": "734.6"},
+    }
+
+    def fail_rebalance(*args, **kwargs):
+        raise AssertionError("existing exchange position must be synced before any rebalance")
+
+    engine.rebalance_position = fail_rebalance  # type: ignore[method-assign]
+    engine.open_position = fail_rebalance  # type: ignore[method-assign]
+
+    result = engine.evaluate_latest(
+        RoutedSignalCandidate(
+            strategy_id="qqq_usdt_aggressive",
+            symbol="QQQ/USDT:USDT",
+            active=True,
+            route_score=100.0,
+            timestamp="2026-05-29 12:00:00+00:00",
+            direction="BULL",
+            event_type="qqq_usdt_long",
+            leverage=10.0,
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["position_open"] is True
+    assert result["actions"][0]["status"] == "synced"
+    state = engine.load_state()["position"]
+    assert state["exchange_contracts"] == 302.14
+    assert state["exchange_notional_usdt"] == 222907.19
+    assert state["exchange_entry_price"] == 734.6
+    assert state["exchange_attach_algo_id"] == "algo-1"
+    assert state["exchange_attach_algo_client_id"] == "client-1"
+    assert state["stop_price"] == 710.0
+
+
 def test_qqq_daily_signal_stale_guard_blocks_old_signal() -> None:
     frame = pd.DataFrame({"date": [pd.Timestamp("2026-05-22T13:30:00Z")]})
     status = QqqUsdtSignalAdapter._daily_signal_stale_status(
