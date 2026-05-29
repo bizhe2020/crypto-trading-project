@@ -1,0 +1,17 @@
+[Unit]
+Description=Crypto Strategy Router (BTC SOTA vs QQQ/USDT)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/crypto-trading-project
+ExecStart=/root/projects/crypto-trading-project/.venv/bin/python /root/projects/crypto-trading-project/bot/run_strategy_router.py --config /root/projects/crypto-trading-project/config/config.live.strategy-router.json --execute --run-loop
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:/root/projects/crypto-trading-project/live_strategy_router.log
+StandardError=append:/root/projects/crypto-trading-project/live_strategy_router.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,201 @@
+{
+  "mode": "proxy_history_router_replay",
+  "important_limitations": [
+    "QQQ leg uses TQQQ/QQQ ETF proxy unless --qqq-source usdt_leveraged is selected.",
+    "QQQ/USDT leveraged mode is limited by short OKX contract history.",
+    "Default BTC path uses the research frozen live-shadow artifact events; use --btc-source report for the smoothed report fallback or --recompute-btc-engine for a slower engine path.",
+    "Router is evaluated daily, not intraday."
+  ],
+  "date_range": {
+    "start": "2026-03-04",
+    "end": "2026-05-29",
+    "days": 87
+  },
+  "router_params": {
+    "btc_min_score": 35.0,
+    "qqq_min_score": 60.0,
+    "switch_advantage": 8.0,
+    "switch_cost_bps": 10.0
+  },
+  "btc_source": "frozen",
+  "qqq_source": "usdt_leveraged",
+  "btc_only": {
+    "total_return_pct": 89.79,
+    "max_drawdown_pct": 15.25,
+    "start": "2026-03-04",
+    "end": "2026-05-29",
+    "days": 87,
+    "positive_days_pct": 9.2,
+    "annual_returns_pct": {
+      "2026": 89.79
+    }
+  },
+  "qqq_proxy_only": {
+    "total_return_pct": 301.04,
+    "max_drawdown_pct": 6.78,
+    "start": "2026-03-04",
+    "end": "2026-05-29",
+    "days": 87,
+    "positive_days_pct": 25.29,
+    "annual_returns_pct": {
+      "2026": 301.04
+    }
+  },
+  "router": {
+    "total_return_pct": 454.32,
+    "max_drawdown_pct": 15.42,
+    "start": "2026-03-04",
+    "end": "2026-05-29",
+    "days": 87,
+    "positive_days_pct": 31.03,
+    "annual_returns_pct": {
+      "2026": 454.32
+    }
+  },
+  "selection": {
+    "btc_days": 29,
+    "qqq_proxy_days": 28,
+    "cash_days": 30,
+    "switches": 18
+  },
+  "source_summaries": {
+    "btc_artifact": "/Users/laoji/projects/crypto-trading-project/var/high_leverage_expansion/frozen_live_core_20260515.json",
+    "btc_proxy_method": "frozen_live_shadow_events_closed_on_exit_day",
+    "btc_full_engine_metrics": {
+      "total_return_pct": 1589905.71,
+      "final_capital": 15900057.12,
+      "sharpe_ratio": 4.976,
+      "max_drawdown_pct": 26.76,
+      "trades": 287,
+      "wins": 133,
+      "losses": 154,
+      "win_rate_pct": 46.34,
+      "avg_return_pct": 4.1694,
+      "profit_factor": 2.828,
+      "event_type_counts": {
+        "smc_short": 24,
+        "sota_long": 254,
+        "gap_smc_short_expansion": 9
+      },
+      "exit_counts": {
+        "target_2.0r": 24,
+        "stop_loss": 235,
+        "time_stop_exit": 9,
+        "stop": 9,
+        "target_rr": 10
+      },
+      "windows": {
+        "current_year": {
+          "total_return_pct": 202.31,
+          "final_capital": 3023.09,
+          "sharpe_ratio": 6.192,
+          "max_drawdown_pct": 15.25,
+          "trades": 29,
+          "wins": 14,
+          "losses": 15,
+          "win_rate_pct": 48.28,
+          "avg_return_pct": 4.4354,
+          "profit_factor": 3.9192,
+          "event_type_counts": {
+            "sota_long": 23,
+            "smc_short": 5,
+            "gap_smc_short_expansion": 1
+          },
+          "exit_counts": {
+            "stop_loss": 22,
+            "target_2.0r": 4,
+            "stop": 2,
+            "time_stop_exit": 1
+          }
+        },
+        "last_60d": {
+          "total_return_pct": 86.33,
+          "final_capital": 1863.31,
+          "sharpe_ratio": 5.857,
+          "max_drawdown_pct": 15.25,
+          "trades": 14,
+          "wins": 6,
+          "losses": 8,
+          "win_rate_pct": 42.86,
+          "avg_return_pct": 5.4536,
+          "profit_factor": 3.7433,
+          "event_type_counts": {
+            "sota_long": 12,
+            "smc_short": 2
+          },
+          "exit_counts": {
+            "stop_loss": 11,
+            "stop": 1,
+            "time_stop_exit": 1,
+            "target_2.0r": 1
+          }
+        },
+        "last_30d": {
+          "total_return_pct": 57.51,
+          "final_capital": 1575.09,
+          "sharpe_ratio": 9.037,
+          "max_drawdown_pct": 6.02,
+          "trades": 6,
+          "wins": 4,
+          "losses": 2,
+          "win_rate_pct": 66.67,
+          "avg_return_pct": 8.845,
+          "profit_factor": 9.6754,
+          "event_type_counts": {
+            "sota_long": 5,
+            "smc_short": 1
+          },
+          "exit_counts": {
+            "stop_loss": 5,
+            "target_2.0r": 1
+          }
+        }
+      },
+      "decision_counts": {
+        "by_decision": {
+          "accepted": 287,
+          "rejected": 3
+        },
+        "by_reject_reason": {
+          "position_lock_open": 3
+        },
+        "by_event_type_decision": {
+          "smc_short": {
+            "accepted": 24,
+            "rejected": 3
+          },
+          "sota_long": {
+            "accepted": 254
+          },
+          "gap_smc_short_expansion": {
+            "accepted": 9
+          }
+        },
+        "by_paper_tag": {
+          "accepted_smc_short": 24,
+          "accepted_sota_long": 254,
+          "accepted_gap_smc_short_expansion": 9,
+          "untagged": 3
+        }
+      },
+      "combo_mode": "live_shadow_chronological"
+    },
+    "btc_trades": 287,
+    "qqq_proxy_summary": {
+      "total_return_pct": 301.04,
+      "max_drawdown_pct": 9.99,
+      "bars": 517,
+      "days": 87,
+      "invested_bars": 185,
+      "invested_days": 32,
+      "trades": 0,
+      "win_rate_pct": 0.0,
+      "avg_trade_return_pct": 0.0,
+      "funding_cost_pct_est": 9.02,
+      "fee_cost_pct_est": 0.1,
+      "avg_leverage_when_in": 6.35,
+      "start": "2026-03-04 08:00:00+00:00",
+      "end": "2026-05-29 08:00:00+00:00"
+    }
+  }
+}

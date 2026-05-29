@@ -27,6 +27,7 @@ config/config.live*.json
 !config/config.live.5x-3pct.json
 !config/config.live.5x-3pct.template.json
 !config/config.live.high-leverage-structure.template.json
+!config/config.live.strategy-router.template.json
 !config/config.live.high-leverage-structure.fallback-a.template.json
 !config/config.live.high-leverage-structure.fallback-b.template.json
 !config/config.live.high-leverage-structure.fallback-c.template.json
