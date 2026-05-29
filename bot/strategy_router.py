@@ -49,10 +49,12 @@ class StrategyRouterConfig:
     qqq_state_db_path: str = "state/runtime_qqq_usdt_router.db"
     qqq_margin_mode: str = "isolated"
     qqq_position_size_pct: float = 1.0
+    qqq_sizing_basis: str = "available"
     qqq_max_notional_usdt: float | None = None
     qqq_min_order_notional_usdt: float = 10.0
     qqq_min_rebalance_notional_usdt: float = 10.0
     qqq_rebalance_on_leverage_change: bool = True
+    qqq_rebalance_on_notional_gap: bool = False
     qqq_enable_exchange_stop: bool = False
     okx_markets_cache_path: str = "var/okx/markets_cache.json"
     telegram_enabled: bool = False
