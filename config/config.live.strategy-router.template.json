@@ -24,7 +24,7 @@
   "qqq_sizing_cash_buffer_usdt": 1000.0,
   "qqq_max_notional_usdt": null,
   "qqq_min_order_notional_usdt": 10.0,
-  "qqq_min_rebalance_notional_usdt": 25.0,
+  "qqq_min_rebalance_notional_usdt": 5000.0,
   "qqq_rebalance_on_leverage_change": true,
   "qqq_rebalance_on_notional_gap": true,
   "qqq_enable_exchange_stop": true,
