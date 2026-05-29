@@ -581,6 +581,13 @@ class QqqUsdtExecutionEngine:
             return float(configured)
         return float(self.router_config.qqq_min_rebalance_notional_usdt)
 
+    def _safe_refreshed_position(self, fallback: dict[str, Any]) -> dict[str, Any]:
+        try:
+            refreshed = self.fetch_position_state()
+        except Exception:
+            return fallback
+        return refreshed if isinstance(refreshed, dict) else fallback
+
     def _profit_roll_trigger_met(self, context: QqqOrderContext, current: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         trigger = str(getattr(self.router_config, "qqq_profit_roll_trigger", "any") or "any").lower()
         entry_price = float(current.get("entry_price", 0.0) or current.get("exchange_entry_price", 0.0) or 0.0)
@@ -889,6 +896,7 @@ class QqqUsdtExecutionEngine:
             attach_algo_client_ids=attach_algo_client_ids,
             order_id=self._extract_order_id(order),
         )
+        refreshed_position = self._safe_refreshed_position({"contracts": 0.0, "notional_usdt": 0.0, "raw": None})
         payload = {
             "status": "submitted",
             "action": "open_qqq_usdt_long",
@@ -899,6 +907,8 @@ class QqqUsdtExecutionEngine:
             "leverage": context.leverage,
             "stop_price": context.stop_price,
             "exchange_stop": exchange_stop,
+            "exchange_contracts": float(refreshed_position.get("contracts", 0.0) or 0.0),
+            "exchange_notional_usdt": float(refreshed_position.get("notional_usdt", 0.0) or 0.0),
         }
         self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "OPEN_QQQ_USDT", payload)
         return payload
@@ -1023,6 +1033,7 @@ class QqqUsdtExecutionEngine:
                 return payload
             order = orders[-1] if orders else {}
             exchange_stop = self._replace_exchange_stop(context, self.fetch_position_state())
+            refreshed_position = self._safe_refreshed_position(exchange_position)
             payload = {
                 "status": "submitted",
                 "action": "rebalance_qqq_position",
@@ -1037,6 +1048,8 @@ class QqqUsdtExecutionEngine:
                 "new_leverage": context.leverage,
                 "leverage_result": leverage_result,
                 "exchange_stop": self._with_order_id(exchange_stop, order),
+                "exchange_contracts": float(refreshed_position.get("contracts", 0.0) or 0.0),
+                "exchange_notional_usdt": float(refreshed_position.get("notional_usdt", 0.0) or 0.0),
             }
             self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "REBALANCE_QQQ_POSITION", payload)
             return payload
@@ -1055,6 +1068,7 @@ class QqqUsdtExecutionEngine:
         order = orders[-1] if orders else {}
         leverage_result = self.sync_leverage_setting(context)
         status = "submitted_with_leverage_error" if leverage_result.get("status") == "error" else "submitted"
+        refreshed_position = self._safe_refreshed_position(exchange_position)
         payload = {
             "status": status,
             "action": "rebalance_qqq_position",
@@ -1068,6 +1082,8 @@ class QqqUsdtExecutionEngine:
             "old_leverage": float(current.get("leverage", 0.0) or 0.0),
             "new_leverage": context.leverage,
             "leverage_result": leverage_result,
+            "exchange_contracts": float(refreshed_position.get("contracts", 0.0) or 0.0),
+            "exchange_notional_usdt": float(refreshed_position.get("notional_usdt", 0.0) or 0.0),
         }
         self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "REBALANCE_QQQ_POSITION", payload)
         return payload
@@ -1206,6 +1222,14 @@ class QqqUsdtExecutionEngine:
             updated["exchange_attach_algo_ids"] = fields["algo_ids"]
         if fields.get("algo_client_ids"):
             updated["exchange_attach_algo_client_ids"] = fields["algo_client_ids"]
+        if fields.get("contracts"):
+            updated["exchange_contracts"] = float(fields["contracts"])
+        if fields.get("notional_usdt"):
+            updated["exchange_notional_usdt"] = float(fields["notional_usdt"])
+        if fields.get("exchange_contracts"):
+            updated["exchange_contracts"] = float(fields["exchange_contracts"])
+        if fields.get("exchange_notional_usdt"):
+            updated["exchange_notional_usdt"] = float(fields["exchange_notional_usdt"])
         return updated
 
     def _generate_attach_algo_client_id(self) -> str:
