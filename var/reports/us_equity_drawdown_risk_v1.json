@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-30T08:32:29.591797+00:00",
+  "generated_at": "2026-05-30T08:48:09.186206+00:00",
   "config": {
     "symbols": [
       "QQQ",
@@ -17,7 +17,10 @@
     "start": "2015-01-01T00:00:00Z",
     "end": null,
     "min_date": "2016-01-01",
-    "refresh": false
+    "refresh": false,
+    "model_horizon": 10,
+    "model_min_train_days": 756,
+    "model_step_days": 21
   },
   "skipped_symbols": {},
   "components": [
@@ -36,6 +39,14 @@
     {
       "name": "qqq_60d_drawdown",
       "category": "trend"
+    },
+    {
+      "name": "qqq_ma50_extension",
+      "category": "fragility"
+    },
+    {
+      "name": "qqq_60d_extension",
+      "category": "fragility"
     },
     {
       "name": "spy_below_ma200",
@@ -58,8 +69,16 @@
       "category": "volatility"
     },
     {
+      "name": "vix_compression",
+      "category": "fragility"
+    },
+    {
       "name": "qqq_realized_vol_20d",
       "category": "volatility"
+    },
+    {
+      "name": "qqq_realized_vol_compression",
+      "category": "fragility"
     },
     {
       "name": "qqq_intraday_range_10d",
@@ -78,12 +97,20 @@
       "category": "breadth_proxy"
     },
     {
+      "name": "qqq_up_breadth_down_divergence",
+      "category": "fragility"
+    },
+    {
       "name": "hyg_ief_20d_credit_weakness",
       "category": "credit"
     },
     {
       "name": "hyg_ief_below_ma50",
       "category": "credit"
+    },
+    {
+      "name": "qqq_up_credit_down_divergence",
+      "category": "fragility"
     },
     {
       "name": "tlt_spy_20d_riskoff_bid",
@@ -100,21 +127,44 @@
   ],
   "latest": {
     "date": "2026-05-29",
-    "risk_score": 0.13227513227513227,
+    "risk_score": 3.835978835978836,
     "suggested_exposure": 1.0,
-    "composite_z": -0.827236214672317,
+    "model_probability": 0.5432390167959857,
+    "model_suggested_exposure": 0.0,
+    "composite_z": -0.48378393819697196,
     "category_scores": {
       "trend": -1.5811763674865498,
       "breadth_proxy": -0.9741281648435357,
       "volatility": -0.4528104244860106,
       "credit": -0.5587551655322723,
-      "cross_asset": 0.13903036413861158
+      "cross_asset": 0.13903036413861158,
+      "fragility": 1.2516619438815124
     },
     "top_drivers": [
+      {
+        "name": "qqq_ma50_extension",
+        "category": "fragility",
+        "z": 2.209282318526503
+      },
+      {
+        "name": "qqq_60d_extension",
+        "category": "fragility",
+        "z": 2.1417466511924426
+      },
+      {
+        "name": "qqq_up_credit_down_divergence",
+        "category": "fragility",
+        "z": 1.8525929862947121
+      },
       {
         "name": "btc_10d_weakness",
         "category": "cross_asset",
         "z": 1.1229364706988993
+      },
+      {
+        "name": "vix_compression",
+        "category": "fragility",
+        "z": 0.9096760724781578
       },
       {
         "name": "rsp_spy_20d_breadth_weakness",
@@ -122,34 +172,14 @@
         "z": 0.8896005509661332
       },
       {
+        "name": "qqq_up_breadth_down_divergence",
+        "category": "fragility",
+        "z": 0.5226685784659844
+      },
+      {
         "name": "qqq_realized_vol_20d",
         "category": "volatility",
         "z": 0.12599494366872502
-      },
-      {
-        "name": "qqq_intraday_range_10d",
-        "category": "volatility",
-        "z": 0.05667462731028713
-      },
-      {
-        "name": "hyg_ief_20d_credit_weakness",
-        "category": "credit",
-        "z": -0.168361840997527
-      },
-      {
-        "name": "vix_5d_change",
-        "category": "volatility",
-        "z": -0.6764495053297694
-      },
-      {
-        "name": "hyg_ief_below_ma50",
-        "category": "credit",
-        "z": -0.6856713740678165
-      },
-      {
-        "name": "tlt_spy_20d_riskoff_bid",
-        "category": "credit",
-        "z": -0.8222322815314733
       }
     ]
   },
@@ -158,57 +188,57 @@
       "base_event_rate": 0.15779394867866717,
       "sample_size": 2611,
       "risk_ge_55": {
-        "count": 1203,
-        "event_rate": 0.19866999168744803,
-        "avg_future_dd": -0.012749617825655639
+        "count": 1211,
+        "event_rate": 0.18992568125516102,
+        "avg_future_dd": -0.012531018278044401
       },
       "risk_ge_70": {
-        "count": 786,
-        "event_rate": 0.21246819338422393,
-        "avg_future_dd": -0.013924574909983929
+        "count": 776,
+        "event_rate": 0.19716494845360824,
+        "avg_future_dd": -0.013406005745523942
       },
       "risk_ge_85": {
-        "count": 367,
-        "event_rate": 0.24250681198910082,
-        "avg_future_dd": -0.01617681934453483
+        "count": 368,
+        "event_rate": 0.23641304347826086,
+        "avg_future_dd": -0.015384189466366825
       }
     },
     "10d": {
       "base_event_rate": 0.13699155794320797,
       "sample_size": 2606,
       "risk_ge_55": {
-        "count": 1203,
-        "event_rate": 0.16209476309226933,
-        "avg_future_dd": -0.021369852106325526
+        "count": 1209,
+        "event_rate": 0.15715467328370555,
+        "avg_future_dd": -0.02133367113097882
       },
       "risk_ge_70": {
-        "count": 786,
-        "event_rate": 0.17048346055979643,
-        "avg_future_dd": -0.022717632598847976
+        "count": 776,
+        "event_rate": 0.15463917525773196,
+        "avg_future_dd": -0.021979037256109463
       },
       "risk_ge_85": {
-        "count": 367,
-        "event_rate": 0.1907356948228883,
-        "avg_future_dd": -0.02477376898755704
+        "count": 368,
+        "event_rate": 0.1793478260869565,
+        "avg_future_dd": -0.023727906179449434
       }
     },
     "20d": {
       "base_event_rate": 0.10285053929121726,
       "sample_size": 2596,
       "risk_ge_55": {
-        "count": 1203,
-        "event_rate": 0.12468827930174564,
-        "avg_future_dd": -0.0328199323855595
+        "count": 1201,
+        "event_rate": 0.12156536219816819,
+        "avg_future_dd": -0.03275585431639525
       },
       "risk_ge_70": {
-        "count": 786,
-        "event_rate": 0.1272264631043257,
-        "avg_future_dd": -0.033969255909204965
+        "count": 776,
+        "event_rate": 0.11984536082474227,
+        "avg_future_dd": -0.0333168085451353
       },
       "risk_ge_85": {
-        "count": 367,
-        "event_rate": 0.14168937329700274,
-        "avg_future_dd": -0.03636873739069516
+        "count": 368,
+        "event_rate": 0.1358695652173913,
+        "avg_future_dd": -0.0351761616395684
       }
     },
     "overlay": {
@@ -219,15 +249,60 @@
         "volatility": 0.22188162506513717
       },
       "risk_scaled": {
-        "total_return": 1.6978937974994728,
-        "cagr": 0.10032439679146243,
-        "max_drawdown": -0.333388928786599,
-        "volatility": 0.12820457851783487
+        "total_return": 1.6923823928200061,
+        "cagr": 0.10010766521118297,
+        "max_drawdown": -0.3367133569356733,
+        "volatility": 0.12903256166893978
       },
-      "avg_exposure": 0.6044533639143731,
-      "zero_exposure_days": 367,
-      "reduced_exposure_days": 1783
+      "avg_exposure": 0.6016819571865444,
+      "zero_exposure_days": 368,
+      "reduced_exposure_days": 1813
     }
   },
-  "runtime_seconds": 0.316
+  "model_evaluation": {
+    "horizon": 10,
+    "sample_size": 1840,
+    "base_event_rate": 0.15217391304347827,
+    "brier": 0.138409657165504,
+    "average_precision": 0.21876264648203342,
+    "roc_auc": 0.6003937728937728,
+    "prob_ge_0.16": {
+      "count": 433,
+      "event_rate": 0.22170900692840648,
+      "avg_future_dd": -0.026249780325699815
+    },
+    "prob_ge_0.22": {
+      "count": 286,
+      "event_rate": 0.24125874125874125,
+      "avg_future_dd": -0.027037277932211085
+    },
+    "prob_ge_0.28": {
+      "count": 224,
+      "event_rate": 0.24107142857142858,
+      "avg_future_dd": -0.027229438203542743
+    },
+    "prob_ge_0.35": {
+      "count": 168,
+      "event_rate": 0.26785714285714285,
+      "avg_future_dd": -0.03188190258003213
+    },
+    "top_decile": {
+      "threshold": 0.3300479724208753,
+      "count": 184,
+      "event_rate": 0.2717391304347826,
+      "avg_future_dd": -0.030592940882980667
+    },
+    "overlay": {
+      "risk_model_scaled": {
+        "total_return": 4.147941648565821,
+        "cagr": 0.17098642940550812,
+        "max_drawdown": -0.29128361082505716,
+        "volatility": 0.1821444088870647
+      },
+      "avg_exposure": 0.8904816513761468,
+      "zero_exposure_days": 176,
+      "reduced_exposure_days": 442
+    }
+  },
+  "runtime_seconds": 2.429
 }

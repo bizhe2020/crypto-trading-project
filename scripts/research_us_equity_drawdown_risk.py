@@ -46,6 +46,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report-json", default=str(DEFAULT_REPORT_JSON))
     parser.add_argument("--daily-csv", default=str(DEFAULT_DAILY_CSV))
     parser.add_argument("--min-date", default="2016-01-01", help="Drop early warmup rows before evaluation.")
+    parser.add_argument("--model-horizon", type=int, default=10, choices=[5, 10, 20])
+    parser.add_argument("--model-min-train-days", type=int, default=756)
+    parser.add_argument("--model-step-days", type=int, default=21)
     return parser.parse_args()
 
 
@@ -196,6 +199,8 @@ def build_components(data: pd.DataFrame) -> tuple[pd.DataFrame, list[RiskCompone
     add_component(components, "qqq_below_ma200", "trend", -(qqq / qqq.rolling(200).mean() - 1.0))
     add_component(components, "qqq_20d_return_weakness", "trend", -pct_change(qqq, 20))
     add_component(components, "qqq_60d_drawdown", "trend", -(qqq / qqq.rolling(60).max() - 1.0))
+    add_component(components, "qqq_ma50_extension", "fragility", qqq / qqq.rolling(50).mean() - 1.0)
+    add_component(components, "qqq_60d_extension", "fragility", qqq / qqq.rolling(60).min() - 1.0)
     if "spy_close" in data:
         spy = data["spy_close"]
         add_component(components, "spy_below_ma200", "trend", -(spy / spy.rolling(200).mean() - 1.0))
@@ -208,7 +213,9 @@ def build_components(data: pd.DataFrame) -> tuple[pd.DataFrame, list[RiskCompone
         add_component(components, "vix_level", "volatility", vix)
         add_component(components, "vix_vs_ma20", "volatility", vix / vix.rolling(20).mean() - 1.0)
         add_component(components, "vix_5d_change", "volatility", pct_change(vix, 5))
+        add_component(components, "vix_compression", "fragility", -(vix / vix.rolling(20).mean() - 1.0))
     add_component(components, "qqq_realized_vol_20d", "volatility", realized_vol(qqq, 20))
+    add_component(components, "qqq_realized_vol_compression", "fragility", -realized_vol(qqq, 20))
     if {"qqq_high", "qqq_low"}.issubset(data.columns):
         add_component(components, "qqq_intraday_range_10d", "volatility", (data["qqq_high"] / data["qqq_low"] - 1.0).rolling(10).mean())
 
@@ -217,10 +224,24 @@ def build_components(data: pd.DataFrame) -> tuple[pd.DataFrame, list[RiskCompone
     add_component(components, "qqew_qqq_20d_breadth_weakness", "breadth_proxy", -pct_change(qqew_qqq, 20) if qqew_qqq is not None else None)
     add_component(components, "qqew_qqq_below_ma50", "breadth_proxy", -(qqew_qqq / qqew_qqq.rolling(50).mean() - 1.0) if qqew_qqq is not None else None)
     add_component(components, "rsp_spy_20d_breadth_weakness", "breadth_proxy", -pct_change(rsp_spy, 20) if rsp_spy is not None else None)
+    if qqew_qqq is not None:
+        add_component(
+            components,
+            "qqq_up_breadth_down_divergence",
+            "fragility",
+            pct_change(qqq, 20).clip(lower=0.0) - pct_change(qqew_qqq, 20),
+        )
 
     hyg_ief = ratio(data, "hyg_close", "ief_close")
     add_component(components, "hyg_ief_20d_credit_weakness", "credit", -pct_change(hyg_ief, 20) if hyg_ief is not None else None)
     add_component(components, "hyg_ief_below_ma50", "credit", -(hyg_ief / hyg_ief.rolling(50).mean() - 1.0) if hyg_ief is not None else None)
+    if hyg_ief is not None:
+        add_component(
+            components,
+            "qqq_up_credit_down_divergence",
+            "fragility",
+            pct_change(qqq, 20).clip(lower=0.0) - pct_change(hyg_ief, 20),
+        )
     tlt_spy = ratio(data, "tlt_close", "spy_close")
     add_component(components, "tlt_spy_20d_riskoff_bid", "credit", pct_change(tlt_spy, 20) if tlt_spy is not None else None)
 
@@ -247,11 +268,12 @@ def category_scores(feature_frame: pd.DataFrame, components: list[RiskComponent]
 
 def composite_risk_score(scores: pd.DataFrame) -> pd.DataFrame:
     weights = {
-        "trend": 0.25,
-        "breadth_proxy": 0.25,
+        "trend": 0.20,
+        "breadth_proxy": 0.20,
         "volatility": 0.20,
-        "credit": 0.20,
+        "credit": 0.15,
         "cross_asset": 0.10,
+        "fragility": 0.15,
     }
     weighted = pd.Series(0.0, index=scores.index)
     weight_sum = pd.Series(0.0, index=scores.index)
@@ -294,6 +316,21 @@ def exposure_from_risk(score: Any) -> float:
     if score_float >= 55:
         return 0.50
     if score_float >= 35:
+        return 0.75
+    return 1.0
+
+
+def exposure_from_probability(probability: Any) -> float:
+    if pd.isna(probability):
+        return 1.0
+    probability_float = float(probability)
+    if probability_float >= 0.35:
+        return 0.0
+    if probability_float >= 0.28:
+        return 0.25
+    if probability_float >= 0.22:
+        return 0.50
+    if probability_float >= 0.16:
         return 0.75
     return 1.0
 
@@ -351,6 +388,108 @@ def evaluate_risk_index(daily: pd.DataFrame) -> dict[str, Any]:
     return output
 
 
+def model_feature_matrix(daily: pd.DataFrame, feature_frame: pd.DataFrame) -> pd.DataFrame:
+    score_columns = [
+        column
+        for column in ["trend", "breadth_proxy", "volatility", "credit", "cross_asset", "fragility", "composite_z", "risk_score"]
+        if column in daily.columns
+    ]
+    features = pd.concat([feature_frame, daily[score_columns]], axis=1)
+    return features.replace([math.inf, -math.inf], float("nan"))
+
+
+def walk_forward_probabilities(
+    daily: pd.DataFrame,
+    features: pd.DataFrame,
+    *,
+    horizon: int,
+    min_train_days: int,
+    step_days: int,
+) -> pd.Series:
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    label_column = f"label_dd_{horizon}d"
+    labels = daily[label_column]
+    probabilities = pd.Series(float("nan"), index=daily.index, dtype=float)
+    start_index = max(int(min_train_days) + int(horizon), 300)
+    step = max(int(step_days), 1)
+    for start in range(start_index, len(daily), step):
+        end = min(start + step, len(daily))
+        train_end = start - horizon
+        train_mask = (features.index < train_end) & labels.notna()
+        y_train = labels.loc[train_mask].astype(int)
+        if len(y_train) < 300 or y_train.nunique() < 2:
+            continue
+        x_train = features.loc[train_mask]
+        x_test = features.iloc[start:end]
+        model = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),
+                (
+                    "logistic",
+                    LogisticRegression(
+                        C=0.5,
+                        max_iter=1000,
+                        random_state=17,
+                    ),
+                ),
+            ]
+        )
+        model.fit(x_train, y_train)
+        probabilities.iloc[start:end] = model.predict_proba(x_test)[:, 1]
+    return probabilities.clip(0.0, 1.0)
+
+
+def evaluate_probability_model(daily: pd.DataFrame, probabilities: pd.Series, *, horizon: int) -> dict[str, Any]:
+    from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
+
+    label_column = f"label_dd_{horizon}d"
+    frame = pd.DataFrame({"probability": probabilities, "label": daily[label_column], "future_dd": daily[f"future_dd_{horizon}d"]})
+    frame = frame.dropna(subset=["probability", "label"])
+    if frame.empty:
+        return {"horizon": horizon, "sample_size": 0}
+    y = frame["label"].astype(int)
+    p = frame["probability"].astype(float)
+    metrics: dict[str, Any] = {
+        "horizon": horizon,
+        "sample_size": int(len(frame)),
+        "base_event_rate": float(y.mean()),
+        "brier": float(brier_score_loss(y, p)),
+        "average_precision": float(average_precision_score(y, p)),
+    }
+    metrics["roc_auc"] = float(roc_auc_score(y, p)) if y.nunique() > 1 else None
+    for threshold in [0.16, 0.22, 0.28, 0.35]:
+        bucket = frame[frame["probability"] >= threshold]
+        metrics[f"prob_ge_{threshold:.2f}"] = {
+            "count": int(len(bucket)),
+            "event_rate": float(bucket["label"].mean()) if len(bucket) else None,
+            "avg_future_dd": float(bucket["future_dd"].mean()) if len(bucket) else None,
+        }
+    cutoff = float(frame["probability"].quantile(0.90))
+    top = frame[frame["probability"] >= cutoff]
+    metrics["top_decile"] = {
+        "threshold": cutoff,
+        "count": int(len(top)),
+        "event_rate": float(top["label"].mean()) if len(top) else None,
+        "avg_future_dd": float(top["future_dd"].mean()) if len(top) else None,
+    }
+
+    returns = daily["qqq_close"].pct_change(fill_method=None).fillna(0.0)
+    exposure = probabilities.shift(1).apply(exposure_from_probability)
+    overlay_returns = returns * exposure
+    metrics["overlay"] = {
+        "risk_model_scaled": performance_summary(overlay_returns),
+        "avg_exposure": float(exposure.mean()),
+        "zero_exposure_days": int((exposure == 0.0).sum()),
+        "reduced_exposure_days": int((exposure < 1.0).sum()),
+    }
+    return metrics
+
+
 def latest_snapshot(daily: pd.DataFrame, feature_frame: pd.DataFrame, components: list[RiskComponent]) -> dict[str, Any]:
     latest = daily.dropna(subset=["risk_score"]).iloc[-1]
     latest_features = feature_frame.loc[latest.name].dropna().sort_values(ascending=False)
@@ -363,10 +502,12 @@ def latest_snapshot(daily: pd.DataFrame, feature_frame: pd.DataFrame, components
         "date": str(latest["session"]),
         "risk_score": float(latest["risk_score"]),
         "suggested_exposure": exposure_from_risk(latest["risk_score"]),
+        "model_probability": float(latest["model_probability"]) if "model_probability" in latest and pd.notna(latest["model_probability"]) else None,
+        "model_suggested_exposure": exposure_from_probability(latest["model_probability"]) if "model_probability" in latest else None,
         "composite_z": float(latest["composite_z"]) if pd.notna(latest["composite_z"]) else None,
         "category_scores": {
             key: float(latest[key])
-            for key in ["trend", "breadth_proxy", "volatility", "credit", "cross_asset"]
+            for key in ["trend", "breadth_proxy", "volatility", "credit", "cross_asset", "fragility"]
             if key in daily.columns and pd.notna(latest[key])
         },
         "top_drivers": top_drivers,
@@ -396,6 +537,15 @@ def main() -> None:
         feature_frame = feature_frame.loc[daily.index].copy()
         daily = daily.reset_index(drop=True)
         feature_frame = feature_frame.reset_index(drop=True)
+    features = model_feature_matrix(daily, feature_frame)
+    model_probability = walk_forward_probabilities(
+        daily,
+        features,
+        horizon=int(args.model_horizon),
+        min_train_days=int(args.model_min_train_days),
+        step_days=int(args.model_step_days),
+    )
+    daily["model_probability"] = model_probability
     report = {
         "schema_version": 1,
         "generated_at": pd.Timestamp.now(tz="UTC").isoformat(),
@@ -405,11 +555,15 @@ def main() -> None:
             "end": args.end,
             "min_date": args.min_date,
             "refresh": bool(args.refresh),
+            "model_horizon": int(args.model_horizon),
+            "model_min_train_days": int(args.model_min_train_days),
+            "model_step_days": int(args.model_step_days),
         },
         "skipped_symbols": data.attrs.get("skipped_symbols", {}),
         "components": [{"name": item.name, "category": item.category} for item in components],
         "latest": latest_snapshot(daily, feature_frame, components),
         "evaluation": evaluate_risk_index(daily),
+        "model_evaluation": evaluate_probability_model(daily, model_probability, horizon=int(args.model_horizon)),
         "runtime_seconds": round(time.time() - started_at, 3),
     }
 

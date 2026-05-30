@@ -59,7 +59,7 @@ python3 scripts/research_us_equity_drawdown_risk.py --refresh
 - overlay 回测使用 `risk_score.shift(1)` 控制下一交易日 exposure，避免 close-to-close 同日偷看。
 - 该指数只先作为研究层，不直接接入 live；接入前必须同步 live/replay 口径。
 
-## 2026-05-30 初跑结论
+## 2026-05-30 v1 初跑结论
 
 样本：`2016-01-01 -> 2026-05-29`
 
@@ -91,3 +91,55 @@ avg exposure: 60.45%
 ```
 
 解读：v1 更像“压力状态识别器”，能在风险高分位看到回撤概率上升，但直接按 55/70/85 分层减仓会过度牺牲收益，DD 改善不够。下一步应加入更强的 forward-looking fragility 因子和概率校准，再决定是否接入 QQQ 风控闸门。
+
+## v2：fragility + walk-forward logistic
+
+新增 forward-looking fragility 因子：
+
+- QQQ 相对 MA50 的过度扩张。
+- QQQ 相对 60d low 的扩张。
+- VIX/realized vol 压缩。
+- QQQ 上涨但 QQEW/QQQ 走弱的宽度背离。
+- QQQ 上涨但 HYG/IEF 走弱的信用背离。
+
+模型：
+
+- `LogisticRegression(C=0.5)`
+- walk-forward 训练，默认训练窗起点约 756 个交易日。
+- 预测目标：`label_dd_10d`
+- 训练时对最后 `horizon` 天做 embargo，避免未来标签泄露。
+- 不使用 `class_weight=balanced`，因为它会破坏概率校准。
+
+v2 结果：
+
+```text
+10d base event rate: 15.22%
+model prob >= 0.16 event rate: 22.17%
+model prob >= 0.22 event rate: 24.13%
+model prob >= 0.35 event rate: 26.79%
+top decile event rate: 27.17%
+ROC AUC: 0.6004
+Average precision: 0.2188
+Brier: 0.1384
+```
+
+模型 overlay 粗测：
+
+```text
+QQQ buy-hold total return: +574.26%
+QQQ buy-hold max DD: -35.62%
+model risk-scaled total return: +414.79%
+model risk-scaled max DD: -29.13%
+avg exposure: 89.05%
+zero exposure days: 176
+```
+
+当前最新交易日 `2026-05-29`：
+
+```text
+stress percentile risk_score: 3.84
+model_probability_10d: 0.5432
+model_suggested_exposure: 0.00
+```
+
+解读：v2 的排序能力和风控收益/回撤权衡明显优于 v1，但最新概率较高主要来自 fragility 因子（QQQ 扩张、信用/宽度背离、VIX 压缩），这类信号可能提前较久，不能直接硬清仓。接入 live 前建议先做影子模式，只记录 `model_probability_10d` 和建议 exposure，不实际改仓。
