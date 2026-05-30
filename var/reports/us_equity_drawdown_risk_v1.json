@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-30T08:32:29.591797+00:00",
+  "config": {
+    "symbols": [
+      "QQQ",
+      "SPY",
+      "^IXIC",
+      "^VIX",
+      "HYG",
+      "IEF",
+      "TLT",
+      "RSP",
+      "QQEW",
+      "BTC-USD"
+    ],
+    "start": "2015-01-01T00:00:00Z",
+    "end": null,
+    "min_date": "2016-01-01",
+    "refresh": false
+  },
+  "skipped_symbols": {},
+  "components": [
+    {
+      "name": "qqq_below_ma50",
+      "category": "trend"
+    },
+    {
+      "name": "qqq_below_ma200",
+      "category": "trend"
+    },
+    {
+      "name": "qqq_20d_return_weakness",
+      "category": "trend"
+    },
+    {
+      "name": "qqq_60d_drawdown",
+      "category": "trend"
+    },
+    {
+      "name": "spy_below_ma200",
+      "category": "trend"
+    },
+    {
+      "name": "ixic_below_ma50",
+      "category": "trend"
+    },
+    {
+      "name": "vix_level",
+      "category": "volatility"
+    },
+    {
+      "name": "vix_vs_ma20",
+      "category": "volatility"
+    },
+    {
+      "name": "vix_5d_change",
+      "category": "volatility"
+    },
+    {
+      "name": "qqq_realized_vol_20d",
+      "category": "volatility"
+    },
+    {
+      "name": "qqq_intraday_range_10d",
+      "category": "volatility"
+    },
+    {
+      "name": "qqew_qqq_20d_breadth_weakness",
+      "category": "breadth_proxy"
+    },
+    {
+      "name": "qqew_qqq_below_ma50",
+      "category": "breadth_proxy"
+    },
+    {
+      "name": "rsp_spy_20d_breadth_weakness",
+      "category": "breadth_proxy"
+    },
+    {
+      "name": "hyg_ief_20d_credit_weakness",
+      "category": "credit"
+    },
+    {
+      "name": "hyg_ief_below_ma50",
+      "category": "credit"
+    },
+    {
+      "name": "tlt_spy_20d_riskoff_bid",
+      "category": "credit"
+    },
+    {
+      "name": "btc_10d_weakness",
+      "category": "cross_asset"
+    },
+    {
+      "name": "btc_realized_vol_20d",
+      "category": "cross_asset"
+    }
+  ],
+  "latest": {
+    "date": "2026-05-29",
+    "risk_score": 0.13227513227513227,
+    "suggested_exposure": 1.0,
+    "composite_z": -0.827236214672317,
+    "category_scores": {
+      "trend": -1.5811763674865498,
+      "breadth_proxy": -0.9741281648435357,
+      "volatility": -0.4528104244860106,
+      "credit": -0.5587551655322723,
+      "cross_asset": 0.13903036413861158
+    },
+    "top_drivers": [
+      {
+        "name": "btc_10d_weakness",
+        "category": "cross_asset",
+        "z": 1.1229364706988993
+      },
+      {
+        "name": "rsp_spy_20d_breadth_weakness",
+        "category": "breadth_proxy",
+        "z": 0.8896005509661332
+      },
+      {
+        "name": "qqq_realized_vol_20d",
+        "category": "volatility",
+        "z": 0.12599494366872502
+      },
+      {
+        "name": "qqq_intraday_range_10d",
+        "category": "volatility",
+        "z": 0.05667462731028713
+      },
+      {
+        "name": "hyg_ief_20d_credit_weakness",
+        "category": "credit",
+        "z": -0.168361840997527
+      },
+      {
+        "name": "vix_5d_change",
+        "category": "volatility",
+        "z": -0.6764495053297694
+      },
+      {
+        "name": "hyg_ief_below_ma50",
+        "category": "credit",
+        "z": -0.6856713740678165
+      },
+      {
+        "name": "tlt_spy_20d_riskoff_bid",
+        "category": "credit",
+        "z": -0.8222322815314733
+      }
+    ]
+  },
+  "evaluation": {
+    "5d": {
+      "base_event_rate": 0.15779394867866717,
+      "sample_size": 2611,
+      "risk_ge_55": {
+        "count": 1203,
+        "event_rate": 0.19866999168744803,
+        "avg_future_dd": -0.012749617825655639
+      },
+      "risk_ge_70": {
+        "count": 786,
+        "event_rate": 0.21246819338422393,
+        "avg_future_dd": -0.013924574909983929
+      },
+      "risk_ge_85": {
+        "count": 367,
+        "event_rate": 0.24250681198910082,
+        "avg_future_dd": -0.01617681934453483
+      }
+    },
+    "10d": {
+      "base_event_rate": 0.13699155794320797,
+      "sample_size": 2606,
+      "risk_ge_55": {
+        "count": 1203,
+        "event_rate": 0.16209476309226933,
+        "avg_future_dd": -0.021369852106325526
+      },
+      "risk_ge_70": {
+        "count": 786,
+        "event_rate": 0.17048346055979643,
+        "avg_future_dd": -0.022717632598847976
+      },
+      "risk_ge_85": {
+        "count": 367,
+        "event_rate": 0.1907356948228883,
+        "avg_future_dd": -0.02477376898755704
+      }
+    },
+    "20d": {
+      "base_event_rate": 0.10285053929121726,
+      "sample_size": 2596,
+      "risk_ge_55": {
+        "count": 1203,
+        "event_rate": 0.12468827930174564,
+        "avg_future_dd": -0.0328199323855595
+      },
+      "risk_ge_70": {
+        "count": 786,
+        "event_rate": 0.1272264631043257,
+        "avg_future_dd": -0.033969255909204965
+      },
+      "risk_ge_85": {
+        "count": 367,
+        "event_rate": 0.14168937329700274,
+        "avg_future_dd": -0.03636873739069516
+      }
+    },
+    "overlay": {
+      "buy_hold": {
+        "total_return": 5.742557055329631,
+        "cagr": 0.20182408929028672,
+        "max_drawdown": -0.35617215180846873,
+        "volatility": 0.22188162506513717
+      },
+      "risk_scaled": {
+        "total_return": 1.6978937974994728,
+        "cagr": 0.10032439679146243,
+        "max_drawdown": -0.333388928786599,
+        "volatility": 0.12820457851783487
+      },
+      "avg_exposure": 0.6044533639143731,
+      "zero_exposure_days": 367,
+      "reduced_exposure_days": 1783
+    }
+  },
+  "runtime_seconds": 0.316
+}
