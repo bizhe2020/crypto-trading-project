@@ -73,6 +73,10 @@ class StrategyRouterConfig:
     qqq_profit_roll_cooldown_bars: int = 1
     qqq_profit_roll_skip_defense: bool = True
     qqq_profit_roll_min_notional_usdt: float | None = None
+    qqq_stop_reentry_guard_enabled: bool = True
+    qqq_stop_reentry_min_closed_bars: int = 3
+    qqq_stop_reentry_price_buffer_pct: float = 0.25
+    qqq_stop_reentry_allow_new_daily_signal: bool = True
     okx_markets_cache_path: str = "var/okx/markets_cache.json"
     telegram_enabled: bool = False
     telegram_token: str | None = None

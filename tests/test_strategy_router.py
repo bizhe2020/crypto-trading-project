@@ -15,7 +15,8 @@ from bot.qqq_runtime_policy import filter_closed_bars, market_time_window_status
 from bot.qqq_usdt_signal_adapter import QqqUsdtSignalAdapter
 from bot.router_executor import StrategyRouterExecutionEngine
 from bot.strategy_router import RoutedSignalCandidate, StrategyRouter, StrategyRouterConfig
-from scripts.replay_proxy_strategy_router import qqq_replay_risk_on_allowed, qqq_replay_signal_leverage
+from scripts.replay_proxy_strategy_router import qqq_replay_risk_on_allowed, qqq_replay_signal_leverage, qqq_replay_stop_reentry_status
+from scripts.scan_qqq_usdt_4h_triggers import attach_daily_state
 
 
 def build_router() -> StrategyRouter:
@@ -162,6 +163,55 @@ def test_qqq_replay_risk_on_window_matches_nyse_hours() -> None:
     assert qqq_replay_risk_on_allowed(config, pd.Timestamp("2026-05-30 14:00:00", tz="UTC"))[0] is False
 
 
+def test_qqq_replay_stop_reentry_guard_matches_live_policy() -> None:
+    last_stop_hit = {
+        "candidate_timestamp": "2026-05-22 12:00:00+00:00",
+        "stop_bar_timestamp": "2026-05-22 12:00:00+00:00",
+        "daily_signal_timestamp": "2026-05-22 00:00:00+00:00",
+        "stop_price": 700.0,
+    }
+    early = qqq_replay_stop_reentry_status(
+        enabled=True,
+        last_stop_hit=last_stop_hit,
+        candidate_timestamp="2026-05-22 20:00:00+00:00",
+        daily_signal_timestamp="2026-05-22 00:00:00+00:00",
+        reference_price=702.0,
+        execution_timeframe="4h",
+        min_closed_bars=3,
+        price_buffer_pct=0.25,
+        allow_new_daily_signal=True,
+    )
+    assert early["blocked"] is True
+
+    recovered = qqq_replay_stop_reentry_status(
+        enabled=True,
+        last_stop_hit=last_stop_hit,
+        candidate_timestamp="2026-05-23 00:00:00+00:00",
+        daily_signal_timestamp="2026-05-22 00:00:00+00:00",
+        reference_price=702.0,
+        execution_timeframe="4h",
+        min_closed_bars=3,
+        price_buffer_pct=0.25,
+        allow_new_daily_signal=True,
+    )
+    assert recovered["blocked"] is False
+    assert recovered["bars_elapsed"] == 3
+
+    new_daily = qqq_replay_stop_reentry_status(
+        enabled=True,
+        last_stop_hit=last_stop_hit,
+        candidate_timestamp="2026-05-22 16:00:00+00:00",
+        daily_signal_timestamp="2026-05-23 00:00:00+00:00",
+        reference_price=702.0,
+        execution_timeframe="4h",
+        min_closed_bars=3,
+        price_buffer_pct=0.25,
+        allow_new_daily_signal=True,
+    )
+    assert new_daily["blocked"] is False
+    assert new_daily["new_daily_signal"] is True
+
+
 def test_qqq_same_signal_stop_lock_blocks_reopen(tmp_path: Path) -> None:
     config_path = tmp_path / "qqq.json"
     config_path.write_text(
@@ -199,6 +249,262 @@ def test_qqq_same_signal_stop_lock_blocks_reopen(tmp_path: Path) -> None:
         candidate={"timestamp": "2026-05-22 12:00:00+00:00"},
     )
     assert engine._same_signal_stop_locked(context) is True
+
+
+def test_qqq_stop_reentry_guard_requires_price_reclaim_and_cooldown(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "execution_timeframe": "4h",
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_stop_reentry_guard_enabled=True,
+            qqq_stop_reentry_min_closed_bars=3,
+            qqq_stop_reentry_price_buffer_pct=0.25,
+        ),
+        config_path,
+    )
+    engine.save_state(
+        {
+            "last_stop_hit": {
+                "candidate_timestamp": "2026-05-22 12:00:00+00:00",
+                "stop_bar_timestamp": "2026-05-22 12:00:00+00:00",
+                "daily_signal_timestamp": "2026-05-22 00:00:00+00:00",
+                "stop_price": 700.0,
+            }
+        }
+    )
+
+    early_context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=702.0,
+        latest_low=701.0,
+        stop_price=677.43,
+        stop_hit=False,
+        route_score=98.0,
+        candidate={
+            "timestamp": "2026-05-22 20:00:00+00:00",
+            "metadata": {"daily_signal_timestamp": "2026-05-22 00:00:00+00:00"},
+        },
+    )
+    assert engine._stop_reentry_status(early_context)["blocked"] is True
+
+    low_reclaim_context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=701.0,
+        latest_low=700.0,
+        stop_price=676.46,
+        stop_hit=False,
+        route_score=98.0,
+        candidate={
+            "timestamp": "2026-05-23 00:00:00+00:00",
+            "metadata": {"daily_signal_timestamp": "2026-05-22 00:00:00+00:00"},
+        },
+    )
+    assert engine._stop_reentry_status(low_reclaim_context)["blocked"] is True
+
+    recovered_context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=702.0,
+        latest_low=701.0,
+        stop_price=677.43,
+        stop_hit=False,
+        route_score=98.0,
+        candidate={
+            "timestamp": "2026-05-23 00:00:00+00:00",
+            "metadata": {"daily_signal_timestamp": "2026-05-22 00:00:00+00:00"},
+        },
+    )
+    status = engine._stop_reentry_status(recovered_context)
+    assert status["blocked"] is False
+    assert status["bars_elapsed"] == 3
+
+
+def test_qqq_stop_reentry_guard_allows_new_daily_signal_after_reclaim(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "execution_timeframe": "4h",
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_stop_reentry_guard_enabled=True,
+            qqq_stop_reentry_min_closed_bars=3,
+            qqq_stop_reentry_price_buffer_pct=0.25,
+            qqq_stop_reentry_allow_new_daily_signal=True,
+        ),
+        config_path,
+    )
+    engine.save_state(
+        {
+            "last_stop_hit": {
+                "candidate_timestamp": "2026-05-22 12:00:00+00:00",
+                "stop_bar_timestamp": "2026-05-22 12:00:00+00:00",
+                "daily_signal_timestamp": "2026-05-22 00:00:00+00:00",
+                "stop_price": 700.0,
+            }
+        }
+    )
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=702.0,
+        latest_low=701.0,
+        stop_price=677.43,
+        stop_hit=False,
+        route_score=98.0,
+        candidate={
+            "timestamp": "2026-05-22 16:00:00+00:00",
+            "metadata": {"daily_signal_timestamp": "2026-05-23 00:00:00+00:00"},
+        },
+    )
+
+    status = engine._stop_reentry_status(context)
+    assert status["blocked"] is False
+    assert status["new_daily_signal"] is True
+
+
+def test_qqq_risk_window_skip_preserves_stop_reentry_state(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "execution_timeframe": "4h",
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+        ),
+        config_path,
+    )
+    last_stop_hit = {
+        "candidate_timestamp": "2026-05-22 12:00:00+00:00",
+        "stop_bar_timestamp": "2026-05-22 12:00:00+00:00",
+        "daily_signal_timestamp": "2026-05-22 00:00:00+00:00",
+        "stop_price": 700.0,
+    }
+    engine.save_state({"position": None, "last_stop_hit": last_stop_hit})
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=702.0,
+        latest_low=701.0,
+        stop_price=677.43,
+        stop_hit=False,
+        route_score=98.0,
+        candidate={
+            "timestamp": "2026-05-22 20:00:00+00:00",
+            "metadata": {"daily_signal_timestamp": "2026-05-22 00:00:00+00:00"},
+        },
+    )
+    engine._build_context = lambda candidate: context  # type: ignore[method-assign]
+    engine.fetch_position_state = lambda: {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}  # type: ignore[method-assign]
+    engine._risk_on_window_status = lambda: {"open": False, "reason": "after_window"}  # type: ignore[method-assign]
+
+    result = engine.evaluate_latest(
+        RoutedSignalCandidate("qqq_usdt_aggressive", "QQQ/USDT:USDT", True, 98.0, leverage=10.0)
+    )
+
+    assert result["position_open"] is False
+    assert engine.load_state()["last_stop_hit"] == last_stop_hit
+
+
+def test_qqq_stop_hit_records_actual_prior_stop_for_reentry(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "execution_timeframe": "4h",
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+        ),
+        config_path,
+    )
+    engine.save_state({"position": {"stop_price": 700.0}})
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=740.0,
+        latest_low=699.0,
+        stop_price=714.1,
+        stop_hit=True,
+        route_score=98.0,
+        candidate={
+            "timestamp": "2026-05-22 12:00:00+00:00",
+            "metadata": {"daily_signal_timestamp": "2026-05-22 00:00:00+00:00"},
+        },
+    )
+    engine._build_context = lambda candidate: context  # type: ignore[method-assign]
+    engine.fetch_position_state = lambda: {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}  # type: ignore[method-assign]
+
+    result = engine.evaluate_latest(
+        RoutedSignalCandidate("qqq_usdt_aggressive", "QQQ/USDT:USDT", True, 98.0, leverage=10.0)
+    )
+
+    assert result["position_open"] is False
+    assert engine.load_state()["last_stop_hit"]["stop_price"] == 700.0
 
 
 def test_qqq_order_precision_uses_cached_okx_step(tmp_path: Path) -> None:
@@ -690,6 +996,72 @@ def test_qqq_daily_signal_stale_guard_allows_recent_signal() -> None:
         now=pd.Timestamp("2026-05-29T08:00:00Z"),
     )
     assert status["stale"] is False
+
+
+def test_qqq_daily_attach_keeps_daily_signal_timestamp() -> None:
+    bars = pd.DataFrame(
+        {
+            "date": [
+                pd.Timestamp("2026-05-22T12:00:00Z"),
+                pd.Timestamp("2026-05-22T16:00:00Z"),
+            ],
+            "close": [700.0, 710.0],
+            "daily_signal_timestamp": [
+                pd.Timestamp("2026-05-22T12:00:00Z"),
+                pd.Timestamp("2026-05-22T16:00:00Z"),
+            ],
+        }
+    )
+    signal_path = pd.DataFrame(
+        {
+            "date": [
+                pd.Timestamp("2026-05-22T00:00:00Z"),
+                pd.Timestamp("2026-05-23T00:00:00Z"),
+            ],
+            "entry_type": ["base", "base"],
+            "overlay_mode": [False, False],
+            "overlay_allocation": [1.0, 1.0],
+            "vix_label": ["vix_low", "vix_low"],
+            "ixic_trend_label": ["ixic_up", "ixic_up"],
+            "rel_strength_label": ["qqq_strong", "qqq_strong"],
+        }
+    )
+
+    merged = QqqUsdtSignalAdapter._attach_daily_columns(bars, signal_path)
+
+    assert list(merged["date"]) == list(bars["date"])
+    assert all(merged["daily_signal_timestamp"] == pd.Timestamp("2026-05-22T00:00:00Z"))
+    assert "daily_signal_timestamp_x" not in merged.columns
+    assert "daily_signal_timestamp_y" not in merged.columns
+
+
+def test_qqq_replay_attach_keeps_daily_signal_timestamp() -> None:
+    bars = pd.DataFrame(
+        {
+            "date": [
+                pd.Timestamp("2026-05-22T12:00:00Z"),
+                pd.Timestamp("2026-05-22T16:00:00Z"),
+            ],
+            "open": [700.0, 705.0],
+            "high": [710.0, 712.0],
+            "low": [695.0, 702.0],
+            "close": [706.0, 711.0],
+        }
+    )
+    signal_path = pd.DataFrame(
+        {
+            "date": [
+                pd.Timestamp("2026-05-22T00:00:00Z"),
+                pd.Timestamp("2026-05-23T00:00:00Z"),
+            ],
+            "position": ["TQQQ", "TQQQ"],
+        }
+    )
+
+    merged = attach_daily_state(bars, signal_path)
+
+    assert list(merged["date"]) == list(bars["date"])
+    assert all(merged["daily_signal_timestamp"] == pd.Timestamp("2026-05-22T00:00:00Z"))
 
 
 def test_qqq_closed_bar_filter_drops_incomplete_4h_bar() -> None:

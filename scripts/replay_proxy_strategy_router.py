@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 
 from bot.btc_route_scoring import btc_effective_leverage, btc_route_score  # noqa: E402
 from bot.okx_executor import ExecutorConfig  # noqa: E402
-from bot.qqq_runtime_policy import market_time_window_status  # noqa: E402
+from bot.qqq_runtime_policy import market_time_window_status, timeframe_to_timedelta  # noqa: E402
 from scripts.backtest_config_report import load_dataframe, parse_end_timestamp  # noqa: E402
 from scripts.replay_qqq_usdt_10x import load_funding  # noqa: E402
 from scripts.scan_qqq_usdt_4h_triggers import attach_daily_state, load_okx_4h, load_signal_path  # noqa: E402
@@ -31,6 +31,7 @@ from strategy.scalp_robust_v2_core import ScalpRobustEngine, dataframe_to_candle
 DEFAULT_BTC_CONFIG = ROOT / "config" / "config.paper.high-leverage-structure.json"
 DEFAULT_QQQ_PROXY_CONFIG = ROOT / "config" / "config.paper.tqqq-only-strict-recovery-frozen.json"
 DEFAULT_QQQ_USDT_CONFIG = ROOT / "config" / "config.paper.qqq-usdt-aggressive-frozen.json"
+DEFAULT_ROUTER_CONFIG = ROOT / "config" / "config.paper.strategy-router.json"
 DEFAULT_BTC_15M = ROOT / "data" / "okx" / "futures" / "BTC_USDT_USDT-15m-futures.feather"
 DEFAULT_BTC_4H = ROOT / "data" / "okx" / "futures" / "BTC_USDT_USDT-4h-futures.feather"
 DEFAULT_BTC_REPORT = ROOT / "var" / "reports" / "backtest_config.paper.high-leverage-structure_2022-01-01_to_2026-05-29.json"
@@ -116,6 +117,77 @@ def qqq_replay_risk_on_allowed(config: dict[str, Any], timestamp: Any) -> tuple[
         now=pd.Timestamp(timestamp),
     )
     return bool(status["open"]), status
+
+
+def _utc_timestamp(value: Any) -> pd.Timestamp | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    timestamp = pd.Timestamp(value)
+    if pd.isna(timestamp):
+        return None
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
+def qqq_replay_stop_reentry_status(
+    *,
+    enabled: bool,
+    last_stop_hit: dict[str, Any] | None,
+    candidate_timestamp: Any,
+    daily_signal_timestamp: Any,
+    reference_price: float,
+    execution_timeframe: str,
+    min_closed_bars: int,
+    price_buffer_pct: float,
+    allow_new_daily_signal: bool,
+) -> dict[str, Any]:
+    if not bool(enabled):
+        return {"enabled": False, "blocked": False}
+    if not last_stop_hit:
+        return {"enabled": True, "blocked": False, "reason": "no_prior_stop"}
+
+    stop_price = float(last_stop_hit.get("stop_price", 0.0) or 0.0)
+    buffer_pct = max(float(price_buffer_pct or 0.0), 0.0)
+    required_price = stop_price * (1.0 + buffer_pct / 100.0) if stop_price > 0 else 0.0
+    price_recovered = stop_price <= 0 or float(reference_price) >= required_price
+
+    current_daily_signal = None if pd.isna(daily_signal_timestamp) else daily_signal_timestamp
+    stopped_daily_signal = last_stop_hit.get("daily_signal_timestamp")
+    current_daily_signal_valid = current_daily_signal is not None and str(current_daily_signal).strip() != ""
+    new_daily_signal = bool(
+        allow_new_daily_signal
+        and current_daily_signal_valid
+        and stopped_daily_signal
+        and str(current_daily_signal) != str(stopped_daily_signal)
+    )
+
+    min_bars = max(int(min_closed_bars or 0), 0)
+    stop_bar = _utc_timestamp(last_stop_hit.get("stop_bar_timestamp") or last_stop_hit.get("candidate_timestamp"))
+    candidate_bar = _utc_timestamp(candidate_timestamp)
+    bar_delta = timeframe_to_timedelta(str(execution_timeframe or "4h"))
+    elapsed_bars = (
+        int(max(0, (candidate_bar - stop_bar) / bar_delta))
+        if stop_bar is not None and candidate_bar is not None and bar_delta > pd.Timedelta(0)
+        else 0
+    )
+    bars_elapsed = elapsed_bars >= min_bars
+    time_condition = new_daily_signal or bars_elapsed
+
+    return {
+        "enabled": True,
+        "blocked": not (price_recovered and time_condition),
+        "price_recovered": price_recovered,
+        "time_condition": time_condition,
+        "new_daily_signal": new_daily_signal,
+        "bars_elapsed": elapsed_bars,
+        "min_closed_bars": min_bars,
+        "stop_price": stop_price,
+        "required_reentry_price": required_price,
+        "reference_price": float(reference_price),
+        "stopped_daily_signal": stopped_daily_signal,
+        "current_daily_signal": current_daily_signal,
+    }
 
 
 def slim_btc_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
@@ -470,6 +542,10 @@ def build_qqq_usdt_leveraged_path(
     *,
     config_path: Path,
     initial_capital: float,
+    stop_reentry_guard_enabled: bool = True,
+    stop_reentry_min_closed_bars: int = 3,
+    stop_reentry_price_buffer_pct: float = 0.25,
+    stop_reentry_allow_new_daily_signal: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     config = json.loads(config_path.read_text())
     signal_config, signal_path = load_signal_path(ROOT / str(config["signal_source"]))
@@ -484,7 +560,7 @@ def build_qqq_usdt_leveraged_path(
     )
     merged["funding_rate_value"] = merged["funding_rate_value"].fillna(0.0)
     merged = merged.sort_values("date").reset_index(drop=True)
-    for column in ("allow_long", "high_growth", "defense_state", "breakout_12"):
+    for column in ("allow_long", "high_growth", "defense_state", "breakout_12", "daily_signal_timestamp", "close"):
         merged[f"signal_{column}"] = merged[column].shift(1)
     merged["signal_date"] = merged["date"].shift(1)
 
@@ -509,9 +585,15 @@ def build_qqq_usdt_leveraged_path(
     risk_on_blocked_leverage_increases = 0
     risk_off_rebalance_bars = 0
     risk_on_rebalance_bars = 0
+    stop_reentry_guard_blocked = 0
+    same_signal_stop_locked = 0
+    last_stop_hit: dict[str, Any] | None = None
 
     for row in merged.itertuples(index=False):
         start_capital = capital
+        candidate_timestamp = None if pd.isna(row.signal_date) else pd.Timestamp(row.signal_date)
+        candidate_daily_signal = None if pd.isna(row.signal_daily_signal_timestamp) else row.signal_daily_signal_timestamp
+        candidate_reference_price = float(row.signal_close) if not pd.isna(row.signal_close) else float(row.close)
         signal = {
             "allow_long": row.signal_allow_long,
             "high_growth": row.signal_high_growth,
@@ -526,8 +608,12 @@ def build_qqq_usdt_leveraged_path(
         exited = False
         stop_hit = False
         risk_on_blocked = False
+        reentry_blocked = False
+        same_signal_locked = False
         risk_on_open: bool | None = None
         risk_on_reason: str | None = None
+        entry_block_reason: str | None = None
+        reentry_status: dict[str, Any] | None = None
         funding_cost = 0.0
         fee_cost = 0.0
         rebalance_fee_cost = 0.0
@@ -549,11 +635,41 @@ def build_qqq_usdt_leveraged_path(
             current_trade = None
             current_leverage = 0.0
             leverage_now = 0.0
+            last_stop_hit = None
+
+        if not holding and not allow_now:
+            last_stop_hit = None
 
         if allow_now and not holding and target_leverage > 0.0:
             risk_on_open, risk_on_status = qqq_replay_risk_on_allowed(config, row.date)
             risk_on_reason = str(risk_on_status.get("reason"))
+            entry_allowed = bool(risk_on_open)
             if risk_on_open:
+                stop_timestamp = last_stop_hit.get("candidate_timestamp") if isinstance(last_stop_hit, dict) else None
+                if stop_timestamp and candidate_timestamp is not None and str(stop_timestamp) == str(candidate_timestamp):
+                    same_signal_locked = True
+                    same_signal_stop_locked += 1
+                else:
+                    reentry_status = qqq_replay_stop_reentry_status(
+                        enabled=bool(stop_reentry_guard_enabled),
+                        last_stop_hit=last_stop_hit,
+                        candidate_timestamp=candidate_timestamp,
+                        daily_signal_timestamp=candidate_daily_signal,
+                        reference_price=candidate_reference_price,
+                        execution_timeframe=str(config.get("execution_timeframe", "4h")),
+                        min_closed_bars=int(stop_reentry_min_closed_bars),
+                        price_buffer_pct=float(stop_reentry_price_buffer_pct),
+                        allow_new_daily_signal=bool(stop_reentry_allow_new_daily_signal),
+                    )
+                    reentry_blocked = bool(reentry_status.get("blocked"))
+                    if reentry_blocked:
+                        stop_reentry_guard_blocked += 1
+                if same_signal_locked or reentry_blocked:
+                    entry_allowed = False
+                    entry_block_reason = "same_signal_stop_lock" if same_signal_locked else "stop_reentry_guard"
+                else:
+                    last_stop_hit = None
+            if entry_allowed:
                 current_leverage = target_leverage
                 leverage_now = current_leverage
                 fee_cost += per_side_cost * current_leverage
@@ -565,8 +681,10 @@ def build_qqq_usdt_leveraged_path(
                 peak_close = float(row.open)
                 current_trade = {"entry_date": str(pd.Timestamp(row.date)), "entry_capital": capital}
             else:
-                risk_on_blocked = True
-                risk_on_blocked_entries += 1
+                if not same_signal_locked and not reentry_blocked:
+                    risk_on_blocked = True
+                    risk_on_blocked_entries += 1
+                    entry_block_reason = risk_on_reason
 
         if holding and allow_now and target_leverage != current_leverage:
             leverage_delta = abs(target_leverage - current_leverage)
@@ -593,12 +711,13 @@ def build_qqq_usdt_leveraged_path(
             open_price = float(row.open)
             low_price = float(row.low)
             close_price = float(row.close)
+            previous_stop = float(stop_price)
             peak_close = max(peak_close, close_price)
-            stop_price = max(stop_price, peak_close * (1.0 - stop_loss_pct / 100.0))
+            updated_stop_price = max(stop_price, peak_close * (1.0 - stop_loss_pct / 100.0))
 
-            if low_price <= stop_price:
+            if previous_stop > 0 and low_price <= previous_stop:
                 stop_hit = True
-                exit_price = stop_price
+                exit_price = previous_stop
                 bar_ret = exit_price / open_price - 1.0 if open_price > 0 else 0.0
                 capital *= 1.0 + leverage_now * bar_ret
                 exit_fee_cost = per_side_cost * leverage_now
@@ -616,7 +735,15 @@ def build_qqq_usdt_leveraged_path(
                     )
                 current_trade = None
                 current_leverage = 0.0
+                stopped_daily_signal = None if pd.isna(row.daily_signal_timestamp) else str(row.daily_signal_timestamp)
+                last_stop_hit = {
+                    "candidate_timestamp": str(pd.Timestamp(row.date)),
+                    "stop_bar_timestamp": str(pd.Timestamp(row.date)),
+                    "daily_signal_timestamp": stopped_daily_signal,
+                    "stop_price": float(previous_stop),
+                }
             else:
+                stop_price = updated_stop_price
                 bar_ret = close_price / open_price - 1.0 if open_price > 0 else 0.0
                 capital *= 1.0 + leverage_now * bar_ret
                 funding_cost = max(float(row.funding_rate_value), 0.0) * leverage_now
@@ -641,6 +768,11 @@ def build_qqq_usdt_leveraged_path(
                 "risk_on_window_open": risk_on_open,
                 "risk_on_window_reason": risk_on_reason,
                 "risk_on_blocked": bool(risk_on_blocked),
+                "entry_block_reason": entry_block_reason,
+                "same_signal_stop_locked": bool(same_signal_locked),
+                "stop_reentry_guard_blocked": bool(reentry_blocked),
+                "stop_reentry_bars_elapsed": int(reentry_status.get("bars_elapsed", 0)) if reentry_status else 0,
+                "stop_reentry_price_recovered": bool(reentry_status.get("price_recovered", False)) if reentry_status else False,
                 "funding_cost": float(funding_cost),
                 "fee_cost": float(fee_cost),
                 "rebalance_fee_cost": float(rebalance_fee_cost),
@@ -710,11 +842,17 @@ def build_qqq_usdt_leveraged_path(
                 "market_hours_start": str(config.get("qqq_market_hours_start", "09:30")),
                 "market_hours_end": str(config.get("qqq_market_hours_end", "16:00")),
                 "market_calendar": str(config.get("qqq_market_calendar", "NYSE")),
+                "stop_reentry_guard_enabled": bool(stop_reentry_guard_enabled),
+                "stop_reentry_min_closed_bars": int(stop_reentry_min_closed_bars),
+                "stop_reentry_price_buffer_pct": float(stop_reentry_price_buffer_pct),
+                "stop_reentry_allow_new_daily_signal": bool(stop_reentry_allow_new_daily_signal),
             },
             "risk_on_blocked_entries": int(risk_on_blocked_entries),
             "risk_on_blocked_leverage_increases": int(risk_on_blocked_leverage_increases),
             "risk_off_rebalance_bars": int(risk_off_rebalance_bars),
             "risk_on_rebalance_bars": int(risk_on_rebalance_bars),
+            "same_signal_stop_locked": int(same_signal_stop_locked),
+            "stop_reentry_guard_blocked": int(stop_reentry_guard_blocked),
             "start": str(path_4h.iloc[0]["date"]),
             "end": str(path_4h.iloc[-1]["date"]),
         },
@@ -802,6 +940,7 @@ def run_router(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Proxy historical route replay: BTC real strategy vs QQQ ETF proxy or QQQ/USDT leveraged leg.")
+    parser.add_argument("--router-config", default=str(DEFAULT_ROUTER_CONFIG))
     parser.add_argument("--btc-config", default=str(DEFAULT_BTC_CONFIG))
     parser.add_argument("--qqq-proxy-config", default=str(DEFAULT_QQQ_PROXY_CONFIG))
     parser.add_argument("--qqq-usdt-config", default=str(DEFAULT_QQQ_USDT_CONFIG))
@@ -827,6 +966,7 @@ def main() -> None:
     start = pd.Timestamp(args.start_date, tz="UTC")
     end = parse_end_timestamp(args.end_date)
     initial_capital = float(args.initial_capital)
+    router_config = json.loads(Path(args.router_config).read_text()) if Path(args.router_config).exists() else {}
 
     btc_source = "engine" if bool(args.recompute_btc_engine) else str(args.btc_source)
     if btc_source == "engine":
@@ -856,6 +996,10 @@ def main() -> None:
         qqq_path, qqq_meta = build_qqq_usdt_leveraged_path(
             config_path=Path(args.qqq_usdt_config),
             initial_capital=initial_capital,
+            stop_reentry_guard_enabled=bool(router_config.get("qqq_stop_reentry_guard_enabled", True)),
+            stop_reentry_min_closed_bars=int(router_config.get("qqq_stop_reentry_min_closed_bars", 3)),
+            stop_reentry_price_buffer_pct=float(router_config.get("qqq_stop_reentry_price_buffer_pct", 0.25)),
+            stop_reentry_allow_new_daily_signal=bool(router_config.get("qqq_stop_reentry_allow_new_daily_signal", True)),
         )
     else:
         qqq_path, qqq_meta = build_qqq_proxy_path(
@@ -972,11 +1116,31 @@ def main() -> None:
         f"- QQQ proxy days: `{summary['selection']['qqq_proxy_days']}`",
         f"- Cash days: `{summary['selection']['cash_days']}`",
         f"- Switches: `{summary['selection']['switches']}`",
-        "",
-        "## Interpretation",
-        "",
-        *interpretation,
     ]
+    if str(args.qqq_source) == "usdt_leveraged":
+        qqq_summary = summary["source_summaries"]["qqq_proxy_summary"]
+        policy = qqq_summary.get("execution_policy", {})
+        md.extend(
+            [
+                "",
+                "## QQQ Execution Guards",
+                "",
+                f"- Stop reentry guard: `{policy.get('stop_reentry_guard_enabled')}`",
+                f"- Reclaim buffer: `{policy.get('stop_reentry_price_buffer_pct')}%`",
+                f"- Min closed 4h bars: `{policy.get('stop_reentry_min_closed_bars')}`",
+                f"- Allow new daily signal reset: `{policy.get('stop_reentry_allow_new_daily_signal')}`",
+                f"- Same-signal stop locks: `{qqq_summary.get('same_signal_stop_locked')}`",
+                f"- Reentry guard blocks: `{qqq_summary.get('stop_reentry_guard_blocked')}`",
+            ]
+        )
+    md.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            *interpretation,
+        ]
+    )
     out_md.write_text("\n".join(md) + "\n")
 
     print(out_json)

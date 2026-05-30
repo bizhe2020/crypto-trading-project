@@ -58,8 +58,9 @@ BTC route score 已统一到：
 - 标的：`QQQ/USDT:USDT`
 - 信号源：`config/config.paper.tqqq-only-strict-recovery-frozen.json`
 - 执行周期：`4h`
-- 杠杆：`base10/offense10/defense1`
+- 杠杆：`fixed10`（`base/offense/defense` 均为 `10x`，defense 只保留为上下文标签）
 - 止损：`3.5%`
+- 止损后重开保护：同 4h signal 禁止立刻重开；随后需价格站回 `stop_price + 0.25%`，且新日线信号刷新或等待 `3` 根闭合 4h
 - 止盈：`none`
 - data refresh：启用
 - daily signal refresh：启用
@@ -83,20 +84,21 @@ QQQ route score：
 
 - 区间：`2026-03-04 -> 2026-05-29`
 - BTC source：`var/high_leverage_expansion/frozen_live_core_20260515.json`
-- QQQ source：`QQQ/USDT leveraged base10/off10/def1`
+- QQQ source：`QQQ/USDT leveraged fixed10`
+- QQQ stop 口径：使用上一根本地 stop 触发，不用同根 K 上移后的新 stop；replay 已同步 live 的止损后重开保护
 
 结果：
 
-- Router：`454.32% / DD 15.42%`
-- QQQ-only：`301.04% / DD 6.78%`
+- Router：`202.01% / DD 26.02%`
+- QQQ-only：`124.82% / DD 26.02%`
 - BTC-only：`89.79% / DD 15.25%`
-- 选择：BTC `29` 天，QQQ `28` 天，Cash `30` 天
+- 选择：BTC `27` 天，QQQ `30` 天，Cash `30` 天
 - 切换：`18` 次
 
 输出：
 
-- `var/reports/proxy_strategy_router_replay_research_frozen_btc_qqq_usdt_leveraged_def1_btc_layered_score_20260529.json`
-- `var/reports/proxy_strategy_router_replay_research_frozen_btc_qqq_usdt_leveraged_def1_btc_layered_score_20260529.md`
+- `var/reports/proxy_strategy_router_replay_research_frozen_btc_qqq_usdt_fixed10_closed_nyse_20260530.json`
+- `var/reports/proxy_strategy_router_replay_research_frozen_btc_qqq_usdt_fixed10_closed_nyse_20260530.md`
 
 ## Current Paper Preview
 
@@ -134,17 +136,17 @@ Router 执行层已启用 append-only JSONL 审计日志：
 已通过：
 
 ```bash
-python3 -m py_compile bot/btc_route_scoring.py bot/btc_signal_adapter.py scripts/replay_proxy_strategy_router.py tests/test_strategy_router.py
+python3 -m py_compile bot/qqq_usdt_executor.py bot/qqq_usdt_signal_adapter.py bot/strategy_router.py scripts/replay_proxy_strategy_router.py scripts/scan_qqq_usdt_4h_triggers.py tests/test_strategy_router.py
 python3 -m pytest tests/test_strategy_router.py -q
 ```
 
 结果：
 
-- `15 passed`
+- `40 passed`
 
 完整 `pytest -q` 在临时 `new_strategy_research` worktree 中有 4 个既有 Tokyo 审计测试失败，原因是本地未提交的 `var/tokyo_audit/config.live.high-leverage-structure.json` 缺失，不是本次 router frozen 改动导致。
 
-`bot/run_strategy_router.py --config config/config.paper.strategy-router.json --evaluate-once` 在临时 worktree 中会因为缺少本地 `data/okx/futures/QQQ_USDT_USDT-4h-futures.feather` 失败。该数据文件属于本地行情数据，不随 git 提交。
+`bot/run_strategy_router.py --config /tmp/strategy_router_guard_smoke_config.json --json --evaluate-once` 在临时 worktree 挂载主工作区本地行情数据后通过，选中 `QQQ/USDT`，route score `96.0`。Yahoo daily refresh 返回 `403`，但 stale guard 仍显示最新日线未过期。
 
 ## Deployment Boundary
 

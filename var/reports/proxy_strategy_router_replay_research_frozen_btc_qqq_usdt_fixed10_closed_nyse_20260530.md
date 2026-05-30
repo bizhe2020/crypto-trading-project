@@ -6,7 +6,7 @@ This is a proxy history replay, not a real long-history QQQ/USDT contract backte
 
 - Period: `2026-03-04 -> 2026-05-29`
 - Days: `87`
-- BTC leg: research frozen live-shadow artifact `/private/tmp/crypto-trading-new-strategy-research/var/high_leverage_expansion/frozen_live_core_20260515.json`
+- BTC leg: research frozen live-shadow artifact `/private/tmp/crypto-trading-new-strategy-research-work/var/high_leverage_expansion/frozen_live_core_20260515.json`
 - QQQ leg: QQQ/USDT leveraged aggressive frozen
 - Router cadence: daily
 
@@ -22,6 +22,15 @@ This is a proxy history replay, not a real long-history QQQ/USDT contract backte
 - QQQ proxy days: `30`
 - Cash days: `30`
 - Switches: `18`
+
+## QQQ Execution Guards
+
+- Stop reentry guard: `True`
+- Reclaim buffer: `0.25%`
+- Min closed 4h bars: `3`
+- Allow new daily signal reset: `True`
+- Same-signal stop locks: `0`
+- Reentry guard blocks: `0`
 
 ## Interpretation
 

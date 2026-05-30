@@ -97,6 +97,7 @@ def load_okx_4h(path: Path) -> pd.DataFrame:
 
 def attach_daily_state(okx_4h: pd.DataFrame, signal_path: pd.DataFrame) -> pd.DataFrame:
     daily = signal_path[["date", "position"]].copy().sort_values("date").reset_index(drop=True)
+    daily["daily_signal_timestamp"] = daily["date"]
     merged = pd.merge_asof(
         okx_4h.sort_values("date"),
         daily,

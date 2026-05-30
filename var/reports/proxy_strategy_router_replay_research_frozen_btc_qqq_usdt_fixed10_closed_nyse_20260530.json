@@ -60,7 +60,7 @@
     "switches": 18
   },
   "source_summaries": {
-    "btc_artifact": "/private/tmp/crypto-trading-new-strategy-research/var/high_leverage_expansion/frozen_live_core_20260515.json",
+    "btc_artifact": "/private/tmp/crypto-trading-new-strategy-research-work/var/high_leverage_expansion/frozen_live_core_20260515.json",
     "btc_proxy_method": "frozen_live_shadow_events_closed_on_exit_day",
     "btc_full_engine_metrics": {
       "total_return_pct": 1589905.71,
@@ -204,12 +204,18 @@
         "market_hours_timezone": "America/New_York",
         "market_hours_start": "09:30",
         "market_hours_end": "16:00",
-        "market_calendar": "NYSE"
+        "market_calendar": "NYSE",
+        "stop_reentry_guard_enabled": true,
+        "stop_reentry_min_closed_bars": 3,
+        "stop_reentry_price_buffer_pct": 0.25,
+        "stop_reentry_allow_new_daily_signal": true
       },
       "risk_on_blocked_entries": 0,
       "risk_on_blocked_leverage_increases": 0,
       "risk_off_rebalance_bars": 0,
       "risk_on_rebalance_bars": 0,
+      "same_signal_stop_locked": 0,
+      "stop_reentry_guard_blocked": 0,
       "start": "2026-03-04 08:00:00+00:00",
       "end": "2026-05-29 08:00:00+00:00"
     }

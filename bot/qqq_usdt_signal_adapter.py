@@ -94,6 +94,7 @@ class QqqUsdtSignalAdapter:
                 "data_refresh": refresh_status,
                 "daily_signal_refresh": signal_refresh_status,
                 "daily_signal_stale": stale_status,
+                "daily_signal_timestamp": str(pd.Timestamp(latest.get("daily_signal_timestamp", latest.get("date")))),
                 "entry_type": latest.get("entry_type"),
                 "overlay_mode": bool(latest.get("overlay_mode", False)),
                 "overlay_allocation": float(latest.get("overlay_allocation", 0.0) or 0.0),
@@ -229,8 +230,10 @@ class QqqUsdtSignalAdapter:
                 "rel_strength_label",
             ]
         ].copy()
+        daily["daily_signal_timestamp"] = daily["date"]
+        left = bars.drop(columns=["daily_signal_timestamp"], errors="ignore")
         merged = pd.merge_asof(
-            bars.sort_values("date"),
+            left.sort_values("date"),
             daily.sort_values("date"),
             on="date",
             direction="backward",

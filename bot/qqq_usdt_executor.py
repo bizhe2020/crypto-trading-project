@@ -13,7 +13,7 @@ from typing import Any, Callable
 import pandas as pd
 
 from bot.okx_client import OkxClient, OkxCredentials
-from bot.qqq_runtime_policy import filter_closed_bars, market_time_window_status
+from bot.qqq_runtime_policy import filter_closed_bars, market_time_window_status, timeframe_to_timedelta
 from bot.state_store import StateStore
 from bot.strategy_router import RoutedSignalCandidate, StrategyRouterConfig
 from scripts.scan_qqq_usdt_4h_triggers import attach_daily_state, load_okx_4h, load_signal_path
@@ -152,13 +152,19 @@ class QqqUsdtExecutionEngine:
                 actions.append(self.close_position(reason="qqq_trailing_stop_hit"))
             else:
                 actions.append({"status": "skipped", "reason": "qqq_stop_hit_no_exchange_position"})
+            stop_timestamp = context.candidate.get("timestamp")
+            metadata = context.candidate.get("metadata") if isinstance(context.candidate.get("metadata"), dict) else {}
+            current_position = state.get("position") if isinstance(state.get("position"), dict) else {}
+            hit_stop_price = float(current_position.get("stop_price", context.stop_price) or context.stop_price)
             self.save_state(
                 {
                     "position": None,
                     "last_candidate": context.candidate,
                     "last_stop_hit": {
-                        "candidate_timestamp": context.candidate.get("timestamp"),
-                        "stop_price": context.stop_price,
+                        "candidate_timestamp": stop_timestamp,
+                        "stop_bar_timestamp": stop_timestamp,
+                        "daily_signal_timestamp": metadata.get("daily_signal_timestamp"),
+                        "stop_price": hit_stop_price,
                         "latest_low": context.latest_low,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     },
@@ -189,7 +195,9 @@ class QqqUsdtExecutionEngine:
                         "market_window": risk_on_status,
                     }
                 )
-                self.save_state({"position": None, "last_candidate": context.candidate})
+                self.save_state(
+                    {"position": None, "last_candidate": context.candidate, "last_stop_hit": state.get("last_stop_hit")}
+                )
                 return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
             if self._same_signal_stop_locked(context):
                 actions.append(
@@ -198,6 +206,20 @@ class QqqUsdtExecutionEngine:
                         "reason": "qqq_stop_hit_same_signal_lock",
                         "candidate_timestamp": context.candidate.get("timestamp"),
                     }
+                )
+                return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
+            reentry_status = self._stop_reentry_status(context)
+            if bool(reentry_status.get("blocked")):
+                actions.append(
+                    {
+                        "status": "skipped",
+                        "reason": "qqq_stop_reentry_guard",
+                        "action": "open_qqq_usdt_long",
+                        **reentry_status,
+                    }
+                )
+                self.save_state(
+                    {"position": None, "last_candidate": context.candidate, "last_stop_hit": state.get("last_stop_hit")}
                 )
                 return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
             open_result = self.open_position(context)
@@ -475,6 +497,68 @@ class QqqUsdtExecutionEngine:
         stop_timestamp = last_stop_hit.get("candidate_timestamp")
         candidate_timestamp = context.candidate.get("timestamp")
         return bool(stop_timestamp and candidate_timestamp and str(stop_timestamp) == str(candidate_timestamp))
+
+    @staticmethod
+    def _utc_timestamp(value: Any) -> pd.Timestamp | None:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        timestamp = pd.Timestamp(value)
+        if pd.isna(timestamp):
+            return None
+        if timestamp.tzinfo is None:
+            return timestamp.tz_localize("UTC")
+        return timestamp.tz_convert("UTC")
+
+    def _stop_reentry_status(self, context: QqqOrderContext) -> dict[str, Any]:
+        if not bool(getattr(self.router_config, "qqq_stop_reentry_guard_enabled", True)):
+            return {"enabled": False, "blocked": False}
+        state = self.load_state()
+        last_stop_hit = state.get("last_stop_hit") if isinstance(state.get("last_stop_hit"), dict) else {}
+        if not last_stop_hit:
+            return {"enabled": True, "blocked": False, "reason": "no_prior_stop"}
+
+        stop_price = float(last_stop_hit.get("stop_price", 0.0) or 0.0)
+        buffer_pct = max(float(getattr(self.router_config, "qqq_stop_reentry_price_buffer_pct", 0.25) or 0.0), 0.0)
+        required_price = stop_price * (1.0 + buffer_pct / 100.0) if stop_price > 0 else 0.0
+        price_recovered = stop_price <= 0 or float(context.reference_price) >= required_price
+
+        metadata = context.candidate.get("metadata") if isinstance(context.candidate.get("metadata"), dict) else {}
+        current_daily_signal = metadata.get("daily_signal_timestamp")
+        stopped_daily_signal = last_stop_hit.get("daily_signal_timestamp")
+        current_daily_signal_valid = current_daily_signal is not None and str(current_daily_signal).strip() != ""
+        new_daily_signal = bool(
+            getattr(self.router_config, "qqq_stop_reentry_allow_new_daily_signal", True)
+            and current_daily_signal_valid
+            and stopped_daily_signal
+            and str(current_daily_signal) != str(stopped_daily_signal)
+        )
+
+        min_bars = max(int(getattr(self.router_config, "qqq_stop_reentry_min_closed_bars", 3) or 0), 0)
+        stop_bar = self._utc_timestamp(last_stop_hit.get("stop_bar_timestamp") or last_stop_hit.get("candidate_timestamp"))
+        candidate_bar = self._utc_timestamp(context.candidate.get("timestamp"))
+        bar_delta = timeframe_to_timedelta(str(self.qqq_config.get("execution_timeframe", "4h")))
+        elapsed_bars = (
+            int(max(0, (candidate_bar - stop_bar) / bar_delta))
+            if stop_bar is not None and candidate_bar is not None and bar_delta > pd.Timedelta(0)
+            else 0
+        )
+        bars_elapsed = elapsed_bars >= min_bars
+        time_condition = new_daily_signal or bars_elapsed
+
+        return {
+            "enabled": True,
+            "blocked": not (price_recovered and time_condition),
+            "price_recovered": price_recovered,
+            "time_condition": time_condition,
+            "new_daily_signal": new_daily_signal,
+            "bars_elapsed": elapsed_bars,
+            "min_closed_bars": min_bars,
+            "stop_price": stop_price,
+            "required_reentry_price": required_price,
+            "reference_price": float(context.reference_price),
+            "stopped_daily_signal": stopped_daily_signal,
+            "current_daily_signal": current_daily_signal,
+        }
 
     def _extract_available_usdt(self, balance: dict[str, Any]) -> float:
         usdt = balance.get("USDT") if isinstance(balance, dict) else None

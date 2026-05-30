@@ -9,6 +9,10 @@
 - `1h` 入场优化：已审，当前样本无额外增益，不纳入 frozen
 - 杠杆结构：`fixed10`
 - 止损：`3.5%`
+- 止损后重开保护：开启
+  - 同一根 4h candidate 止损后禁止立刻重开
+  - 之后必须价格重新站回 `stop_price + 0.25%`
+  - 并且满足“新日线信号刷新”或“至少等待 `3` 根闭合 4h”
 - 止盈：`none`
 - 配置成本口径：
   - `taker_fee_rate = 0.0005`
@@ -47,6 +51,7 @@
 - 当前主候选固定为 `fixed10`
 - `defense` 分段、确认后降杠杆、offense 0-1 连续化均已扫过；在 live-like 口径下，`def1` 因频繁调仓和错过风险上调窗口明显弱于固定 `10x`
 - 盈利滚仓只作为补仓到目标 notional 的 live 执行层 overlay，不改变初始 `3.5%` stop，也不允许 stop 下移
+- 止损后重开保护只影响 QQQ leg 自己，不改变 BTC/QQQ router 评分；它的目的只是避免 QQQ 日线信号仍为多头时，4h 执行止损后立即追回造成震荡损耗。
 - 当前样本里不值得加入：
   - `failed breakout guard`
   - `touch lock`
