@@ -1394,6 +1394,31 @@ def test_router_telegram_route_message_uses_router_context() -> None:
     payload = {
         "previous_executed_strategy": "btc_sota",
         "current_executed_strategy": "qqq_usdt_aggressive",
+        "execution_diagnostics": {
+            "status": "ok",
+            "runtime": {"pid": 1234, "updated_at": 1780065600},
+            "router": {
+                "selected_strategy": "qqq_usdt_aggressive",
+                "current_executed_strategy": "qqq_usdt_aggressive",
+            },
+            "data": {
+                "data_refresh_status": "ok",
+                "daily_refresh_status": "ok",
+                "daily_stale": False,
+                "daily_signal_timestamp": "2026-05-28 12:00:00+00:00",
+            },
+            "exchange": {
+                "btc": {"long_contracts": 0.0, "short_contracts": 0.0},
+                "qqq": {
+                    "exchange_contracts": 3.0,
+                    "local_contracts": 3.0,
+                    "exchange_stop_price": 714.25,
+                    "stop_status": "found",
+                    "stop_algo_id": "3609727653387042816",
+                },
+            },
+            "items": [],
+        },
     }
     route = {
         "decision_reason": "best_route_score",
@@ -1415,6 +1440,9 @@ def test_router_telegram_route_message_uses_router_context() -> None:
     assert "BTC SOTA" in message
     assert "10.0x" in message
     assert "lag 1" in message
+    assert "实盘Gap: OK" in message
+    assert "QQQ ex 3 / state 3" in message
+    assert "algo 3609...042816" in message
 
 
 def test_router_data_warning_detects_stale_qqq_signal() -> None:
@@ -1435,6 +1463,89 @@ def test_router_data_warning_detects_stale_qqq_signal() -> None:
     warning = StrategyRouterExecutionEngine._data_warning(route)
     assert warning is not None
     assert "QQQ 日线信号过期" in warning["message"]
+
+
+def test_router_execution_diagnostics_detects_qqq_exchange_gap(tmp_path: Path) -> None:
+    config = StrategyRouterConfig(
+        mode="live",
+        state_path=str(tmp_path / "router.json"),
+        btc_strategy_config="config/config.paper.high-leverage-structure.json",
+        qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+        qqq_enable_exchange_stop=True,
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.config = config
+
+    class FakeBtc:
+        config = type("Config", (), {"symbol": "BTC/USDT:USDT"})()
+
+        def _load_snapshot_payload(self):
+            return {"position": None}
+
+        def _fetch_position_state(self, pos_side):
+            return {"contracts": 0.0, "pos_side": pos_side}
+
+    class FakeQqq:
+        symbol = "QQQ/USDT:USDT"
+
+        def load_state(self):
+            return {
+                "position": {
+                    "exchange_contracts": 3.0,
+                    "stop_price": 714.25,
+                    "exchange_attach_algo_id": "algo-local",
+                }
+            }
+
+        def fetch_position_state(self):
+            return {"contracts": 0.0, "notional_usdt": 0.0, "raw": {"info": {"closeOrderAlgo": []}}}
+
+        def _extract_exchange_stop_fields(self, exchange_position):
+            return {"status": "not_found", "algo_id": None, "algo_client_id": None, "stop_price": None}
+
+    engine.btc_executor = FakeBtc()
+    engine.qqq_executor = FakeQqq()
+    payload = {
+        "status": "ok",
+        "route": {"selected_strategy": "qqq_usdt_aggressive", "selected_route_score": 96.0},
+        "previous_executed_strategy": "qqq_usdt_aggressive",
+        "current_executed_strategy": "qqq_usdt_aggressive",
+        "execution_results": [{"strategy": "qqq_usdt_aggressive", "result": {"status": "ok"}}],
+        "updated_at": 1780065600,
+    }
+
+    diagnostics = engine._build_execution_diagnostics(payload)
+
+    assert diagnostics["status"] == "critical"
+    assert diagnostics["exchange"]["qqq"]["exchange_contracts"] == 0.0
+    assert any(item["key"] == "router_qqq_exchange_flat" for item in diagnostics["items"])
+
+
+def test_router_gap_warning_formats_actionable_message() -> None:
+    diagnostics = {
+        "status": "critical",
+        "runtime": {"pid": 1234, "updated_at": 1780065600},
+        "router": {"selected_strategy": "qqq_usdt_aggressive", "current_executed_strategy": "qqq_usdt_aggressive"},
+        "data": {"data_refresh_status": "ok", "daily_refresh_status": "ok", "daily_stale": False},
+        "exchange": {
+            "btc": {"long_contracts": 0.0, "short_contracts": 0.0},
+            "qqq": {"exchange_contracts": 0.0, "local_contracts": 3.0, "stop_status": "not_found"},
+        },
+        "items": [
+            {
+                "severity": "critical",
+                "key": "router_qqq_exchange_flat",
+                "message": "router 当前执行 QQQ，但交易所 QQQ 仓位为 0",
+            }
+        ],
+    }
+
+    warning = StrategyRouterExecutionEngine._gap_warning(diagnostics)
+
+    assert warning is not None
+    assert "Router 实盘Gap告警" in warning["message"]
+    assert "router 当前执行 QQQ" in warning["message"]
+    assert warning["key"] == "critical:router_qqq_exchange_flat"
 
 
 def test_router_audit_log_appends_jsonl(tmp_path: Path) -> None:

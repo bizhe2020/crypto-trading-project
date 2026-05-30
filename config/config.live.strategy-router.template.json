@@ -57,6 +57,7 @@
   "telegram_notify_route_change": true,
   "telegram_notify_execution": true,
   "telegram_notify_data_warnings": true,
+  "telegram_notify_gap_warnings": true,
   "telegram_notify_errors": true,
   "router_audit_log_enabled": true,
   "router_audit_log_path": "var/log/strategy_router_live_audit.jsonl"

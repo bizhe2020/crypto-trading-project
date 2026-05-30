@@ -86,6 +86,7 @@ class StrategyRouterConfig:
     telegram_notify_route_change: bool = True
     telegram_notify_execution: bool = True
     telegram_notify_data_warnings: bool = True
+    telegram_notify_gap_warnings: bool = True
     telegram_notify_errors: bool = True
     router_audit_log_enabled: bool = True
     router_audit_log_path: str | None = None
