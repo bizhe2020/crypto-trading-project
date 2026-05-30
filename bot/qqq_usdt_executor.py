@@ -14,6 +14,7 @@ import pandas as pd
 
 from bot.okx_client import OkxClient, OkxCredentials
 from bot.qqq_runtime_policy import filter_closed_bars, market_time_window_status, timeframe_to_timedelta
+from bot.qqq_shadow_gate import QqqShadowGateProfile, QqqShadowGateStateMachine
 from bot.state_store import StateStore
 from bot.strategy_router import RoutedSignalCandidate, StrategyRouterConfig
 from scripts.scan_qqq_usdt_4h_triggers import attach_daily_state, load_okx_4h, load_signal_path
@@ -50,6 +51,8 @@ class QqqUsdtExecutionEngine:
         self.router_config = router_config
         self.qqq_config_path = Path(qqq_config_path).resolve()
         self.qqq_config = json.loads(self.qqq_config_path.read_text())
+        self.shadow_gate_profile = QqqShadowGateProfile.from_config(self.qqq_config)
+        self.shadow_gate = QqqShadowGateStateMachine(self.shadow_gate_profile)
         credentials = self._load_credentials()
         self.client = OkxClient(credentials, trading_mode=router_config.mode, proxy=self._proxy())
         self.store = StateStore(router_config.qqq_state_db_path)
@@ -111,9 +114,14 @@ class QqqUsdtExecutionEngine:
             raise ValueError(f"Market metadata missing for {symbol}")
         return market
 
+    def _exchange_leverage(self) -> float:
+        configured = self.qqq_config.get("exchange_leverage", self.qqq_config.get("base_leverage", 10.0))
+        return float(configured or 10.0)
+
     def bootstrap(self) -> dict[str, Any]:
         symbol = str(self.qqq_config["execution_symbol"])
-        leverage = int(round(float(self.qqq_config["offense_leverage"])))
+        exchange_leverage = self._exchange_leverage()
+        leverage = int(round(exchange_leverage))
         error = None
         market_loaded = False
         try:
@@ -130,6 +138,7 @@ class QqqUsdtExecutionEngine:
             "market_loaded": market_loaded,
             "market_cache": str(self.router_config.okx_markets_cache_path),
             "leverage": leverage,
+            "exchange_leverage": exchange_leverage,
             "error": error,
         }
         self.store.append_action("bootstrap", "BOOTSTRAP", payload)
@@ -149,9 +158,21 @@ class QqqUsdtExecutionEngine:
 
         if context.stop_hit:
             if exchange_position["contracts"] > 0:
-                actions.append(self.close_position(reason="qqq_trailing_stop_hit"))
+                actions.append(
+                    self.close_position(
+                        reason="qqq_trailing_stop_hit",
+                        exit_price=context.stop_price,
+                        timestamp=str(context.candidate.get("timestamp") or "runtime"),
+                    )
+                )
             else:
                 actions.append({"status": "skipped", "reason": "qqq_stop_hit_no_exchange_position"})
+                self._shadow_gate_record_close(
+                    state.get("position") if isinstance(state.get("position"), dict) else None,
+                    reason="qqq_trailing_stop_hit",
+                    exit_price=context.stop_price,
+                    timestamp=str(context.candidate.get("timestamp") or "runtime"),
+                )
             stop_timestamp = context.candidate.get("timestamp")
             metadata = context.candidate.get("metadata") if isinstance(context.candidate.get("metadata"), dict) else {}
             current_position = state.get("position") if isinstance(state.get("position"), dict) else {}
@@ -222,9 +243,25 @@ class QqqUsdtExecutionEngine:
                     {"position": None, "last_candidate": context.candidate, "last_stop_hit": state.get("last_stop_hit")}
                 )
                 return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
+            shadow_gate = self._shadow_gate_pre_open(context)
+            if not bool(shadow_gate.get("allow", True)):
+                actions.append(
+                    {
+                        "status": "skipped",
+                        "reason": "qqq_shadow_gate_blocked",
+                        "action": "open_qqq_usdt_long",
+                        "shadow_gate": shadow_gate,
+                    }
+                )
+                self.save_state(
+                    {"position": None, "last_candidate": context.candidate, "last_stop_hit": state.get("last_stop_hit")}
+                )
+                return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
             open_result = self.open_position(context)
             actions.append(open_result)
             position_open = open_result.get("status") in {"paper_opened", "submitted"}
+            if position_open:
+                self._shadow_gate_record_open(context)
             position_state = self._state_from_context(context) if position_open else None
             position_state = self._with_exchange_stop_fields(position_state, open_result.get("exchange_stop"))
             self.save_state(
@@ -393,6 +430,134 @@ class QqqUsdtExecutionEngine:
 
     def save_state(self, payload: dict[str, Any]) -> None:
         self.store.set_value("qqq_usdt_state", json.dumps(payload, ensure_ascii=False, indent=2))
+
+    def _load_shadow_gate_state(self) -> dict[str, Any]:
+        raw = self.store.get_value("qqq_shadow_gate_state")
+        if not raw:
+            return self.shadow_gate.default_state()
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            return self.shadow_gate.default_state()
+        return self.shadow_gate.normalize_state(decoded if isinstance(decoded, dict) else {})
+
+    def _save_shadow_gate_state(self, state: dict[str, Any]) -> None:
+        self.store.set_value("qqq_shadow_gate_state", json.dumps(self.shadow_gate.normalize_state(state), ensure_ascii=False, indent=2))
+
+    def _shadow_gate_state_summary(self, state: dict[str, Any]) -> dict[str, Any]:
+        normalized = self.shadow_gate.normalize_state(state)
+        return {
+            "enabled": bool(self.shadow_gate_profile.enabled),
+            "capital": round(float(normalized.get("capital", 0.0) or 0.0), 6),
+            "equity_peak": round(float(normalized.get("equity_peak", 0.0) or 0.0), 6),
+            "loss_streak": int(normalized.get("loss_streak", 0) or 0),
+            "gate_remaining_bars": int(normalized.get("gate_remaining_bars", 0) or 0),
+            "gate_reason": normalized.get("gate_reason"),
+            "clear_streak": int(normalized.get("clear_streak", 0) or 0),
+            "stopped_after_stop": bool(normalized.get("stopped_after_stop", False)),
+            "last_bar_timestamp": normalized.get("last_bar_timestamp"),
+            "position_open": isinstance(normalized.get("position"), dict),
+        }
+
+    def _append_shadow_gate_event(self, timestamp: str | None, event: dict[str, Any], state: dict[str, Any], decision: dict[str, Any] | None = None) -> None:
+        payload = {
+            "event": event,
+            "decision": decision,
+            "state": self._shadow_gate_state_summary(state),
+            "profile": {
+                "reentry_rule": self.shadow_gate_profile.reentry_rule,
+                "reentry_clear_bars": self.shadow_gate_profile.reentry_clear_bars,
+                "loss_streak_stop": self.shadow_gate_profile.loss_streak_stop,
+                "loss_streak_cooldown_bars": self.shadow_gate_profile.loss_streak_cooldown_bars,
+                "equity_dd_stop_pct": self.shadow_gate_profile.equity_dd_stop_pct,
+                "equity_dd_cooldown_bars": self.shadow_gate_profile.equity_dd_cooldown_bars,
+            },
+        }
+        self.store.append_action(str(timestamp or "runtime"), "QQQ_SHADOW_GATE", payload)
+
+    def _shadow_gate_observe_context(self, context: QqqOrderContext) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        state = self._load_shadow_gate_state()
+        metadata = context.candidate.get("metadata") if isinstance(context.candidate.get("metadata"), dict) else {}
+        state, event = self.shadow_gate.observe_bar(
+            state,
+            timestamp=context.candidate.get("timestamp"),
+            allow_long=bool(context.candidate.get("active", True)),
+            defense_state=bool(metadata.get("defense_state", False)),
+        )
+        self._save_shadow_gate_state(state)
+        if event is not None:
+            self._append_shadow_gate_event(context.candidate.get("timestamp"), event, state)
+        return state, event
+
+    def _shadow_gate_pre_open(self, context: QqqOrderContext) -> dict[str, Any]:
+        if not self.shadow_gate_profile.enabled:
+            return {"enabled": False, "allow": True, "reason": "disabled"}
+        state, _ = self._shadow_gate_observe_context(context)
+        decision = self.shadow_gate.entry_decision(state)
+        if not bool(decision.get("allow", False)):
+            self._append_shadow_gate_event(
+                context.candidate.get("timestamp"),
+                {"event": "entry_blocked", "timestamp": str(context.candidate.get("timestamp") or "runtime")},
+                state,
+                decision,
+            )
+        return {"enabled": True, **decision, "state": self._shadow_gate_state_summary(state)}
+
+    def shadow_gate_pre_switch_status(self, candidate: RoutedSignalCandidate | None) -> dict[str, Any]:
+        if not self.shadow_gate_profile.enabled or candidate is None or not candidate.active:
+            return {"enabled": bool(self.shadow_gate_profile.enabled), "allow": True, "reason": "disabled_or_inactive"}
+        context = self._build_context(candidate)
+        return self._shadow_gate_pre_open(context)
+
+    def _shadow_gate_record_open(self, context: QqqOrderContext) -> None:
+        if not self.shadow_gate_profile.enabled:
+            return
+        state = self._load_shadow_gate_state()
+        state, event = self.shadow_gate.record_open(
+            state,
+            timestamp=context.candidate.get("timestamp"),
+            entry_price=float(context.reference_price),
+            leverage=float(context.leverage),
+        )
+        self._save_shadow_gate_state(state)
+        if event is not None:
+            self._append_shadow_gate_event(context.candidate.get("timestamp"), event, state)
+
+    def _shadow_gate_record_close(
+        self,
+        position_state: dict[str, Any] | None,
+        *,
+        reason: str,
+        exit_price: float | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        if not self.shadow_gate_profile.enabled:
+            return
+        state = self._load_shadow_gate_state()
+        position = position_state if isinstance(position_state, dict) else {}
+        if not isinstance(state.get("position"), dict) and position:
+            state["position"] = {
+                "entry_timestamp": str(position.get("entry_candidate_timestamp") or "runtime"),
+                "entry_price": float(position.get("entry_price", position.get("peak_price", 0.0)) or 0.0),
+                "leverage": float(position.get("leverage", self.qqq_config.get("base_leverage", 10.0)) or self.qqq_config.get("base_leverage", 10.0)),
+            }
+        resolved_exit = exit_price
+        if resolved_exit is None:
+            try:
+                resolved_exit = float(self._latest_bar()["close"])
+            except Exception:
+                resolved_exit = float(position.get("latest_low", position.get("peak_price", position.get("entry_price", 0.0))) or 0.0)
+        state, event = self.shadow_gate.record_close(
+            state,
+            timestamp=str(timestamp or "runtime"),
+            exit_price=float(resolved_exit or 0.0),
+            reason=str(reason),
+            taker_fee_rate=float(self.qqq_config.get("taker_fee_rate", 0.0) or 0.0),
+            slippage_bps=float(self.qqq_config.get("slippage_bps", 0.0) or 0.0),
+        )
+        self._save_shadow_gate_state(state)
+        if event is not None:
+            self._append_shadow_gate_event(event.get("timestamp"), event, state)
 
     def _resolve_path(self, value: str) -> Path:
         path = Path(value)
@@ -1206,13 +1371,16 @@ class QqqUsdtExecutionEngine:
         self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "SYNC_QQQ_POSITION", payload)
         return payload
 
-    def close_position(self, *, reason: str) -> dict[str, Any]:
+    def close_position(self, *, reason: str, exit_price: float | None = None, timestamp: str | None = None) -> dict[str, Any]:
+        local_state = self.load_state()
+        position_state = local_state.get("position") if isinstance(local_state.get("position"), dict) else None
         position = self.fetch_position_state()
         amount = float(position.get("contracts", 0.0) or 0.0)
         if amount <= 0:
             return {"status": "skipped", "reason": "no_open_qqq_position"}
         if self.router_config.mode == "paper":
             self.save_state({"position": None})
+            self._shadow_gate_record_close(position_state, reason=reason, exit_price=exit_price, timestamp=timestamp)
             return {"status": "paper_closed", "symbol": self.symbol, "amount": amount, "reason": reason}
         try:
             orders = self._submit_market_orders(
@@ -1252,6 +1420,7 @@ class QqqUsdtExecutionEngine:
         }
         self.store.append_action("runtime", "CLOSE_QQQ_USDT", payload)
         if confirmed["contracts"] <= 0:
+            self._shadow_gate_record_close(position_state, reason=reason, exit_price=exit_price, timestamp=timestamp)
             self.save_state({"position": None})
         return payload
 

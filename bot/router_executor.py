@@ -43,6 +43,7 @@ class StrategyRouterExecutionEngine:
         route = self.router.evaluate_latest(current_strategy_override=previous_executed)
         selected_strategy = route.get("selected_strategy")
         selected_candidate = route.get("selected_candidate") if isinstance(route.get("selected_candidate"), dict) else None
+        qqq_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "qqq_usdt_aggressive" else None
         execution_results: list[dict[str, Any]] = []
         risk_on_window = None
         if selected_strategy == "qqq_usdt_aggressive" and previous_executed != "qqq_usdt_aggressive":
@@ -59,6 +60,20 @@ class StrategyRouterExecutionEngine:
                     }
                 )
                 selected_strategy = previous_executed
+            else:
+                shadow_gate = self.qqq_executor.shadow_gate_pre_switch_status(qqq_candidate)
+                if not bool(shadow_gate.get("allow", True)):
+                    execution_results.append(
+                        {
+                            "strategy": "qqq_usdt_aggressive",
+                            "result": {
+                                "status": "skipped",
+                                "reason": "qqq_shadow_gate_blocked_before_switch",
+                                "shadow_gate": shadow_gate,
+                            },
+                        }
+                    )
+                    selected_strategy = previous_executed
 
         if selected_strategy != previous_executed and bool(self.config.flatten_before_switch):
             execution_results.extend(self._flatten_strategy(previous_executed, reason=f"router_switch_to_{selected_strategy or 'cash'}"))
@@ -92,7 +107,7 @@ class StrategyRouterExecutionEngine:
             execution_results.append({"strategy": "btc_sota", "result": self.btc_executor.evaluate_latest()})
             self._set_current_executed_strategy("btc_sota")
         elif selected_strategy == "qqq_usdt_aggressive":
-            candidate = self._candidate_from_payload(selected_candidate)
+            candidate = qqq_candidate or self._candidate_from_payload(selected_candidate)
             execution_results.append({"strategy": "qqq_usdt_aggressive", "result": self.qqq_executor.evaluate_latest(candidate)})
             self._set_current_executed_strategy("qqq_usdt_aggressive")
         else:
