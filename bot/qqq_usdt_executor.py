@@ -1,0 +1,1304 @@
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from bot.okx_client import OkxClient, OkxCredentials
+from bot.qqq_runtime_policy import filter_closed_bars, market_time_window_status
+from bot.qqq_shadow_gate import QqqShadowGateProfile, QqqShadowGateStateMachine
+from bot.state_store import StateStore
+from bot.strategy_router import RoutedSignalCandidate, StrategyRouterConfig
+from scripts.scan_qqq_usdt_4h_triggers import attach_daily_state, load_okx_4h, load_signal_path
+from scripts.scan_qqq_usdt_aggressive_grid import AGGRESSIVE_LEVERAGE_PROFILES
+from scripts.scan_qqq_usdt_btc_logic_overlays import enrich_bars
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@dataclass
+class QqqOrderContext:
+    symbol: str
+    margin_mode: str
+    leverage: float
+    stop_loss_pct: float
+    reference_price: float
+    latest_low: float
+    stop_price: float
+    stop_hit: bool
+    route_score: float
+    candidate: dict[str, Any]
+
+
+class QqqUsdtExecutionEngine:
+    def __init__(self, router_config: StrategyRouterConfig, qqq_config_path: str | Path):
+        self.router_config = router_config
+        self.qqq_config_path = Path(qqq_config_path).resolve()
+        self.qqq_config = json.loads(self.qqq_config_path.read_text())
+        self.shadow_gate_profile = QqqShadowGateProfile.from_config(self.qqq_config)
+        self.shadow_gate = QqqShadowGateStateMachine(self.shadow_gate_profile)
+        credentials = self._load_credentials()
+        self.client = OkxClient(credentials, trading_mode=router_config.mode, proxy=self._proxy())
+        self.store = StateStore(router_config.qqq_state_db_path)
+        self._markets_cache: dict[str, Any] | None = None
+
+    def _load_credentials(self) -> OkxCredentials | None:
+        if not self.router_config.execution_credentials_config:
+            return None
+        path = Path(self.router_config.execution_credentials_config)
+        payload = json.loads(path.read_text())
+        api_key = payload.get("api_key")
+        api_secret = payload.get("api_secret")
+        api_passphrase = payload.get("api_passphrase")
+        if api_key and api_secret and api_passphrase:
+            return OkxCredentials(
+                api_key=str(api_key),
+                api_secret=str(api_secret),
+                api_passphrase=str(api_passphrase),
+            )
+        return None
+
+    def _proxy(self) -> str | None:
+        if not self.router_config.execution_credentials_config:
+            return None
+        path = Path(self.router_config.execution_credentials_config)
+        payload = json.loads(path.read_text())
+        proxy = payload.get("proxy")
+        return str(proxy) if proxy else None
+
+    def _load_markets(self) -> dict[str, Any]:
+        if self._markets_cache is None:
+            cache = self._load_markets_cache()
+            if cache:
+                self._markets_cache = cache
+            else:
+                self._markets_cache = self.client.load_markets()
+        return self._markets_cache
+
+    def _load_markets_cache(self) -> dict[str, Any]:
+        path = Path(self.router_config.okx_markets_cache_path)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        symbol = str(self.qqq_config["execution_symbol"])
+        market = payload.get(symbol)
+        if isinstance(market, dict):
+            return {symbol: market}
+        return {key: value for key, value in payload.items() if isinstance(value, dict)}
+
+    def _market(self) -> dict[str, Any]:
+        symbol = str(self.qqq_config["execution_symbol"])
+        market = self._load_markets().get(symbol)
+        if market is None:
+            raise ValueError(f"Market metadata missing for {symbol}")
+        return market
+
+    def _exchange_leverage(self) -> float:
+        configured = self.qqq_config.get("exchange_leverage", self.qqq_config.get("base_leverage", 10.0))
+        return float(configured or 10.0)
+
+    def bootstrap(self) -> dict[str, Any]:
+        symbol = str(self.qqq_config["execution_symbol"])
+        exchange_leverage = self._exchange_leverage()
+        leverage = int(round(exchange_leverage))
+        error = None
+        market_loaded = False
+        try:
+            market_loaded = bool(self._load_markets_cache())
+            if self.router_config.mode != "paper":
+                self._load_markets()
+                market_loaded = True
+                self.client.set_leverage(leverage, symbol, margin_mode=self.router_config.qqq_margin_mode, pos_side="long")
+        except Exception as exc:
+            error = str(exc)
+        payload = {
+            "status": "ok" if error is None else "error",
+            "symbol": symbol,
+            "market_loaded": market_loaded,
+            "market_cache": str(self.router_config.okx_markets_cache_path),
+            "leverage": leverage,
+            "exchange_leverage": exchange_leverage,
+            "error": error,
+        }
+        self.store.append_action("bootstrap", "BOOTSTRAP", payload)
+        return payload
+
+    def evaluate_latest(self, candidate: RoutedSignalCandidate | None) -> dict[str, Any]:
+        context = self._build_context(candidate) if candidate is not None and candidate.active else None
+        exchange_position = self.fetch_position_state()
+        state = self.load_state()
+        actions: list[dict[str, Any]] = []
+
+        if context is None:
+            if exchange_position["contracts"] > 0:
+                actions.append(self.close_position(reason="router_no_qqq_signal"))
+            self.save_state({"position": None, "last_candidate": candidate.to_dict() if candidate else None})
+            return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
+
+        if context.stop_hit:
+            if exchange_position["contracts"] > 0:
+                actions.append(
+                    self.close_position(
+                        reason="qqq_trailing_stop_hit",
+                        exit_price=context.stop_price,
+                        timestamp=str(context.candidate.get("timestamp") or "runtime"),
+                    )
+                )
+            else:
+                actions.append({"status": "skipped", "reason": "qqq_stop_hit_no_exchange_position"})
+                self._shadow_gate_record_close(
+                    state.get("position") if isinstance(state.get("position"), dict) else None,
+                    reason="qqq_trailing_stop_hit",
+                    exit_price=context.stop_price,
+                    timestamp=str(context.candidate.get("timestamp") or "runtime"),
+                )
+            self.save_state(
+                {
+                    "position": None,
+                    "last_candidate": context.candidate,
+                    "last_stop_hit": {
+                        "candidate_timestamp": context.candidate.get("timestamp"),
+                        "stop_price": context.stop_price,
+                        "latest_low": context.latest_low,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                }
+            )
+            return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
+
+        if exchange_position["contracts"] <= 0:
+            risk_on_status = self._risk_on_window_status()
+            if not bool(risk_on_status["open"]):
+                actions.append(
+                    {
+                        "status": "skipped",
+                        "reason": "qqq_risk_on_window_closed",
+                        "action": "open_qqq_usdt_long",
+                        "target_leverage": context.leverage,
+                        "market_window": risk_on_status,
+                    }
+                )
+                self.save_state({"position": None, "last_candidate": context.candidate})
+                return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
+            if self._same_signal_stop_locked(context):
+                actions.append(
+                    {
+                        "status": "skipped",
+                        "reason": "qqq_stop_hit_same_signal_lock",
+                        "candidate_timestamp": context.candidate.get("timestamp"),
+                    }
+                )
+                return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
+            shadow_gate = self._shadow_gate_pre_open(context)
+            if not bool(shadow_gate.get("allow", True)):
+                actions.append(
+                    {
+                        "status": "skipped",
+                        "reason": "qqq_shadow_gate_blocked",
+                        "action": "open_qqq_usdt_long",
+                        "shadow_gate": shadow_gate,
+                    }
+                )
+                self.save_state({"position": None, "last_candidate": context.candidate})
+                return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": False}
+            open_result = self.open_position(context)
+            actions.append(open_result)
+            position_open = open_result.get("status") in {"paper_opened", "submitted"}
+            if position_open:
+                self._shadow_gate_record_open(context)
+            position_state = self._state_from_context(context) if position_open else None
+            position_state = self._with_exchange_stop_fields(position_state, open_result.get("exchange_stop"))
+            self.save_state(
+                {
+                    "position": position_state,
+                    "last_candidate": context.candidate,
+                }
+            )
+            return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": position_open}
+
+        current = state.get("position") if isinstance(state.get("position"), dict) else {}
+        current_leverage = float(current.get("leverage", 0.0) or 0.0)
+        target_notional = self._rebalance_target_notional(context, exchange_position, current)
+        notional_gap = abs(float(exchange_position["notional_usdt"]) - target_notional)
+        leverage_changed = abs(current_leverage - float(context.leverage)) > 1e-9
+        should_rebalance = (
+            bool(self.router_config.qqq_rebalance_on_leverage_change)
+            and leverage_changed
+            and notional_gap >= float(self.router_config.qqq_min_rebalance_notional_usdt)
+        )
+        risk_on_blocked = False
+        risk_on_status: dict[str, Any] | None = None
+        if should_rebalance and float(context.leverage) > current_leverage:
+            risk_on_status = self._risk_on_window_status()
+            risk_on_blocked = not bool(risk_on_status["open"])
+            should_rebalance = should_rebalance and not risk_on_blocked
+        next_position_state = self._state_from_context(context)
+        if should_rebalance:
+            rebalance_result = self.rebalance_position(
+                context,
+                exchange_position,
+                current,
+                target_notional=target_notional,
+            )
+            actions.append(rebalance_result)
+            if rebalance_result.get("status") == "error":
+                next_position_state = current
+            else:
+                next_position_state = self._with_exchange_stop_fields(
+                    next_position_state,
+                    rebalance_result.get("exchange_stop"),
+                )
+            position_open = True
+        elif risk_on_blocked:
+            actions.append(
+                {
+                    "status": "skipped",
+                    "action": "rebalance_qqq_position",
+                    "reason": "qqq_risk_on_window_closed",
+                    "current_leverage": current_leverage,
+                    "target_leverage": context.leverage,
+                    "current_notional_usdt": float(exchange_position["notional_usdt"]),
+                    "target_notional_usdt": target_notional,
+                    "notional_gap_usdt": notional_gap,
+                    "market_window": risk_on_status,
+                }
+            )
+            next_position_state = current
+            position_open = True
+        elif leverage_changed:
+            actions.append(
+                {
+                    "status": "skipped",
+                    "action": "rebalance_qqq_position",
+                    "reason": "notional_gap_too_small",
+                    "current_leverage": current_leverage,
+                    "target_leverage": context.leverage,
+                    "current_notional_usdt": float(exchange_position["notional_usdt"]),
+                    "target_notional_usdt": target_notional,
+                    "notional_gap_usdt": notional_gap,
+                }
+            )
+            next_position_state = current
+            position_open = True
+        else:
+            stop_update = self.update_trailing_stop(context, exchange_position)
+            if stop_update is not None:
+                actions.append(stop_update)
+                if stop_update.get("status") == "error":
+                    next_position_state = current
+                else:
+                    next_position_state = self._with_exchange_stop_fields(
+                        next_position_state,
+                        stop_update.get("exchange_stop"),
+                    )
+            position_open = True
+        self.save_state(
+            {
+                "position": next_position_state if position_open else None,
+                "last_candidate": context.candidate,
+            }
+        )
+        return {"status": "ok", "symbol": self.symbol, "actions": actions, "position_open": position_open}
+
+    @property
+    def symbol(self) -> str:
+        return str(self.qqq_config["execution_symbol"])
+
+    def load_state(self) -> dict[str, Any]:
+        raw = self.store.get_value("qqq_usdt_state")
+        if not raw:
+            return {}
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+
+    def save_state(self, payload: dict[str, Any]) -> None:
+        self.store.set_value("qqq_usdt_state", json.dumps(payload, ensure_ascii=False, indent=2))
+
+    def _load_shadow_gate_state(self) -> dict[str, Any]:
+        raw = self.store.get_value("qqq_shadow_gate_state")
+        if not raw:
+            return self.shadow_gate.default_state()
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            return self.shadow_gate.default_state()
+        return self.shadow_gate.normalize_state(decoded if isinstance(decoded, dict) else {})
+
+    def _save_shadow_gate_state(self, state: dict[str, Any]) -> None:
+        self.store.set_value("qqq_shadow_gate_state", json.dumps(self.shadow_gate.normalize_state(state), ensure_ascii=False, indent=2))
+
+    def _shadow_gate_state_summary(self, state: dict[str, Any]) -> dict[str, Any]:
+        normalized = self.shadow_gate.normalize_state(state)
+        return {
+            "enabled": bool(self.shadow_gate_profile.enabled),
+            "capital": round(float(normalized.get("capital", 0.0) or 0.0), 6),
+            "equity_peak": round(float(normalized.get("equity_peak", 0.0) or 0.0), 6),
+            "loss_streak": int(normalized.get("loss_streak", 0) or 0),
+            "gate_remaining_bars": int(normalized.get("gate_remaining_bars", 0) or 0),
+            "gate_reason": normalized.get("gate_reason"),
+            "clear_streak": int(normalized.get("clear_streak", 0) or 0),
+            "stopped_after_stop": bool(normalized.get("stopped_after_stop", False)),
+            "last_bar_timestamp": normalized.get("last_bar_timestamp"),
+            "position_open": isinstance(normalized.get("position"), dict),
+        }
+
+    def _append_shadow_gate_event(self, timestamp: str | None, event: dict[str, Any], state: dict[str, Any], decision: dict[str, Any] | None = None) -> None:
+        payload = {
+            "event": event,
+            "decision": decision,
+            "state": self._shadow_gate_state_summary(state),
+            "profile": {
+                "reentry_rule": self.shadow_gate_profile.reentry_rule,
+                "reentry_clear_bars": self.shadow_gate_profile.reentry_clear_bars,
+                "loss_streak_stop": self.shadow_gate_profile.loss_streak_stop,
+                "loss_streak_cooldown_bars": self.shadow_gate_profile.loss_streak_cooldown_bars,
+                "equity_dd_stop_pct": self.shadow_gate_profile.equity_dd_stop_pct,
+                "equity_dd_cooldown_bars": self.shadow_gate_profile.equity_dd_cooldown_bars,
+            },
+        }
+        self.store.append_action(str(timestamp or "runtime"), "QQQ_SHADOW_GATE", payload)
+
+    def _shadow_gate_observe_context(self, context: QqqOrderContext) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        state = self._load_shadow_gate_state()
+        metadata = context.candidate.get("metadata") if isinstance(context.candidate.get("metadata"), dict) else {}
+        state, event = self.shadow_gate.observe_bar(
+            state,
+            timestamp=context.candidate.get("timestamp"),
+            allow_long=bool(context.candidate.get("active", True)),
+            defense_state=bool(metadata.get("defense_state", False)),
+        )
+        self._save_shadow_gate_state(state)
+        if event is not None:
+            self._append_shadow_gate_event(context.candidate.get("timestamp"), event, state)
+        return state, event
+
+    def _shadow_gate_pre_open(self, context: QqqOrderContext) -> dict[str, Any]:
+        if not self.shadow_gate_profile.enabled:
+            return {"enabled": False, "allow": True, "reason": "disabled"}
+        state, _ = self._shadow_gate_observe_context(context)
+        decision = self.shadow_gate.entry_decision(state)
+        if not bool(decision.get("allow", False)):
+            self._append_shadow_gate_event(
+                context.candidate.get("timestamp"),
+                {"event": "entry_blocked", "timestamp": str(context.candidate.get("timestamp") or "runtime")},
+                state,
+                decision,
+            )
+        return {"enabled": True, **decision, "state": self._shadow_gate_state_summary(state)}
+
+    def shadow_gate_pre_switch_status(self, candidate: RoutedSignalCandidate | None) -> dict[str, Any]:
+        if not self.shadow_gate_profile.enabled or candidate is None or not candidate.active:
+            return {"enabled": bool(self.shadow_gate_profile.enabled), "allow": True, "reason": "disabled_or_inactive"}
+        context = self._build_context(candidate)
+        return self._shadow_gate_pre_open(context)
+
+    def _shadow_gate_record_open(self, context: QqqOrderContext) -> None:
+        if not self.shadow_gate_profile.enabled:
+            return
+        state = self._load_shadow_gate_state()
+        state, event = self.shadow_gate.record_open(
+            state,
+            timestamp=context.candidate.get("timestamp"),
+            entry_price=float(context.reference_price),
+            leverage=float(context.leverage),
+        )
+        self._save_shadow_gate_state(state)
+        if event is not None:
+            self._append_shadow_gate_event(context.candidate.get("timestamp"), event, state)
+
+    def _shadow_gate_record_close(
+        self,
+        position_state: dict[str, Any] | None,
+        *,
+        reason: str,
+        exit_price: float | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        if not self.shadow_gate_profile.enabled:
+            return
+        state = self._load_shadow_gate_state()
+        position = position_state if isinstance(position_state, dict) else {}
+        if not isinstance(state.get("position"), dict) and position:
+            state["position"] = {
+                "entry_timestamp": str(position.get("entry_candidate_timestamp") or "runtime"),
+                "entry_price": float(position.get("entry_price", position.get("peak_price", 0.0)) or 0.0),
+                "leverage": float(position.get("leverage", self.qqq_config.get("base_leverage", 10.0)) or self.qqq_config.get("base_leverage", 10.0)),
+            }
+        resolved_exit = exit_price
+        if resolved_exit is None:
+            try:
+                resolved_exit = float(self._latest_bar()["close"])
+            except Exception:
+                resolved_exit = float(position.get("latest_low", position.get("peak_price", position.get("entry_price", 0.0))) or 0.0)
+        state, event = self.shadow_gate.record_close(
+            state,
+            timestamp=str(timestamp or "runtime"),
+            exit_price=float(resolved_exit or 0.0),
+            reason=str(reason),
+            taker_fee_rate=float(self.qqq_config.get("taker_fee_rate", 0.0) or 0.0),
+            slippage_bps=float(self.qqq_config.get("slippage_bps", 0.0) or 0.0),
+        )
+        self._save_shadow_gate_state(state)
+        if event is not None:
+            self._append_shadow_gate_event(event.get("timestamp"), event, state)
+
+    def _resolve_path(self, value: str) -> Path:
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        return (ROOT / value).resolve()
+
+    def _latest_bar(self) -> pd.Series:
+        signal_source = self._resolve_path(str(self.qqq_config["signal_source"]))
+        data_4h = self._resolve_path(str(self.qqq_config["data_4h"]))
+        _, signal_path = load_signal_path(signal_source)
+        bars = enrich_bars(attach_daily_state(load_okx_4h(data_4h), signal_path))
+        if bool(self.qqq_config.get("use_closed_execution_bars", True)):
+            bars = filter_closed_bars(
+                bars,
+                timeframe=str(self.qqq_config.get("execution_timeframe", "4h")),
+                grace_seconds=int(self.qqq_config.get("closed_bar_grace_seconds", 30) or 0),
+            )
+        if bars.empty:
+            raise RuntimeError("No closed QQQ/USDT bars available")
+        return bars.iloc[-1]
+
+    def _build_context(self, candidate: RoutedSignalCandidate) -> QqqOrderContext:
+        latest = self._latest_bar()
+        reference_price = float(latest["close"])
+        latest_low = float(latest["low"])
+        candidate_payload = candidate.to_dict()
+        candidate_metadata = candidate_payload.get("metadata")
+        metadata = dict(candidate_metadata) if isinstance(candidate_metadata, dict) else {}
+        leverage = float(candidate.leverage or self.qqq_config["base_leverage"])
+        stop_loss_pct = float(self.qqq_config["stop_loss_pct"])
+        state = self.load_state()
+        previous = state.get("position") if isinstance(state.get("position"), dict) else {}
+        previous_stop = float(previous.get("stop_price", 0.0) or 0.0)
+        peak_price = max(float(previous.get("peak_price", 0.0) or 0.0), reference_price)
+        stop_price = max(previous_stop, peak_price * (1.0 - stop_loss_pct / 100.0))
+        entry_timestamp = previous.get("entry_candidate_timestamp")
+        candidate_timestamp = candidate_payload.get("timestamp")
+        same_entry_bar = bool(entry_timestamp and candidate_timestamp and str(entry_timestamp) == str(candidate_timestamp))
+        stop_hit = bool(previous_stop > 0 and latest_low <= previous_stop and not same_entry_bar)
+        return QqqOrderContext(
+            symbol=self.symbol,
+            margin_mode=str(self.router_config.qqq_margin_mode),
+            leverage=leverage,
+            stop_loss_pct=stop_loss_pct,
+            reference_price=reference_price,
+            latest_low=latest_low,
+            stop_price=stop_price,
+            stop_hit=stop_hit,
+            route_score=float(candidate.route_score),
+            candidate=candidate_payload,
+        )
+
+    def _risk_on_window_status(self) -> dict[str, Any]:
+        return market_time_window_status(
+            enabled=bool(self.router_config.qqq_rebalance_risk_on_market_hours_only),
+            timezone_name=str(self.router_config.qqq_market_hours_timezone),
+            start_time=str(self.router_config.qqq_market_hours_start),
+            end_time=str(self.router_config.qqq_market_hours_end),
+            trading_calendar=str(self.router_config.qqq_market_calendar),
+        )
+
+    def risk_on_window_status(self) -> dict[str, Any]:
+        return self._risk_on_window_status()
+
+    def _state_from_context(self, context: QqqOrderContext) -> dict[str, Any]:
+        state = self.load_state()
+        previous = state.get("position") if isinstance(state.get("position"), dict) else {}
+        peak_price = max(float(previous.get("peak_price", 0.0) or 0.0), float(context.reference_price))
+        payload = {
+            "symbol": context.symbol,
+            "leverage": context.leverage,
+            "stop_loss_pct": context.stop_loss_pct,
+            "stop_price": context.stop_price,
+            "latest_low": context.latest_low,
+            "peak_price": peak_price,
+            "entry_price": float(previous.get("entry_price", context.reference_price) or context.reference_price),
+            "entry_leverage": float(previous.get("entry_leverage", context.leverage) or context.leverage),
+            "entry_candidate_timestamp": previous.get("entry_candidate_timestamp") or context.candidate.get("timestamp"),
+            "route_score": context.route_score,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        metadata = context.candidate.get("metadata") if isinstance(context.candidate.get("metadata"), dict) else {}
+        if previous.get("strength_label"):
+            payload["strength_label"] = previous["strength_label"]
+        elif context.candidate.get("strength_label"):
+            payload["strength_label"] = context.candidate["strength_label"]
+        for key in ("exchange_order_id", "exchange_attach_algo_id", "exchange_attach_algo_client_id"):
+            if previous.get(key):
+                payload[key] = previous[key]
+        return payload
+
+    def _same_signal_stop_locked(self, context: QqqOrderContext) -> bool:
+        state = self.load_state()
+        last_stop_hit = state.get("last_stop_hit") if isinstance(state.get("last_stop_hit"), dict) else {}
+        stop_timestamp = last_stop_hit.get("candidate_timestamp")
+        candidate_timestamp = context.candidate.get("timestamp")
+        return bool(stop_timestamp and candidate_timestamp and str(stop_timestamp) == str(candidate_timestamp))
+
+    def _extract_available_usdt(self, balance: dict[str, Any]) -> float:
+        usdt = balance.get("USDT") if isinstance(balance, dict) else None
+        if isinstance(usdt, dict):
+            for key in ("free", "available", "availableBalance", "cash", "total"):
+                value = usdt.get(key)
+                if value not in (None, ""):
+                    numeric = float(value)
+                    if numeric > 0:
+                        return numeric
+        info = balance.get("info") if isinstance(balance, dict) else None
+        if isinstance(info, dict):
+            for row in info.get("data", []) or []:
+                for detail in row.get("details", []) or []:
+                    if detail.get("ccy") != "USDT":
+                        continue
+                    for key in ("availBal", "cashBal", "eq", "availEq"):
+                        value = detail.get(key)
+                        if value not in (None, ""):
+                            numeric = float(value)
+                            if numeric > 0:
+                                return numeric
+        raise ValueError("Unable to extract positive USDT balance")
+
+    def _target_notional(self, context: QqqOrderContext) -> float:
+        if self.router_config.mode == "paper":
+            available_usdt = 1000.0
+        else:
+            available_usdt = self._extract_available_usdt(self.client.fetch_balance())
+        notional = available_usdt * float(self.router_config.qqq_position_size_pct) * float(context.leverage)
+        if self.router_config.qqq_max_notional_usdt is not None:
+            notional = min(notional, float(self.router_config.qqq_max_notional_usdt))
+        return max(notional, 0.0)
+
+    def _rebalance_target_notional(
+        self,
+        context: QqqOrderContext,
+        exchange_position: dict[str, Any],
+        current: dict[str, Any],
+    ) -> float:
+        current_notional = float(exchange_position.get("notional_usdt", 0.0) or 0.0)
+        current_leverage = float(current.get("leverage", 0.0) or 0.0)
+        if current_notional > 0 and current_leverage > 0:
+            target = current_notional * float(context.leverage) / current_leverage
+        else:
+            target = self._target_notional(context)
+        if self.router_config.qqq_max_notional_usdt is not None:
+            target = min(target, float(self.router_config.qqq_max_notional_usdt))
+        return max(float(target), 0.0)
+
+    def _order_amount(self, notional: float, reference_price: float) -> float:
+        market = self._market()
+        contract_size = float(market.get("contractSize") or 1.0) if market.get("contract") else 0.0
+        base_amount = notional / reference_price if reference_price > 0 else 0.0
+        if market.get("contract"):
+            amount = base_amount / contract_size if contract_size > 0 else 0.0
+        else:
+            amount = base_amount
+        return float(self._amount_to_precision(market, amount))
+
+    def _amount_to_precision(self, market: dict[str, Any], amount: float) -> str:
+        step = ((market.get("precision") or {}).get("amount")) or ((market.get("limits") or {}).get("amount") or {}).get("min")
+        return self._floor_to_step(amount, step)
+
+    def _price_to_precision(self, market: dict[str, Any], price: float) -> str:
+        step = (market.get("precision") or {}).get("price")
+        return self._floor_to_step(price, step)
+
+    @staticmethod
+    def _floor_to_step(value: float, step: Any) -> str:
+        if step in (None, "", 0):
+            return str(round(float(value), 12))
+        decimal_value = Decimal(str(value))
+        decimal_step = Decimal(str(step))
+        if decimal_step <= 0:
+            return str(round(float(value), 12))
+        units = (decimal_value / decimal_step).to_integral_value(rounding=ROUND_DOWN)
+        return format(units * decimal_step, "f")
+
+    def fetch_position_state(self) -> dict[str, Any]:
+        if self.router_config.mode == "paper":
+            state = self.load_state()
+            position = state.get("position") if isinstance(state.get("position"), dict) else None
+            if not position:
+                return {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
+            notional = self._target_notional(self._build_context_from_state(position))
+            return {"contracts": 1.0, "notional_usdt": notional, "raw": position}
+        positions = self.client.fetch_positions([self.symbol])
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            symbol = position.get("symbol") or position.get("instId")
+            if symbol and symbol != self.symbol:
+                continue
+            info = position.get("info") if isinstance(position.get("info"), dict) else {}
+            pos_side = position.get("posSide") or position.get("side") or info.get("posSide") or info.get("side")
+            if pos_side and str(pos_side).lower() != "long":
+                continue
+            contracts = 0.0
+            for key in ("contracts", "positionAmt", "pos", "size"):
+                value = position.get(key, info.get(key))
+                if value not in (None, ""):
+                    contracts = abs(float(value))
+                    if contracts > 0:
+                        break
+            if contracts <= 0:
+                continue
+            notional = 0.0
+            for key in ("notional", "notionalUsd", "positionValue", "posValue"):
+                value = position.get(key, info.get(key))
+                if value not in (None, ""):
+                    notional = abs(float(value))
+                    if notional > 0:
+                        break
+            close_order_algos = info.get("closeOrderAlgo") if isinstance(info.get("closeOrderAlgo"), list) else []
+            return {
+                "contracts": contracts,
+                "notional_usdt": notional,
+                "close_order_algos": close_order_algos,
+                "raw": position,
+            }
+        return {"contracts": 0.0, "notional_usdt": 0.0, "close_order_algos": [], "raw": None}
+
+    def _build_context_from_state(self, position: dict[str, Any]) -> QqqOrderContext:
+        return QqqOrderContext(
+            symbol=self.symbol,
+            margin_mode=str(self.router_config.qqq_margin_mode),
+            leverage=float(position.get("leverage", self.qqq_config["base_leverage"]) or self.qqq_config["base_leverage"]),
+            stop_loss_pct=float(position.get("stop_loss_pct", self.qqq_config["stop_loss_pct"]) or self.qqq_config["stop_loss_pct"]),
+            reference_price=float(position.get("peak_price", 1.0) or 1.0),
+            latest_low=float(position.get("latest_low", position.get("peak_price", 1.0)) or 1.0),
+            stop_price=float(position.get("stop_price", 0.0) or 0.0),
+            stop_hit=False,
+            route_score=float(position.get("route_score", 0.0) or 0.0),
+            candidate={},
+        )
+
+    def open_position(self, context: QqqOrderContext) -> dict[str, Any]:
+        notional = self._target_notional(context)
+        if notional < float(self.router_config.qqq_min_order_notional_usdt):
+            return {"status": "skipped", "reason": "notional_too_small", "notional_usdt": notional}
+        amount = round(notional / context.reference_price, 6) if self.router_config.mode == "paper" else self._order_amount(notional, context.reference_price)
+        if amount <= 0:
+            return {"status": "error", "reason": "non_positive_amount", "notional_usdt": notional}
+        if self.router_config.mode == "paper":
+            return {
+                "status": "paper_opened",
+                "symbol": context.symbol,
+                "amount": amount,
+                "notional_usdt": round(notional, 6),
+                "leverage": context.leverage,
+                "stop_price": context.stop_price,
+            }
+        exchange_leverage = self._exchange_leverage()
+        self.client.set_leverage(int(round(exchange_leverage)), context.symbol, margin_mode=context.margin_mode, pos_side="long")
+        params: dict[str, Any] = {"tdMode": context.margin_mode, "posSide": "long"}
+        attach_algo_client_id = None
+        if bool(self.router_config.qqq_enable_exchange_stop) and context.stop_price > 0:
+            market = self._market()
+            attach_algo_client_id = self._generate_attach_algo_client_id()
+            params["attachAlgoOrds"] = [
+                {
+                    "slTriggerPx": self._price_to_precision(market, context.stop_price),
+                    "slOrdPx": "-1",
+                    "slTriggerPxType": "mark",
+                    "attachAlgoClOrdId": attach_algo_client_id,
+                }
+            ]
+        order = self.client.create_order(context.symbol, "market", "buy", amount, params=params)
+        exchange_stop = self._refresh_exchange_stop_identity(
+            attach_algo_client_id=attach_algo_client_id,
+            order_id=self._extract_order_id(order),
+        )
+        payload = {
+            "status": "submitted",
+            "action": "open_qqq_usdt_long",
+            "order": order,
+            "amount": amount,
+            "notional_usdt": round(notional, 6),
+            "leverage": context.leverage,
+            "target_exposure_leverage": context.leverage,
+            "exchange_leverage": exchange_leverage,
+            "stop_price": context.stop_price,
+            "exchange_stop": exchange_stop,
+        }
+        self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "OPEN_QQQ_USDT", payload)
+        return payload
+
+    def sync_leverage_setting(self, context: QqqOrderContext) -> dict[str, Any]:
+        exchange_leverage = self._exchange_leverage()
+        if self.router_config.mode == "paper":
+            payload = {
+                "status": "paper_synced",
+                "action": "sync_qqq_leverage_setting",
+                "leverage": exchange_leverage,
+                "exchange_leverage": exchange_leverage,
+                "target_exposure_leverage": context.leverage,
+            }
+            self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "SYNC_QQQ_LEVERAGE", payload)
+            return payload
+        try:
+            response = self.client.set_leverage(
+                int(round(exchange_leverage)),
+                context.symbol,
+                margin_mode=context.margin_mode,
+                pos_side="long",
+            )
+        except Exception as exc:
+            payload = {
+                "status": "error",
+                "action": "sync_qqq_leverage_setting",
+                "reason": "set_leverage_failed",
+                "leverage": exchange_leverage,
+                "exchange_leverage": exchange_leverage,
+                "target_exposure_leverage": context.leverage,
+                "error": str(exc),
+            }
+            self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "SYNC_QQQ_LEVERAGE_FAILED", payload)
+            return payload
+        payload = {
+            "status": "submitted",
+            "action": "sync_qqq_leverage_setting",
+            "leverage": exchange_leverage,
+            "exchange_leverage": exchange_leverage,
+            "target_exposure_leverage": context.leverage,
+            "response": response,
+        }
+        self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "SYNC_QQQ_LEVERAGE", payload)
+        return payload
+
+    def rebalance_position(
+        self,
+        context: QqqOrderContext,
+        exchange_position: dict[str, Any],
+        current: dict[str, Any],
+        *,
+        target_notional: float,
+    ) -> dict[str, Any]:
+        current_notional = float(exchange_position.get("notional_usdt", 0.0) or 0.0)
+        delta_notional = float(target_notional) - current_notional
+        min_gap = float(self.router_config.qqq_min_rebalance_notional_usdt)
+        if abs(delta_notional) < min_gap:
+            return {
+                "status": "skipped",
+                "action": "rebalance_qqq_position",
+                "reason": "notional_gap_too_small",
+                "current_notional_usdt": current_notional,
+                "target_notional_usdt": float(target_notional),
+                "delta_notional_usdt": delta_notional,
+                "leverage": context.leverage,
+            }
+        side = "buy" if delta_notional > 0 else "sell"
+        exchange_leverage = self._exchange_leverage()
+        if self.router_config.mode == "paper":
+            amount = round(abs(delta_notional) / context.reference_price, 6) if context.reference_price > 0 else 0.0
+            payload = {
+                "status": "paper_rebalanced",
+                "action": "rebalance_qqq_position",
+                "side": side,
+                "amount": amount,
+                "current_notional_usdt": round(current_notional, 6),
+                "target_notional_usdt": round(float(target_notional), 6),
+                "delta_notional_usdt": round(delta_notional, 6),
+                "old_leverage": float(current.get("leverage", 0.0) or 0.0),
+                "new_leverage": context.leverage,
+                "target_exposure_leverage": context.leverage,
+                "exchange_leverage": exchange_leverage,
+            }
+            self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "REBALANCE_QQQ_POSITION", payload)
+            return payload
+
+        if side == "buy":
+            leverage_result = self.sync_leverage_setting(context)
+            if leverage_result.get("status") == "error":
+                payload = {
+                    "status": "error",
+                    "action": "rebalance_qqq_position",
+                    "reason": "set_leverage_before_add_failed",
+                    "leverage_result": leverage_result,
+                    "current_notional_usdt": current_notional,
+                    "target_notional_usdt": float(target_notional),
+                    "delta_notional_usdt": delta_notional,
+                }
+                self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "REBALANCE_QQQ_POSITION_FAILED", payload)
+                return payload
+            amount = self._order_amount(abs(delta_notional), context.reference_price)
+            if amount <= 0:
+                return {"status": "skipped", "action": "rebalance_qqq_position", "reason": "non_positive_add_amount"}
+            params: dict[str, Any] = {"tdMode": context.margin_mode, "posSide": "long"}
+            exchange_stop = self._attach_stop_to_order_params(params, context)
+            order = self.client.create_order(context.symbol, "market", "buy", amount, params=params)
+            payload = {
+                "status": "submitted",
+                "action": "rebalance_qqq_position",
+                "side": "buy",
+                "amount": amount,
+                "order": order,
+                "current_notional_usdt": round(current_notional, 6),
+                "target_notional_usdt": round(float(target_notional), 6),
+                "delta_notional_usdt": round(delta_notional, 6),
+                "old_leverage": float(current.get("leverage", 0.0) or 0.0),
+                "new_leverage": context.leverage,
+                "target_exposure_leverage": context.leverage,
+                "exchange_leverage": exchange_leverage,
+                "leverage_result": leverage_result,
+                "exchange_stop": self._with_order_id(exchange_stop, order),
+            }
+            self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "REBALANCE_QQQ_POSITION", payload)
+            return payload
+
+        amount = self._order_amount(abs(delta_notional), context.reference_price)
+        contracts = float(exchange_position.get("contracts", 0.0) or 0.0)
+        amount = min(float(amount), contracts)
+        if amount <= 0:
+            return {"status": "skipped", "action": "rebalance_qqq_position", "reason": "non_positive_reduce_amount"}
+        chunks = self._close_order_chunks(amount, abs(delta_notional))
+        orders = []
+        for idx, chunk_amount in enumerate(chunks):
+            order = self.client.create_order(
+                context.symbol,
+                "market",
+                "sell",
+                chunk_amount,
+                params={"reduceOnly": True, "tdMode": context.margin_mode, "posSide": "long"},
+            )
+            orders.append({"order": order, "amount": chunk_amount})
+            chunk_delay = self._sell_chunk_delay_seconds()
+            if idx < len(chunks) - 1 and chunk_delay > 0:
+                time.sleep(chunk_delay)
+        leverage_result = self.sync_leverage_setting(context)
+        status = "submitted_with_leverage_error" if leverage_result.get("status") == "error" else "submitted"
+        payload = {
+            "status": status,
+            "action": "rebalance_qqq_position",
+            "side": "sell",
+            "amount": amount,
+            "order": orders[0]["order"] if orders else None,
+            "orders": orders,
+            "current_notional_usdt": round(current_notional, 6),
+            "target_notional_usdt": round(float(target_notional), 6),
+            "delta_notional_usdt": round(delta_notional, 6),
+            "old_leverage": float(current.get("leverage", 0.0) or 0.0),
+            "new_leverage": context.leverage,
+            "target_exposure_leverage": context.leverage,
+            "exchange_leverage": exchange_leverage,
+            "leverage_result": leverage_result,
+        }
+        self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "REBALANCE_QQQ_POSITION", payload)
+        return payload
+
+    def close_position(self, *, reason: str, exit_price: float | None = None, timestamp: str | None = None) -> dict[str, Any]:
+        state_before = self.load_state()
+        position_state = state_before.get("position") if isinstance(state_before.get("position"), dict) else None
+        position = self.fetch_position_state()
+        amount = float(position.get("contracts", 0.0) or 0.0)
+        if amount <= 0:
+            return {"status": "skipped", "reason": "no_open_qqq_position"}
+        if self.router_config.mode == "paper":
+            self._shadow_gate_record_close(position_state, reason=reason, exit_price=exit_price, timestamp=timestamp)
+            self.save_state({"position": None})
+            return {"status": "paper_closed", "symbol": self.symbol, "amount": amount, "reason": reason}
+        chunks = self._close_order_chunks(amount, float(position.get("notional_usdt", 0.0) or 0.0))
+        orders = []
+        for idx, chunk_amount in enumerate(chunks):
+            order = self.client.create_order(
+                self.symbol,
+                "market",
+                "sell",
+                chunk_amount,
+                params={"reduceOnly": True, "tdMode": self.router_config.qqq_margin_mode, "posSide": "long"},
+            )
+            orders.append({"order": order, "amount": chunk_amount})
+            chunk_delay = self._sell_chunk_delay_seconds()
+            if idx < len(chunks) - 1 and chunk_delay > 0:
+                time.sleep(chunk_delay)
+        confirmed = self._wait_until_flat()
+        status = "closed_confirmed" if confirmed["contracts"] <= 0 else "submitted_but_unconfirmed"
+        payload = {
+            "status": status,
+            "action": "close_qqq_usdt_long",
+            "orders": orders,
+            "amount": amount,
+            "remaining_contracts": confirmed["contracts"],
+            "remaining_notional_usdt": confirmed["notional_usdt"],
+            "reason": reason,
+        }
+        self.store.append_action("runtime", "CLOSE_QQQ_USDT", payload)
+        if confirmed["contracts"] <= 0:
+            self._shadow_gate_record_close(position_state, reason=reason, exit_price=exit_price, timestamp=timestamp)
+            self.save_state({"position": None})
+        return payload
+
+    def _close_order_chunks(self, amount: float, notional_usdt: float) -> list[float]:
+        chunk_limits: list[float] = []
+        if self.router_config.qqq_max_close_order_contracts is not None:
+            chunk_limits.append(float(self.router_config.qqq_max_close_order_contracts))
+        if self.router_config.qqq_max_market_order_contracts is not None:
+            chunk_limits.append(float(self.router_config.qqq_max_market_order_contracts))
+        if self.router_config.qqq_max_close_order_notional_usdt is not None and notional_usdt > 0:
+            chunk_limits.append(float(amount) * float(self.router_config.qqq_max_close_order_notional_usdt) / float(notional_usdt))
+        try:
+            market_max = (((self._market().get("limits") or {}).get("amount") or {}).get("max"))
+            if market_max not in (None, ""):
+                chunk_limits.append(float(market_max))
+        except Exception:
+            pass
+        max_contracts = min(chunk_limits) if chunk_limits else None
+        if max_contracts is None or float(max_contracts) <= 0 or float(max_contracts) >= float(amount):
+            return [float(amount)]
+        chunks = []
+        remaining = float(amount)
+        while remaining > 0:
+            chunk = min(remaining, float(max_contracts))
+            chunk = float(self._amount_to_precision(self._market(), chunk))
+            if chunk <= 0:
+                break
+            chunks.append(chunk)
+            remaining = max(0.0, remaining - chunk)
+        return chunks or [float(amount)]
+
+    def _sell_chunk_delay_seconds(self) -> float:
+        configured = self.router_config.qqq_market_order_chunk_delay_seconds
+        if configured is not None:
+            return max(0.0, float(configured))
+        return max(0.0, float(self.router_config.qqq_close_chunk_delay_seconds))
+
+    def _wait_until_flat(self) -> dict[str, float]:
+        deadline = time.time() + max(0.0, float(self.router_config.qqq_close_confirm_timeout_seconds))
+        poll = max(0.1, float(self.router_config.qqq_close_confirm_poll_seconds))
+        latest = self.fetch_position_state()
+        while float(latest.get("contracts", 0.0) or 0.0) > 0 and time.time() < deadline:
+            time.sleep(poll)
+            latest = self.fetch_position_state()
+        return {
+            "contracts": float(latest.get("contracts", 0.0) or 0.0),
+            "notional_usdt": float(latest.get("notional_usdt", 0.0) or 0.0),
+        }
+
+    def _attach_stop_to_order_params(self, params: dict[str, Any], context: QqqOrderContext) -> dict[str, Any] | None:
+        if not bool(self.router_config.qqq_enable_exchange_stop) or context.stop_price <= 0:
+            return None
+        market = self._market()
+        attach_algo_client_id = self._generate_attach_algo_client_id()
+        params["attachAlgoOrds"] = [
+            {
+                "slTriggerPx": self._price_to_precision(market, context.stop_price),
+                "slOrdPx": "-1",
+                "slTriggerPxType": "mark",
+                "attachAlgoClOrdId": attach_algo_client_id,
+            }
+        ]
+        return {
+            "status": "client_id_pending",
+            "algo_id": None,
+            "algo_client_id": attach_algo_client_id,
+            "stop_price": context.stop_price,
+        }
+
+    def _with_order_id(self, exchange_stop: dict[str, Any] | None, order: dict[str, Any]) -> dict[str, Any] | None:
+        if exchange_stop is None:
+            return None
+        updated = dict(exchange_stop)
+        order_id = self._extract_order_id(order)
+        if order_id:
+            updated["order_id"] = order_id
+        return updated
+
+    def update_trailing_stop(self, context: QqqOrderContext, exchange_position: dict[str, Any]) -> dict[str, Any] | None:
+        state = self.load_state()
+        current = state.get("position") if isinstance(state.get("position"), dict) else {}
+        old_stop = float(current.get("stop_price", 0.0) or 0.0)
+        if context.stop_price <= old_stop:
+            return None
+        exchange_stop: dict[str, Any] | None = None
+        if self.router_config.mode != "paper" and bool(self.router_config.qqq_enable_exchange_stop):
+            exchange_stop = self._amend_exchange_stop(context.stop_price, current, exchange_position)
+            if exchange_stop.get("status") == "error":
+                payload = {
+                    "status": "error",
+                    "action": "update_qqq_trailing_stop",
+                    "reason": "exchange_stop_amend_failed",
+                    "old_stop_price": old_stop,
+                    "new_stop_price": context.stop_price,
+                    "exchange_contracts": exchange_position.get("contracts"),
+                    "exchange_stop": exchange_stop,
+                }
+                self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "UPDATE_QQQ_STOP_FAILED", payload)
+                return payload
+        payload = {
+            "status": "tracked",
+            "action": "update_qqq_trailing_stop",
+            "old_stop_price": old_stop,
+            "new_stop_price": context.stop_price,
+            "exchange_contracts": exchange_position.get("contracts"),
+        }
+        if exchange_stop is not None:
+            payload["exchange_stop"] = exchange_stop
+        self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "UPDATE_QQQ_STOP", payload)
+        return payload
+
+    def _with_exchange_stop_fields(
+        self,
+        position: dict[str, Any] | None,
+        fields: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if position is None or not fields:
+            return position
+        updated = dict(position)
+        for source_key, state_key in (
+            ("order_id", "exchange_order_id"),
+            ("algo_id", "exchange_attach_algo_id"),
+            ("algo_client_id", "exchange_attach_algo_client_id"),
+        ):
+            value = fields.get(source_key)
+            if value:
+                updated[state_key] = value
+        return updated
+
+    def _generate_attach_algo_client_id(self) -> str:
+        return f"qqqsl{uuid.uuid4().hex[:27]}"
+
+    def _extract_attached_algo_identity(self, position_state: dict[str, Any] | None) -> dict[str, str | None]:
+        if not isinstance(position_state, dict):
+            return {"algo_id": None, "algo_client_id": None}
+        close_order_algos = position_state.get("close_order_algos") or []
+        if not close_order_algos:
+            raw = position_state.get("raw")
+            info = raw.get("info") if isinstance(raw, dict) and isinstance(raw.get("info"), dict) else {}
+            close_order_algos = info.get("closeOrderAlgo") if isinstance(info.get("closeOrderAlgo"), list) else []
+        for algo in close_order_algos:
+            if not isinstance(algo, dict):
+                continue
+            algo_id = algo.get("attachAlgoId") or algo.get("algoId")
+            algo_client_id = (
+                algo.get("attachAlgoClOrdId")
+                or algo.get("algoClOrdId")
+                or algo.get("slAttachAlgoClOrdId")
+            )
+            if algo_id or algo_client_id:
+                return {
+                    "algo_id": str(algo_id) if algo_id else None,
+                    "algo_client_id": str(algo_client_id) if algo_client_id else None,
+                }
+        return {"algo_id": None, "algo_client_id": None}
+
+    def _fetch_pending_algo_orders(self) -> list[dict[str, Any]]:
+        orders: list[dict[str, Any]] = []
+        errors: list[str] = []
+        seen: set[tuple[str, str]] = set()
+        for order_type in ("oco", "conditional"):
+            try:
+                response = self.client.fetch_pending_algo_orders({"ordType": order_type})
+            except Exception as exc:
+                errors.append(f"{order_type}: {exc}")
+                continue
+            data = response.get("data") if isinstance(response, dict) else None
+            if not isinstance(data, list):
+                continue
+            for order in data:
+                if not isinstance(order, dict):
+                    continue
+                identity = (str(order.get("ordType") or order_type), str(order.get("algoId") or order.get("algoClOrdId") or id(order)))
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                orders.append(order)
+        if not orders and errors:
+            raise RuntimeError("; ".join(errors))
+        return orders
+
+    def _select_pending_algo_order(self, local_position: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        pending_orders = self._fetch_pending_algo_orders()
+        market_id = self._market().get("id")
+        local_algo_id = str((local_position or {}).get("exchange_attach_algo_id") or "")
+        local_algo_client_id = str((local_position or {}).get("exchange_attach_algo_client_id") or "")
+        candidates = []
+        for order in pending_orders:
+            if not isinstance(order, dict):
+                continue
+            if market_id and order.get("instId") != market_id:
+                continue
+            if order.get("ordType") not in {"oco", "conditional"}:
+                continue
+            if order.get("state") not in {"live", "effective"}:
+                continue
+            if order.get("posSide") not in (None, "", "long"):
+                continue
+            candidates.append(order)
+        for order in candidates:
+            if local_algo_id and str(order.get("algoId") or "") == local_algo_id:
+                return order
+            if local_algo_client_id and str(order.get("algoClOrdId") or "") == local_algo_client_id:
+                return order
+        return candidates[0] if candidates else None
+
+    def _refresh_exchange_stop_identity(
+        self,
+        *,
+        attach_algo_client_id: str | None = None,
+        order_id: str | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "status": "disabled" if not bool(self.router_config.qqq_enable_exchange_stop) else "not_found",
+            "order_id": order_id,
+            "algo_id": None,
+            "algo_client_id": attach_algo_client_id,
+        }
+        if self.router_config.mode == "paper" or not bool(self.router_config.qqq_enable_exchange_stop):
+            return result
+        try:
+            position = self.fetch_position_state()
+            identity = self._extract_attached_algo_identity(position)
+            if not identity["algo_id"] and not identity["algo_client_id"]:
+                pending = self._select_pending_algo_order()
+                if pending:
+                    identity = {
+                        "algo_id": str(pending.get("algoId")) if pending.get("algoId") else None,
+                        "algo_client_id": str(pending.get("algoClOrdId")) if pending.get("algoClOrdId") else attach_algo_client_id,
+                    }
+            result.update(
+                {
+                    "status": "found" if identity["algo_id"] or identity["algo_client_id"] else "not_found",
+                    "order_id": order_id or self._extract_order_id(position.get("raw")),
+                    "algo_id": identity["algo_id"],
+                    "algo_client_id": identity["algo_client_id"] or attach_algo_client_id,
+                }
+            )
+            if result["status"] == "not_found" and attach_algo_client_id:
+                result["status"] = "client_id_pending"
+        except Exception as exc:
+            result.update({"status": "error", "error": str(exc)})
+        return result
+
+    def _extract_order_id(self, order_or_position: dict[str, Any] | None) -> str | None:
+        if not isinstance(order_or_position, dict):
+            return None
+        for key in ("id", "order", "ordId"):
+            value = order_or_position.get(key)
+            if value:
+                return str(value)
+        info = order_or_position.get("info")
+        if isinstance(info, dict):
+            for key in ("ordId", "orderId"):
+                value = info.get(key)
+                if value:
+                    return str(value)
+        return None
+
+    def _build_algo_amend_request(
+        self,
+        *,
+        attach_algo_id: str | None,
+        attach_algo_client_id: str | None,
+        stop_price: float,
+    ) -> dict[str, Any]:
+        market = self._market()
+        request = {
+            "instId": self._market()["id"],
+            "newSlTriggerPx": self._price_to_precision(market, stop_price),
+            "newSlOrdPx": "-1",
+            "newSlTriggerPxType": "mark",
+        }
+        if attach_algo_id:
+            request["algoId"] = attach_algo_id
+        elif attach_algo_client_id:
+            request["algoClOrdId"] = attach_algo_client_id
+        else:
+            raise ValueError("Missing QQQ attached stop identifier")
+        return request
+
+    def _build_conditional_algo_amend_request(
+        self,
+        *,
+        attach_algo_id: str | None,
+        attach_algo_client_id: str | None,
+        stop_price: float,
+    ) -> dict[str, Any]:
+        market = self._market()
+        request = {
+            "instId": market["id"],
+            "newTriggerPx": self._price_to_precision(market, stop_price),
+            "newOrdPx": "-1",
+            "newTriggerPxType": "mark",
+        }
+        if attach_algo_id:
+            request["algoId"] = attach_algo_id
+        elif attach_algo_client_id:
+            request["algoClOrdId"] = attach_algo_client_id
+        else:
+            raise ValueError("Missing QQQ conditional stop identifier")
+        return request
+
+    def _amend_exchange_stop(
+        self,
+        stop_price: float,
+        local_position: dict[str, Any],
+        exchange_position: dict[str, Any],
+    ) -> dict[str, Any]:
+        identity = self._extract_attached_algo_identity(exchange_position)
+        attach_algo_id = identity["algo_id"] or local_position.get("exchange_attach_algo_id")
+        attach_algo_client_id = identity["algo_client_id"] or local_position.get("exchange_attach_algo_client_id")
+        pending_order_type = None
+        if not attach_algo_id and not attach_algo_client_id:
+            try:
+                pending = self._select_pending_algo_order(local_position)
+            except Exception as exc:
+                return {"status": "error", "reason": "pending_algo_lookup_failed", "error": str(exc)}
+            if pending:
+                pending_order_type = str(pending.get("ordType") or "")
+                attach_algo_id = str(pending.get("algoId")) if pending.get("algoId") else None
+                attach_algo_client_id = str(pending.get("algoClOrdId")) if pending.get("algoClOrdId") else None
+        if not attach_algo_id and not attach_algo_client_id:
+            return {"status": "error", "reason": "missing_exchange_stop_identifier"}
+        request = self._build_algo_amend_request(
+            attach_algo_id=attach_algo_id,
+            attach_algo_client_id=attach_algo_client_id,
+            stop_price=stop_price,
+        )
+        try:
+            response = self.client.amend_algo_order(request)
+        except Exception as exc:
+            primary_error = str(exc)
+            fallback_request = self._build_conditional_algo_amend_request(
+                attach_algo_id=attach_algo_id,
+                attach_algo_client_id=attach_algo_client_id,
+                stop_price=stop_price,
+            )
+            try:
+                response = self.client.amend_algo_order(fallback_request)
+                request = fallback_request
+            except Exception as fallback_exc:
+                return {
+                    "status": "error",
+                    "reason": "amend_algo_order_failed",
+                    "error": str(fallback_exc),
+                    "primary_error": primary_error,
+                    "pending_order_type": pending_order_type,
+                    "request": fallback_request,
+                }
+        return {
+            "status": "amended",
+            "algo_id": attach_algo_id,
+            "algo_client_id": attach_algo_client_id,
+            "stop_price": stop_price,
+            "request": request,
+            "response": response,
+        }

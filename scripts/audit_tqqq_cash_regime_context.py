@@ -88,7 +88,10 @@ def build_regime_frame(qqq: pd.DataFrame, tqqq: pd.DataFrame, spy: pd.DataFrame,
     merged = merged.merge(vix_frame[["session_day", "vix_close"]], on="session_day", how="left")
     merged["qqq_spy_rel_20"] = (merged["qqq_close"] / merged["qqq_close"].shift(20)) - (merged["spy_close"] / merged["spy_close"].shift(20))
     merged["ixic_ma_50"] = merged["ixic_close"].rolling(50).mean()
-    merged["ixic_trend_label"] = (merged["ixic_close"] > merged["ixic_ma_50"]).map({True: "ixic_up", False: "ixic_down"})
+    merged["ixic_trend_label"] = "unknown"
+    ixic_ready = merged["ixic_close"].notna() & merged["ixic_ma_50"].notna()
+    merged.loc[ixic_ready & (merged["ixic_close"] > merged["ixic_ma_50"]), "ixic_trend_label"] = "ixic_up"
+    merged.loc[ixic_ready & (merged["ixic_close"] <= merged["ixic_ma_50"]), "ixic_trend_label"] = "ixic_down"
     merged["vix_label"] = merged["vix_close"].map(lambda value: label_vix(float(value)) if pd.notna(value) else "unknown")
     merged["rel_strength_label"] = merged["qqq_spy_rel_20"].map(lambda value: label_rel_strength(float(value)) if pd.notna(value) else "unknown")
     return merged

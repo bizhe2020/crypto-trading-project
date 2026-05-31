@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import json
+import subprocess
 import time
 from pathlib import Path
 
 import pandas as pd
 import requests
+from urllib.parse import urlencode
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +75,7 @@ def fetch_chunk(
     start_ms: int,
     end_ms: int,
     timeframe: str,
+    proxy: str | None = None,
 ) -> pd.DataFrame:
     params = {
         "period1": int(start_ms / 1000),
@@ -80,9 +84,29 @@ def fetch_chunk(
         "includeAdjustedClose": "true",
         "events": "div,splits",
     }
-    response = session.get(YAHOO_CHART_URL.format(symbol=symbol.upper()), params=params, timeout=60)
-    response.raise_for_status()
-    payload = response.json()
+    if proxy:
+        url = f"{YAHOO_CHART_URL.format(symbol=symbol.upper())}?{urlencode(params)}"
+        command = [
+            "curl",
+            "-sS",
+            "-L",
+            "--max-time",
+            "60",
+            "-A",
+            "Mozilla/5.0",
+            "--compressed",
+            "--proxy",
+            proxy,
+            url,
+        ]
+        result = subprocess.run(command, text=True, capture_output=True, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(f"curl failed for {symbol} {timeframe}: {result.stderr.strip() or result.stdout.strip()}")
+        payload = json.loads(result.stdout)
+    else:
+        response = session.get(YAHOO_CHART_URL.format(symbol=symbol.upper()), params=params, timeout=60)
+        response.raise_for_status()
+        payload = response.json()
     chart = payload.get("chart", {})
     error = chart.get("error")
     if error:
@@ -117,6 +141,7 @@ def fetch_timeframe(
     end: str | None,
     output_path: Path,
     sleep_seconds: float,
+    proxy: str | None = None,
 ) -> pd.DataFrame:
     existing = load_existing(output_path)
     start_dt = normalize_timestamp(start)
@@ -141,7 +166,14 @@ def fetch_timeframe(
 
     while since < end_dt:
         chunk_end = min(since + max_span, end_dt)
-        batch = fetch_chunk(session, symbol, int(since.timestamp() * 1000), int(chunk_end.timestamp() * 1000), timeframe)
+        batch = fetch_chunk(
+            session,
+            symbol,
+            int(since.timestamp() * 1000),
+            int(chunk_end.timestamp() * 1000),
+            timeframe,
+            proxy=proxy,
+        )
         if not batch.empty:
             batch = batch[(batch["date"] >= since) & (batch["date"] <= end_dt)]
             if not batch.empty:
@@ -185,6 +217,7 @@ def main() -> None:
                 end=args.end,
                 output_path=output_path,
                 sleep_seconds=args.sleep_seconds,
+                proxy=args.proxy,
             )
             if df.empty:
                 print(f"{symbol.upper()} {timeframe}: no data written to {output_path}")

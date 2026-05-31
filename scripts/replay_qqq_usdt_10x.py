@@ -33,7 +33,18 @@ def load_funding(path: Path) -> pd.DataFrame:
         df["date"] = pd.to_datetime(df["date"], utc=True)
     rate_col = "fundingRate" if "fundingRate" in df.columns else "funding_rate"
     df["funding_rate_value"] = pd.to_numeric(df[rate_col], errors="coerce").fillna(0.0)
-    return df[["date", "funding_rate_value"]].sort_values("date").reset_index(drop=True)
+    df["funding_event_time"] = df["date"]
+    return df[["date", "funding_event_time", "funding_rate_value"]].sort_values("date").reset_index(drop=True)
+
+
+def is_funding_settlement_bar(bar_date: Any, funding_event_time: Any) -> bool:
+    if pd.isna(funding_event_time):
+        return False
+    bar_ts = pd.Timestamp(bar_date)
+    event_ts = pd.Timestamp(funding_event_time)
+    bar_ts = bar_ts.tz_localize("UTC") if bar_ts.tzinfo is None else bar_ts.tz_convert("UTC")
+    event_ts = event_ts.tz_localize("UTC") if event_ts.tzinfo is None else event_ts.tz_convert("UTC")
+    return bar_ts == event_ts
 
 
 def max_drawdown_pct(equity: pd.Series) -> float:
@@ -62,6 +73,7 @@ def run_10x_replay(
         allow_exact_matches=True,
     )
     merged["funding_rate_value"] = merged["funding_rate_value"].fillna(0.0)
+    merged["funding_event_time"] = merged["funding_event_time"].where(merged["funding_event_time"].notna(), pd.NaT)
 
     capital = float(initial_capital)
     holding = False
@@ -81,6 +93,7 @@ def run_10x_replay(
         exited_today = False
         fee_cost = 0.0
         funding_cost = 0.0
+        funding_settled = False
         stop_hit = False
 
         if holding and not allow_now:
@@ -134,8 +147,10 @@ def run_10x_replay(
             else:
                 bar_ret = close_price / open_price - 1.0 if open_price > 0 else 0.0
                 capital *= 1.0 + leverage * bar_ret
-                funding_cost = max(float(row.funding_rate_value), 0.0) * leverage
-                capital *= 1.0 - funding_cost
+                funding_settled = is_funding_settlement_bar(row.date, row.funding_event_time)
+                if funding_settled:
+                    funding_cost = float(row.funding_rate_value) * leverage
+                    capital *= 1.0 - funding_cost
                 stop_price = max(stop_price, close_price * (1.0 - float(stop_loss_pct) / 100.0))
 
         rows.append(
@@ -149,6 +164,7 @@ def run_10x_replay(
                 "capital": float(capital),
                 "daily_return": capital / start_capital - 1.0 if start_capital > 0 else 0.0,
                 "funding_rate_value": float(row.funding_rate_value),
+                "funding_settled": bool(funding_settled),
                 "fee_cost": float(fee_cost),
                 "funding_cost": float(funding_cost),
             }
@@ -167,6 +183,9 @@ def run_10x_replay(
             "win_rate_pct": round(float((trades_df["trade_return_pct"] > 0).mean() * 100.0), 2) if not trades_df.empty else 0.0,
             "avg_trade_return_pct": round(float(trades_df["trade_return_pct"].mean()), 2) if not trades_df.empty else 0.0,
             "total_funding_cost_pct_est": round(float(path["funding_cost"].sum() * 100.0), 2) if not path.empty else 0.0,
+            "positive_funding_cost_pct_est": round(float(path.loc[path["funding_cost"] > 0, "funding_cost"].sum() * 100.0), 2) if not path.empty else 0.0,
+            "negative_funding_credit_pct_est": round(float(-path.loc[path["funding_cost"] < 0, "funding_cost"].sum() * 100.0), 2) if not path.empty else 0.0,
+            "funding_settlement_events": int(path["funding_settled"].sum()) if not path.empty else 0,
             "start": str(path.iloc[0]["date"]) if not path.empty else None,
             "end": str(path.iloc[-1]["date"]) if not path.empty else None,
         },

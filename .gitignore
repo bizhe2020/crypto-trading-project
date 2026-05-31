@@ -15,10 +15,33 @@ var/log/*
 !var/log/.gitkeep
 var/run/
 var/live_readiness/
+var/tmp/
+var/reports/*
+!var/reports/qqq_drawdown_lgb_shadow_predictions_macro_subfactor_core.csv
+!var/reports/qqq_long_cycle_correction20d10_qqqonly_lgb_predictions.csv
+!var/reports/router_baseline_qmin60_switch8_nq_continuous_current_20260531.csv
+!var/reports/router_baseline_qmin60_switch8_nq_continuous_current_20260531.json
+!var/reports/router_baseline_qmin60_switch8_nq_continuous_current_20260531.md
+!var/reports/router_baseline_qmin60_switch8_real_overlap_current_20260531.csv
+!var/reports/router_baseline_qmin60_switch8_real_overlap_current_20260531.json
+!var/reports/router_baseline_qmin60_switch8_real_overlap_current_20260531.md
+!var/reports/router_extreme_qmin120_switch4_nq_continuous_current_20260531.csv
+!var/reports/router_extreme_qmin120_switch4_nq_continuous_current_20260531.json
+!var/reports/router_extreme_qmin120_switch4_nq_continuous_current_20260531.md
+!var/reports/router_extreme_qmin120_switch4_real_overlap_current_20260531.csv
+!var/reports/router_extreme_qmin120_switch4_real_overlap_current_20260531.json
+!var/reports/router_extreme_qmin120_switch4_real_overlap_current_20260531.md
+!var/reports/router_fair_trend_qmin96_switch6_nq_continuous_20260531.csv
+!var/reports/router_fair_trend_qmin96_switch6_nq_continuous_20260531.json
+!var/reports/router_fair_trend_qmin96_switch6_nq_continuous_20260531.md
+!var/reports/router_fair_trend_qmin96_switch6_real_overlap_20260531.csv
+!var/reports/router_fair_trend_qmin96_switch6_real_overlap_20260531.json
+!var/reports/router_fair_trend_qmin96_switch6_real_overlap_20260531.md
 var/high_leverage_expansion/
 var/high_leverage_scan/
 var/pa_ict_liquidity/
 var/tokyo_audit/
+var/okx/
 
 # Local live trading configs with real exchange credentials
 freqtrade_data/config-live-*-final.json
@@ -27,6 +50,7 @@ config/config.live*.json
 !config/config.live.5x-3pct.json
 !config/config.live.5x-3pct.template.json
 !config/config.live.high-leverage-structure.template.json
+!config/config.live.strategy-router.template.json
 !config/config.live.high-leverage-structure.fallback-a.template.json
 !config/config.live.high-leverage-structure.fallback-b.template.json
 !config/config.live.high-leverage-structure.fallback-c.template.json
