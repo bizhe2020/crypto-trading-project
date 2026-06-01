@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -728,6 +729,65 @@ def test_qqq_daily_signal_stale_guard_allows_recent_signal() -> None:
         now=pd.Timestamp("2026-05-29T08:00:00Z"),
     )
     assert status["stale"] is False
+
+
+def test_qqq_daily_signal_refresh_retries_transient_errors(monkeypatch, tmp_path: Path) -> None:
+    calls = {"QQQ": 0}
+
+    def fake_fetch_timeframe(**kwargs: Any) -> pd.DataFrame:
+        calls[str(kwargs["symbol"])] += 1
+        if calls[str(kwargs["symbol"])] < 3:
+            raise RuntimeError("transient yahoo 400")
+        return pd.DataFrame({"date": [pd.Timestamp("2026-05-29T20:00:00Z")]})
+
+    monkeypatch.setattr("bot.qqq_usdt_signal_adapter.fetch_timeframe", fake_fetch_timeframe)
+    monkeypatch.setattr("bot.qqq_usdt_signal_adapter.time.sleep", lambda _: None)
+
+    adapter = QqqUsdtSignalAdapter(tmp_path / "qqq.json")
+    status = adapter._refresh_daily_signal_source(
+        {
+            "daily_signal_refresh_enabled": True,
+            "daily_signal_refresh_symbols": ["QQQ"],
+            "daily_signal_refresh_max_attempts": 4,
+            "daily_signal_refresh_retry_sleep_seconds": 0,
+            "daily_signal_refresh_fail_open": True,
+        },
+        {"data_root": str(tmp_path)},
+    )
+
+    assert status["status"] == "ok"
+    assert status["errors"] == {}
+    assert status["attempts"] == {"QQQ": 3}
+    assert calls["QQQ"] == 3
+
+
+def test_qqq_daily_signal_refresh_raises_after_retry_exhaustion(monkeypatch, tmp_path: Path) -> None:
+    calls = {"QQQ": 0}
+
+    def fake_fetch_timeframe(**kwargs: Any) -> pd.DataFrame:
+        calls[str(kwargs["symbol"])] += 1
+        raise RuntimeError("persistent yahoo 400")
+
+    monkeypatch.setattr("bot.qqq_usdt_signal_adapter.fetch_timeframe", fake_fetch_timeframe)
+    monkeypatch.setattr("bot.qqq_usdt_signal_adapter.time.sleep", lambda _: None)
+
+    adapter = QqqUsdtSignalAdapter(tmp_path / "qqq.json")
+    try:
+        adapter._refresh_daily_signal_source(
+            {
+                "daily_signal_refresh_enabled": True,
+                "daily_signal_refresh_symbols": ["QQQ"],
+                "daily_signal_refresh_max_attempts": 3,
+                "daily_signal_refresh_retry_sleep_seconds": 0,
+                "daily_signal_refresh_fail_open": False,
+            },
+            {"data_root": str(tmp_path)},
+        )
+    except RuntimeError as exc:
+        assert "persistent yahoo 400" in str(exc)
+    else:
+        raise AssertionError("persistent refresh failure should raise when fail_open is disabled")
+    assert calls["QQQ"] == 3
 
 
 def test_qqq_closed_bar_filter_drops_incomplete_4h_bar() -> None:

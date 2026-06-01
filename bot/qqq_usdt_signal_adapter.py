@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -333,6 +334,8 @@ class QqqUsdtSignalAdapter:
         proxy = config.get("daily_signal_refresh_proxy", config.get("proxy"))
         start = str(config.get("daily_signal_refresh_start") or "2022-01-01T00:00:00Z")
         sleep_seconds = float(config.get("daily_signal_refresh_sleep_seconds", 0.25) or 0.25)
+        max_attempts = max(1, int(config.get("daily_signal_refresh_max_attempts", 4) or 4))
+        retry_sleep_seconds = max(0.0, float(config.get("daily_signal_refresh_retry_sleep_seconds", 1.0) or 1.0))
         fail_open = bool(config.get("daily_signal_refresh_fail_open", False))
 
         session = requests.Session()
@@ -341,29 +344,40 @@ class QqqUsdtSignalAdapter:
             session.proxies.update({"http": str(proxy), "https": str(proxy)})
 
         latest_by_symbol: dict[str, str | None] = {}
+        attempts_by_symbol: dict[str, int] = {}
         errors: dict[str, str] = {}
         for symbol in [str(item) for item in symbols]:
-            try:
-                frame = fetch_timeframe(
-                    session=session,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    start=start,
-                    end=config.get("daily_signal_refresh_end"),
-                    output_path=output_path_for(data_root, symbol, timeframe),
-                    sleep_seconds=sleep_seconds,
-                    proxy=str(proxy) if proxy else None,
-                )
-                latest_by_symbol[symbol] = str(frame["date"].max()) if not frame.empty else None
-            except Exception as exc:
-                errors[symbol] = str(exc)
+            last_error: Exception | None = None
+            for attempt in range(1, max_attempts + 1):
+                attempts_by_symbol[symbol] = attempt
+                try:
+                    frame = fetch_timeframe(
+                        session=session,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        start=start,
+                        end=config.get("daily_signal_refresh_end"),
+                        output_path=output_path_for(data_root, symbol, timeframe),
+                        sleep_seconds=sleep_seconds,
+                        proxy=str(proxy) if proxy else None,
+                    )
+                    latest_by_symbol[symbol] = str(frame["date"].max()) if not frame.empty else None
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < max_attempts:
+                        time.sleep(retry_sleep_seconds * attempt)
+            if last_error is not None:
+                errors[symbol] = str(last_error)
                 if not fail_open:
-                    raise
+                    raise last_error
         return {
             "enabled": True,
             "status": "error" if errors else "ok",
             "proxy": str(proxy) if proxy else None,
             "symbols": latest_by_symbol,
+            "attempts": attempts_by_symbol,
             "errors": errors,
         }
 
