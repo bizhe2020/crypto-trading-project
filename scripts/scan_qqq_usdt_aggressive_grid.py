@@ -24,7 +24,7 @@ DEFAULT_OUTPUT = ROOT / "var" / "reports" / "qqq_usdt_aggressive_grid.json"
 AGGRESSIVE_LEVERAGE_PROFILES = {
     "dyn_cap10": {"base": 8.0, "offense": 10.0, "defense": 2.0},
     "base9_off10_def2": {"base": 9.0, "offense": 10.0, "defense": 2.0},
-    "base10_off10_def2": {"base": 10.0, "offense": 10.0, "defense": 2.0},
+    "base10_off10_def1": {"base": 10.0, "offense": 10.0, "defense": 1.0},
     "base8_off10_def4": {"base": 8.0, "offense": 10.0, "defense": 4.0},
     "base9_off10_def4": {"base": 9.0, "offense": 10.0, "defense": 4.0},
     "base10_off10_def4": {"base": 10.0, "offense": 10.0, "defense": 4.0},

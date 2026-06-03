@@ -263,7 +263,7 @@ def main() -> None:
     payload = {
         "config": {
             "signal_frozen_label": config.get("frozen_label"),
-            "base_structure": "base10_off10_def2",
+            "base_structure": "fixed10",
             "stop_loss_pct": float(args.stop_loss_pct),
             "coverage_start_1h": str(coverage_start),
             "coverage_end_4h": str(bars4h["date"].max()) if not bars4h.empty else None,

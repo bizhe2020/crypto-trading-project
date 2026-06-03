@@ -59,7 +59,44 @@ def load_strategy_frame(config: dict[str, Any]) -> pd.DataFrame:
         on="session_day",
         how="left",
     )
-    merged[["asset_open", "asset_high", "asset_low", "asset_close"]] = merged[["asset_open", "asset_high", "asset_low", "asset_close"]].ffill()
+    required_ready = (
+        merged["qqq_close"].notna()
+        & merged["spy_close"].notna()
+        & merged["ixic_close"].notna()
+        & merged["vix_close"].notna()
+        & merged["asset_open"].notna()
+        & merged["asset_close"].notna()
+    )
+    merged["data_complete"] = required_ready
+    missing_reasons: list[str] = []
+    for _, row in merged.iterrows():
+        reasons: list[str] = []
+        for column in ["qqq_close", "spy_close", "ixic_close", "vix_close", "asset_open", "asset_close"]:
+            if pd.isna(row[column]):
+                reasons.append(column)
+        missing_reasons.append(",".join(reasons))
+    merged["missing_fields"] = missing_reasons
+
+    incomplete_rows = merged.loc[~required_ready, ["date", "missing_fields"]].copy()
+    merged.attrs["data_quality"] = {
+        "total_rows": int(len(merged)),
+        "complete_rows": int(required_ready.sum()),
+        "incomplete_rows": int((~required_ready).sum()),
+        "latest_complete_date": str(pd.Timestamp(merged.loc[required_ready, "date"].iloc[-1]).date()) if required_ready.any() else None,
+        "latest_row_complete": bool(required_ready.iloc[-1]) if len(required_ready) else False,
+        "incomplete_examples": [
+            {
+                "date": str(pd.Timestamp(row["date"]).date()),
+                "missing_fields": str(row["missing_fields"]),
+            }
+            for _, row in incomplete_rows.head(10).iterrows()
+        ],
+    }
+    if required_ready.any():
+        last_complete_index = int(required_ready[required_ready].index[-1])
+        merged = merged.iloc[: last_complete_index + 1].reset_index(drop=True)
+    else:
+        merged = merged.iloc[0:0].copy()
     merged["tqqq_open"] = merged["asset_open"]
     merged["tqqq_high"] = merged["asset_high"]
     merged["tqqq_low"] = merged["asset_low"]
