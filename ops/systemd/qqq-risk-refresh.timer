@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily QQQ runtime risk input refresh
+
+[Timer]
+OnCalendar=Mon..Fri 18:20
+Persistent=true
+AccuracySec=5m
+Unit=qqq-risk-refresh.service
+
+[Install]
+WantedBy=timers.target

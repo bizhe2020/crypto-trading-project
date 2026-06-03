@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh QQQ runtime risk inputs and CSV overlays
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__PROJECT_DIR__
+ExecStart=__PYTHON_BIN__ __PROJECT_DIR__/scripts/refresh_qqq_risk_runtime_inputs.py __RISK_REFRESH_ARGS__
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=2h
+Nice=10
+StandardOutput=append:__PROJECT_DIR__/var/log/qqq-risk-refresh.log
+StandardError=append:__PROJECT_DIR__/var/log/qqq-risk-refresh.log
