@@ -1,6 +1,6 @@
 # QQQ/USDT Aggressive Frozen
 
-当前 `QQQ/USDT` 合约 frozen 主入口按东京服务器实盘版本对齐：`fixed10` 基线 + 两层风险 overlay。
+当前 `QQQ/USDT` 合约 frozen 主入口按东京服务器实盘版本对齐：`fixed10` 基线 + 两层风险 overlay + 宏观 dollar cap overlay + shadow gate V2。
 
 - 信号来源：`QQQ` 日线 frozen 主线  
   `config/config.paper.tqqq-only-strict-recovery-frozen.json`
@@ -23,6 +23,13 @@
   - 长周期规则：`raw_prob_10d >= 0.35/0.50/0.65` 时分别把杠杆乘以 `0.75/0.50/0.25`
   - 风控文件使用上一条已完成日线信号，避免同日收盘信号前视
   - `risk_overlay_fail_open=false`，风控文件缺失、字段缺失或过期时 QQQ/USDT 主入口硬失败，不静默忽略
+- 宏观 proxy overlay：已接入 `QqqUsdtSignalAdapter.preview()`、`scripts/replay_proxy_strategy_router.py`、`scripts/audit_qqq_shadow_gate_v2_combined.py`
+  - 数据源：`data/public/macro/fred_macro-1d.feather`
+  - 模式：`dollar_zscore_cap`
+  - 规则：当 `macro_broad_dollar_index_z_252d >= 1.5` 时，把目标曝光 notional cap 到 `50%`
+  - 对齐口径：先按 `daily_signal_timestamp/session_day` 生成日级上下文，再 backward merge 到 `4h` bar；不按自然日重复 `4h` bar 滚动 z-score
+  - `macro_proxy_overlay_use_previous_signal=false`，沿用日级 available-as-of 宏观表的当日信号
+  - `macro_proxy_overlay_fail_open=false`；文件缺失、字段缺失或 stale 时主入口硬失败，前期 z-score warmup 的 `NaN` 只是不触发 cap
 - 配置成本口径：
   - `taker_fee_rate = 0.0005`
   - `slippage_bps = 5.0`
@@ -31,28 +38,61 @@
   - 单边交易费率 `0.02%`
   - 未额外计入滑点
 
-2026-05-30 trailing/shadow gate 审计冻结与 runtime 接入：
+2026-06-02 shadow gate V2 审计冻结与 runtime 接入：
 
 - Runtime 生效参数：`stop_loss_pct = 4.0`
 - Runtime shadow gate profile：
   - `reentry_rule = clear`
   - `reentry_clear_bars = 2`
-  - `loss_streak_stop = 2`
-  - `loss_streak_cooldown_bars = 20`
-  - `equity_dd_stop_pct = 25.0`
-  - `equity_dd_cooldown_bars = 10`
+  - `loss_streak_stop = 0`
+  - `loss_streak_cooldown_bars = 0`
+  - `equity_dd_stop_pct = 15.0`
+  - `equity_dd_cooldown_bars = 20`
 - Runtime 接入点：
   - QQQ executor 开仓前检查 shadow gate，阻断时不下单
   - QQQ executor 平仓后更新 loss streak / equity drawdown / clear-bars 状态
   - Router 切到 QQQ 前先检查 shadow gate，阻断时保持原执行策略，避免先 flatten BTC
   - 轨迹写入 `StateStore.action_log`，`action_type = QQQ_SHADOW_GATE`
-- NQ proxy closed-only 第二层结果：`960368.95% / DD 49.05% / CVaR5 -14.7966%`
-- Full 结果：`984833.54% / DD 49.05% / CVaR5 -14.7966%`
-- Real OKX overlap closed-only：`243.95% / DD 23.68%`，该窗口 `0` 次 stop hit，不能区分 `4.0` 与 `4.125`
+- Combined risk-overlay + shadow-gate audit 使用当前 frozen router 口径：`btc_min=35 / qqq_min=96 / switch=6 / takeover=6`
+- Full NQ proxy：V2 `18505422.00% / DD 44.64% / CVaR5 -13.4575%`，当前 balanced `11005839.37% / DD 48.49% / CVaR5 -14.0675%`
+- NQ closed-only：V2 `18045766.50% / DD 44.64% / CVaR5 -13.4575%`，当前 balanced `10732464.72% / DD 48.49% / CVaR5 -14.0675%`
+- Real OKX overlap：V2 与当前 balanced 同为 `269.87% / DD 22.13% / CVaR5 -10.7878%`；该窗口 `0` 次 stop hit，只能做 live data sanity check，不能证明 shadow gate 的完整周期稳定性
+- Rolling vs current balanced：
+  - `126d`: DD 改善 `27.66%`，CVaR 改善 `51.06%`，Calmar/return 改善 `36.17%`
+  - `252d`: DD 改善 `43.90%`，CVaR 改善 `75.61%`，Calmar/return 改善 `63.41%`
 - 报告：
-  - `var/reports/qqq_usdt_shadow_second_layer_stop_clear_equity_scan_20220101_20260529.json`
-  - `var/reports/qqq_usdt_shadow_second_layer_stop_clear_equity_scan_closed_20220101_20260528.json`
-  - `var/reports/qqq_usdt_shadow_second_layer_stop_clear_equity_scan_real_overlap_closed_20260304_20260528.json`
+  - `var/reports/qqq_shadow_gate_v2_combined_audit_20220101_20260529.json`
+  - `scripts/audit_qqq_shadow_gate_v2_combined.py`
+
+2026-06-03 dollar `cap50 z1.5` 冻结与 shared live-chain audit/replay 接入：
+
+- Frozen config：
+  - `config/config.paper.qqq-usdt-aggressive-frozen.json`
+  - `frozen_label = qqq_usdt_aggressive_fixed10_risk_overlay_stop4_shadow_v2_low_dd_dollar_cap50_z1_5_20260603`
+- Combined audit 对比口径：candidate 为当前 frozen；baseline 为同配置临时关闭 macro overlay
+- Full NQ router：
+  - candidate：`26115047.82% / DD 41.74% / CVaR5 -12.2179%`
+  - baseline：`18505422.00% / DD 44.64% / CVaR5 -13.4575%`
+- NQ closed-only router：
+  - candidate：`25466378.13% / DD 41.74% / CVaR5 -12.2179%`
+  - baseline：`18045766.50% / DD 44.64% / CVaR5 -13.4575%`
+- Real OKX overlap：
+  - candidate 与 baseline 同为 `269.87% / DD 22.13% / CVaR5 -10.7878%`
+  - shared router replay 同样不变：`269.50% / DD 22.13%`
+  - 原因是当前 overlap 窗口 `macro_trigger_bars = 0 / macro_cap_bars = 0`
+- Shared combined audit 的 QQQ 4h path 触发 footprint：
+  - `macro_trigger_bars = 85`
+  - `macro_cap_bars = 85`
+  - `macro_cash_bars = 0`
+  - `macro_exit_events = 0`
+- 与此前 sidecar 研究对比：
+  - topline router 指标已对齐到同一量级：`26115047.82% / DD 41.74% / CVaR5 -12.2179%`
+  - signal-day 对齐后的 shared 路径 cap bar 计数为 `85`，比旧 sidecar 统计少 `1` 个 bar，但未造成 topline 漂移
+- 报告：
+  - `var/reports/qqq_shadow_gate_v2_combined_audit_dollar_cap50_z1_5_20260603.json`
+  - `var/reports/qqq_shadow_gate_v2_combined_audit_shadow_v2_nomacro_20260603.json`
+  - `var/reports/router_replay_qqq_usdt_dollar_cap50_z1_5_20260603.json`
+  - `var/reports/router_replay_qqq_usdt_shadow_v2_nomacro_20260603.json`
 
 配置级 router replay 验证已迁移到最终 router frozen 文档：
 
@@ -61,7 +101,8 @@
 
 运行边界：
 
-- 当前 runtime QQQ 执行实际读取 `stop_loss_pct`、两层 risk overlay 字段与 `shadow_gate_replay_profile.runtime_enabled=true` 的 shadow gate 参数。
+- 当前 runtime QQQ 执行实际读取 `stop_loss_pct`、两层 risk overlay 字段、macro proxy overlay 字段与 `shadow_gate_replay_profile.runtime_enabled=true` 的 shadow gate V2 参数。
+- router live 模板不再携带旧 `qqq_stop_reentry_*` 字段；V2 的 reentry / cooldown 只由 QQQ frozen 配置内的 `shadow_gate_replay_profile` 驱动。
 - Shadow gate 状态持久化在 QQQ state DB 的 `qqq_shadow_gate_state` key；动作轨迹写入同一 DB 的 `action_log`。
 - Shadow gate 只阻断新的 QQQ 开仓/切换，不会阻止已有 QQQ 仓位因 signal off、router switch 或 stop hit 被平仓。
 
@@ -87,4 +128,6 @@
 - 本主链路只保留东京服务器已部署的 `fixed10` 基线；context-sizing 与 longproxy 旁路不再作为 frozen 主入口
 - `VIX` 不直接接入止损；当前风险控制由近期战术现金门和长周期杠杆 cap 承担
 - trailing stop 从 `3.5%` 提升到 `4.0%`，来自 2026-05-30 `3.75 -> 4.25` 细扫与第二层联合审计
+- shadow gate 从 2026-05-30 balanced profile 切到 2026-06-02 V2 low-DD profile：禁用 loss-streak gate，使用 `15%` equity-DD 与 `20` bar cooldown
+- 2026-06-03 frozen 再叠加 broad dollar `z >= 1.5 -> cap 50%` 的 signal-day 对齐 macro overlay；长样本明显改善，当前 real overlap 仍是 no-op
 - 重要风险：长周期 proxy 未计 QQQ/USDT 永续 funding，实盘前必须继续做 funding guard

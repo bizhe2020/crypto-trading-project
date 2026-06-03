@@ -37,8 +37,32 @@ EXIT_PROFILES = {
 }
 
 
-def load_signal_path(config_path: Path) -> tuple[dict[str, Any], pd.DataFrame]:
+def load_signal_path(config_path: Path, overrides: dict[str, Any] | None = None) -> tuple[dict[str, Any], pd.DataFrame]:
     config = load_strict_config(config_path)
+    if overrides:
+        allowed_overrides = {
+            "regime_filter",
+            "max_hold_days",
+            "trailing_lookback_days",
+            "trailing_drawdown_pct",
+            "switch_cost_bps",
+            "initial_capital",
+            "de_risk_signal_name",
+            "recovery_reentry_rule",
+            "recovery_reentry_cooldown_days",
+            "drawdown_ladder_enabled",
+            "drawdown_ladder_source",
+            "drawdown_ladder_threshold_pct",
+            "drawdown_ladder_peak_lookback_days",
+            "drawdown_ladder_scheme",
+            "drawdown_ladder_vix_rule",
+            "drawdown_ladder_rebound_exit_pct",
+            "drawdown_ladder_max_hold_days",
+        }
+        unknown = sorted(set(overrides) - allowed_overrides)
+        if unknown:
+            raise ValueError(f"Unsupported signal override keys: {unknown}")
+        config.update(overrides)
     frame = load_strict_frame_with_overlay_context(
         data_root=ROOT / str(config["data_root"]),
         entry_fast_window=int(config["entry_fast_window"]),

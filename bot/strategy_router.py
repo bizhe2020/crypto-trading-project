@@ -54,14 +54,17 @@ class StrategyRouterConfig:
     qqq_state_db_path: str = "state/runtime_qqq_usdt_router.db"
     qqq_margin_mode: str = "isolated"
     qqq_position_size_pct: float = 1.0
+    qqq_sizing_basis: str = "available"
+    qqq_sizing_cash_buffer_usdt: float = 0.0
     qqq_max_notional_usdt: float | None = None
     qqq_min_order_notional_usdt: float = 10.0
     qqq_min_rebalance_notional_usdt: float = 10.0
     qqq_rebalance_on_leverage_change: bool = True
+    qqq_rebalance_on_notional_gap: bool = False
     qqq_max_close_order_contracts: float | None = None
     qqq_max_close_order_notional_usdt: float | None = None
     qqq_max_market_order_contracts: float | None = None
-    qqq_market_order_chunk_delay_seconds: float | None = None
+    qqq_market_order_chunk_delay_seconds: float = 0.0
     qqq_close_confirm_timeout_seconds: float = 15.0
     qqq_close_confirm_poll_seconds: float = 1.0
     qqq_close_chunk_delay_seconds: float = 0.2
@@ -71,6 +74,13 @@ class StrategyRouterConfig:
     qqq_market_hours_start: str = "09:30"
     qqq_market_hours_end: str = "16:00"
     qqq_market_calendar: str = "NYSE"
+    qqq_profit_roll_enabled: bool = False
+    qqq_profit_roll_min_actual_leverage: float = 9.5
+    qqq_profit_roll_trigger: str = "any"
+    qqq_profit_roll_max_rolls_per_trade: int = 4
+    qqq_profit_roll_cooldown_bars: int = 1
+    qqq_profit_roll_skip_defense: bool = True
+    qqq_profit_roll_min_notional_usdt: float | None = None
     okx_markets_cache_path: str = "var/okx/markets_cache.json"
     telegram_enabled: bool = False
     telegram_token: str | None = None
@@ -80,11 +90,19 @@ class StrategyRouterConfig:
     telegram_notify_route_change: bool = True
     telegram_notify_execution: bool = True
     telegram_notify_data_warnings: bool = True
+    telegram_notify_gap_warnings: bool = True
     telegram_notify_errors: bool = True
+    router_audit_log_enabled: bool = True
+    router_audit_log_path: str | None = None
+    router_evaluation_timeout_seconds: float = 240.0
+    router_heartbeat_path: str | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "StrategyRouterConfig":
         filtered = {key: value for key, value in payload.items() if key in cls.__dataclass_fields__}
+        if "qqq_rebalance_on_notional_gap" not in payload:
+            basis = str(filtered.get("qqq_sizing_basis", cls.__dataclass_fields__["qqq_sizing_basis"].default) or "available").strip().lower()
+            filtered["qqq_rebalance_on_notional_gap"] = basis in {"total_equity", "equity", "total"}
         return cls(**filtered)
 
 
@@ -115,6 +133,8 @@ class StrategyRouter:
             "execution_credentials_config",
             "qqq_state_db_path",
             "okx_markets_cache_path",
+            "router_audit_log_path",
+            "router_heartbeat_path",
         ]:
             value = resolved.get(key)
             if not isinstance(value, str) or not value:
@@ -225,13 +245,29 @@ class StrategyRouter:
         )
         return eligible[0], "best_route_score"
 
-    def evaluate_latest(self, current_strategy: str | None | object = _CURRENT_STRATEGY_UNSET) -> dict[str, Any]:
+    def evaluate_latest(
+        self,
+        current_strategy: str | None | object = _CURRENT_STRATEGY_UNSET,
+        *,
+        current_strategy_override: str | None | object = _CURRENT_STRATEGY_UNSET,
+    ) -> dict[str, Any]:
         state = self._load_state()
         previous_strategy = state.get("selected_strategy")
-        if current_strategy is _CURRENT_STRATEGY_UNSET:
+        if (
+            current_strategy is not _CURRENT_STRATEGY_UNSET
+            and current_strategy_override is not _CURRENT_STRATEGY_UNSET
+            and current_strategy != current_strategy_override
+        ):
+            raise TypeError("current_strategy and current_strategy_override disagree")
+        effective_override = (
+            current_strategy_override
+            if current_strategy_override is not _CURRENT_STRATEGY_UNSET
+            else current_strategy
+        )
+        if effective_override is _CURRENT_STRATEGY_UNSET:
             effective_current_strategy = str(previous_strategy) if previous_strategy else None
         else:
-            effective_current_strategy = str(current_strategy) if current_strategy else None
+            effective_current_strategy = str(effective_override) if effective_override else None
         candidates = self._collect_candidates()
         selected, reason = self._choose_candidate(candidates, effective_current_strategy)
 

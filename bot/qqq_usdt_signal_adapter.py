@@ -10,6 +10,7 @@ import requests
 
 from bot.market_data import OhlcvRepository
 from bot.okx_client import OkxClient
+from bot.qqq_macro_proxy_overlay import apply_macro_proxy_overlay, build_macro_proxy_context, macro_proxy_overlay_for_bar
 from bot.qqq_runtime_policy import filter_closed_bars
 from bot.strategy_router import RoutedSignalCandidate
 from scripts.fetch_public_etf_history import fetch_timeframe, output_path_for
@@ -29,12 +30,13 @@ class QqqUsdtSignalAdapter:
         config = json.loads(self.config_path.read_text())
         signal_source = self._resolve_path(config["signal_source"])
         data_4h = self._resolve_path(config["data_4h"])
+        signal_overrides = self._signal_overrides(config)
         signal_refresh_status: dict[str, Any] = {"enabled": False}
         refresh_status = self._refresh_okx_4h(config)
         try:
             signal_config = load_strict_config(signal_source)
             signal_refresh_status = self._refresh_daily_signal_source(config, signal_config)
-            _, signal_path = load_signal_path(signal_source)
+            _, signal_path = load_signal_path(signal_source, overrides=signal_overrides)
         except Exception as exc:
             return self._inactive_candidate(
                 config,
@@ -42,6 +44,7 @@ class QqqUsdtSignalAdapter:
                 metadata={
                     "data_refresh": refresh_status,
                     "daily_signal_refresh": signal_refresh_status,
+                    "signal_overrides": signal_overrides,
                     "error": str(exc),
                 },
             )
@@ -54,6 +57,7 @@ class QqqUsdtSignalAdapter:
                     "data_refresh": refresh_status,
                     "daily_signal_refresh": signal_refresh_status,
                     "daily_signal_stale": stale_status,
+                    "signal_overrides": signal_overrides,
                 },
             )
         bars = enrich_bars(attach_daily_state(load_okx_4h(data_4h), signal_path))
@@ -72,6 +76,7 @@ class QqqUsdtSignalAdapter:
                     "data_refresh": refresh_status,
                     "daily_signal_refresh": signal_refresh_status,
                     "daily_signal_stale": stale_status,
+                    "signal_overrides": signal_overrides,
                 },
             )
 
@@ -82,7 +87,24 @@ class QqqUsdtSignalAdapter:
         pre_risk_allow_long = allow_long
         pre_risk_leverage = float(leverage_now)
         pre_risk_strength_label = strength_label
-        risk_overlay = self._risk_overlay_decision(config, latest)
+        try:
+            risk_overlay = self._risk_overlay_decision(config, latest)
+        except Exception as exc:
+            return self._inactive_candidate(
+                config,
+                reason="risk_overlay_error",
+                metadata={
+                    "data_refresh": refresh_status,
+                    "daily_signal_refresh": signal_refresh_status,
+                    "daily_signal_stale": stale_status,
+                    "signal_overrides": signal_overrides,
+                    "daily_signal_timestamp": str(pd.Timestamp(latest.get("daily_signal_timestamp", latest.get("date")))),
+                    "pre_risk_allow_long": bool(pre_risk_allow_long),
+                    "pre_risk_leverage": pre_risk_leverage,
+                    "pre_risk_strength_label": pre_risk_strength_label,
+                    "error": str(exc),
+                },
+            )
         if bool(risk_overlay.get("cash_gate", False)):
             allow_long = False
             leverage_now = 0.0
@@ -92,6 +114,40 @@ class QqqUsdtSignalAdapter:
             if multiplier < 1.0:
                 leverage_now = round(float(leverage_now) * max(0.0, multiplier), 4)
                 strength_label = f"{strength_label}_risk_cap"
+        risk_adjusted_allow_long = bool(allow_long)
+        risk_adjusted_leverage = float(leverage_now) if allow_long else 0.0
+        try:
+            macro_overlay = self._macro_proxy_overlay_decision(config, bars, latest)
+        except Exception as exc:
+            return self._inactive_candidate(
+                config,
+                reason="macro_proxy_overlay_error",
+                metadata={
+                    "data_refresh": refresh_status,
+                    "daily_signal_refresh": signal_refresh_status,
+                    "daily_signal_stale": stale_status,
+                    "signal_overrides": signal_overrides,
+                    "daily_signal_timestamp": str(pd.Timestamp(latest.get("daily_signal_timestamp", latest.get("date")))),
+                    "pre_risk_allow_long": bool(pre_risk_allow_long),
+                    "pre_risk_leverage": pre_risk_leverage,
+                    "pre_risk_strength_label": pre_risk_strength_label,
+                    "risk_adjusted_allow_long": bool(risk_adjusted_allow_long),
+                    "risk_adjusted_leverage": float(risk_adjusted_leverage),
+                    "risk_overlay": risk_overlay,
+                    "error": str(exc),
+                },
+            )
+        macro_adjusted = apply_macro_proxy_overlay(
+            allow_long=risk_adjusted_allow_long,
+            leverage_target=risk_adjusted_leverage,
+            overlay=macro_overlay,
+        )
+        allow_long = bool(macro_adjusted["allow_long"])
+        leverage_now = round(float(macro_adjusted["leverage_target"]), 4) if allow_long else 0.0
+        if bool(macro_adjusted.get("cash_gate", False)):
+            strength_label = "macro_cash_gate"
+        elif bool(macro_adjusted.get("capped", False)):
+            strength_label = f"{strength_label}_macro_cap"
         route_score = self._route_score(latest, leverage_now)
         return RoutedSignalCandidate(
             strategy_id="qqq_usdt_aggressive",
@@ -108,6 +164,7 @@ class QqqUsdtSignalAdapter:
                 "data_refresh": refresh_status,
                 "daily_signal_refresh": signal_refresh_status,
                 "daily_signal_stale": stale_status,
+                "signal_overrides": signal_overrides,
                 "daily_signal_timestamp": str(pd.Timestamp(latest.get("daily_signal_timestamp", latest.get("date")))),
                 "entry_type": latest.get("entry_type"),
                 "overlay_mode": bool(latest.get("overlay_mode", False)),
@@ -124,9 +181,12 @@ class QqqUsdtSignalAdapter:
                 "pre_risk_allow_long": bool(pre_risk_allow_long),
                 "pre_risk_leverage": pre_risk_leverage,
                 "pre_risk_strength_label": pre_risk_strength_label,
-                "risk_adjusted_allow_long": bool(allow_long),
-                "risk_adjusted_leverage": float(leverage_now) if allow_long else 0.0,
+                "risk_adjusted_allow_long": bool(risk_adjusted_allow_long),
+                "risk_adjusted_leverage": float(risk_adjusted_leverage),
                 "risk_overlay": risk_overlay,
+                "macro_adjusted_allow_long": bool(allow_long),
+                "macro_adjusted_leverage": float(leverage_now) if allow_long else 0.0,
+                "macro_proxy_overlay": macro_overlay,
             },
         )
 
@@ -147,6 +207,15 @@ class QqqUsdtSignalAdapter:
         if path.is_absolute():
             return path
         return (ROOT / value).resolve()
+
+    @staticmethod
+    def _signal_overrides(config: dict[str, Any]) -> dict[str, Any]:
+        overrides = config.get("signal_overrides", {})
+        if overrides is None:
+            return {}
+        if not isinstance(overrides, dict):
+            raise TypeError("signal_overrides must be an object")
+        return dict(overrides)
 
     def _risk_overlay_decision(self, config: dict[str, Any], latest: pd.Series) -> dict[str, Any]:
         enabled = bool(config.get("risk_overlay_enabled", False))
@@ -272,6 +341,15 @@ class QqqUsdtSignalAdapter:
                 }
             raise
 
+    def _macro_proxy_overlay_decision(self, config: dict[str, Any], bars: pd.DataFrame, latest: pd.Series) -> dict[str, Any]:
+        context = build_macro_proxy_context(config, bars)
+        return macro_proxy_overlay_for_bar(
+            config,
+            context,
+            pd.Timestamp(latest["date"]),
+            signal_timestamp=pd.Timestamp(latest["daily_signal_timestamp"]) if pd.notna(latest.get("daily_signal_timestamp")) else None,
+        )
+
     @staticmethod
     def _risk_stale_status(config: dict[str, Any], signal_date: pd.Timestamp) -> dict[str, Any]:
         enabled = bool(config.get("risk_overlay_stale_guard_enabled", True))
@@ -336,6 +414,12 @@ class QqqUsdtSignalAdapter:
         sleep_seconds = float(config.get("daily_signal_refresh_sleep_seconds", 0.25) or 0.25)
         max_attempts = max(1, int(config.get("daily_signal_refresh_max_attempts", 4) or 4))
         retry_sleep_seconds = max(0.0, float(config.get("daily_signal_refresh_retry_sleep_seconds", 1.0) or 1.0))
+        fetch_timeout_seconds = max(1.0, float(config.get("daily_signal_refresh_timeout_seconds", 60.0) or 60.0))
+        total_timeout_seconds = max(
+            0.0,
+            float(config.get("daily_signal_refresh_total_timeout_seconds", 180.0) or 180.0),
+        )
+        deadline = time.monotonic() + total_timeout_seconds if total_timeout_seconds > 0 else None
         fail_open = bool(config.get("daily_signal_refresh_fail_open", False))
 
         session = requests.Session()
@@ -346,11 +430,21 @@ class QqqUsdtSignalAdapter:
         latest_by_symbol: dict[str, str | None] = {}
         attempts_by_symbol: dict[str, int] = {}
         errors: dict[str, str] = {}
+        timed_out = False
         for symbol in [str(item) for item in symbols]:
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
+                errors[symbol] = "daily_signal_refresh_total_timeout"
+                if not fail_open:
+                    raise TimeoutError(errors[symbol])
+                break
             last_error: Exception | None = None
             for attempt in range(1, max_attempts + 1):
                 attempts_by_symbol[symbol] = attempt
                 try:
+                    request_timeout = fetch_timeout_seconds
+                    if deadline is not None:
+                        request_timeout = max(1.0, min(fetch_timeout_seconds, deadline - time.monotonic()))
                     frame = fetch_timeframe(
                         session=session,
                         symbol=symbol,
@@ -360,6 +454,7 @@ class QqqUsdtSignalAdapter:
                         output_path=output_path_for(data_root, symbol, timeframe),
                         sleep_seconds=sleep_seconds,
                         proxy=str(proxy) if proxy else None,
+                        timeout_seconds=request_timeout,
                     )
                     latest_by_symbol[symbol] = str(frame["date"].max()) if not frame.empty else None
                     last_error = None
@@ -367,18 +462,30 @@ class QqqUsdtSignalAdapter:
                 except Exception as exc:
                     last_error = exc
                     if attempt < max_attempts:
-                        time.sleep(retry_sleep_seconds * attempt)
+                        sleep_for = retry_sleep_seconds * attempt
+                        if deadline is not None:
+                            sleep_for = min(sleep_for, max(0.0, deadline - time.monotonic()))
+                        if sleep_for > 0:
+                            time.sleep(sleep_for)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        timed_out = True
+                        break
             if last_error is not None:
                 errors[symbol] = str(last_error)
                 if not fail_open:
                     raise last_error
+            if timed_out:
+                break
         return {
             "enabled": True,
-            "status": "error" if errors else "ok",
+            "status": "timeout" if timed_out else "error" if errors else "ok",
             "proxy": str(proxy) if proxy else None,
             "symbols": latest_by_symbol,
             "attempts": attempts_by_symbol,
             "errors": errors,
+            "timeout_seconds": fetch_timeout_seconds,
+            "total_timeout_seconds": total_timeout_seconds,
+            "timed_out": timed_out,
         }
 
     @staticmethod

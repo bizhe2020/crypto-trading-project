@@ -13,9 +13,16 @@ from bot.strategy_router import StrategyRouter
 from bot.router_executor import StrategyRouterExecutionEngine
 
 
+def _default_config_path() -> str:
+    live = ROOT / "config" / "config.live.strategy-router.json"
+    if live.exists():
+        return str(live.relative_to(ROOT))
+    return "config/config.live.strategy-router.template.json"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate BTC vs QQQ/USDT route and persist selected strategy state.")
-    parser.add_argument("--config", default="config/config.live.strategy-router.template.json")
+    parser.add_argument("--config", default=_default_config_path())
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--evaluate-once", action="store_true")
     parser.add_argument("--execute", action="store_true")

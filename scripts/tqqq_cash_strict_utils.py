@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from zoneinfo import ZoneInfo
 
 from scripts.audit_tqqq_cash_regime_context import build_regime_frame, load_df
 from scripts.scan_tqqq_context_bucket_overlays import prepare_frame
@@ -13,6 +14,15 @@ from scripts.scan_tqqq_context_bucket_overlays import prepare_frame
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PUBLIC_DIR = ROOT / "data" / "public" / "etf"
+LOCAL_US = ZoneInfo("America/New_York")
+
+
+def dedupe_last_by_us_trade_day(df: pd.DataFrame) -> pd.DataFrame:
+    frame = df.copy()
+    frame["date"] = pd.to_datetime(frame["date"], utc=True)
+    frame["_us_trade_day"] = frame["date"].dt.tz_convert(LOCAL_US).dt.date
+    frame = frame.sort_values("date").drop_duplicates("_us_trade_day", keep="last").reset_index(drop=True)
+    return frame.drop(columns=["_us_trade_day"])
 
 
 def load_strict_frame(
@@ -21,11 +31,11 @@ def load_strict_frame(
     entry_fast_window: int,
     entry_slow_window: int,
 ) -> pd.DataFrame:
-    qqq = load_df(data_root / "QQQ-1d.feather")
-    tqqq = load_df(data_root / "TQQQ-1d.feather")
-    spy = load_df(data_root / "SPY-1d.feather")
-    ixic = load_df(data_root / "^IXIC-1d.feather")
-    vix = load_df(data_root / "^VIX-1d.feather")
+    qqq = dedupe_last_by_us_trade_day(load_df(data_root / "QQQ-1d.feather"))
+    tqqq = dedupe_last_by_us_trade_day(load_df(data_root / "TQQQ-1d.feather"))
+    spy = dedupe_last_by_us_trade_day(load_df(data_root / "SPY-1d.feather"))
+    ixic = dedupe_last_by_us_trade_day(load_df(data_root / "^IXIC-1d.feather"))
+    vix = dedupe_last_by_us_trade_day(load_df(data_root / "^VIX-1d.feather"))
     frame = build_regime_frame(qqq, tqqq, spy, ixic, vix, entry_fast_window, entry_slow_window).copy()
     frame = frame.dropna(subset=["fast_ma", "slow_ma", "tqqq_open", "tqqq_close"]).reset_index(drop=True)
     frame["entry_signal"] = (frame["fast_ma"] > frame["slow_ma"]).astype(int)
@@ -54,11 +64,11 @@ def load_strict_frame_with_overlay_context(
         entry_fast_window=entry_fast_window,
         entry_slow_window=entry_slow_window,
     )
-    qqq = load_df(data_root / "QQQ-1d.feather")
-    tqqq = load_df(data_root / "TQQQ-1d.feather")
-    spy = load_df(data_root / "SPY-1d.feather")
-    ixic = load_df(data_root / "^IXIC-1d.feather")
-    vix = load_df(data_root / "^VIX-1d.feather")
+    qqq = dedupe_last_by_us_trade_day(load_df(data_root / "QQQ-1d.feather"))
+    tqqq = dedupe_last_by_us_trade_day(load_df(data_root / "TQQQ-1d.feather"))
+    spy = dedupe_last_by_us_trade_day(load_df(data_root / "SPY-1d.feather"))
+    ixic = dedupe_last_by_us_trade_day(load_df(data_root / "^IXIC-1d.feather"))
+    vix = dedupe_last_by_us_trade_day(load_df(data_root / "^VIX-1d.feather"))
     rich = prepare_frame(qqq, tqqq, tqqq, spy, ixic, vix, entry_fast_window, entry_slow_window)
     rich = rich[
         [

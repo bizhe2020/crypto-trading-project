@@ -1,4 +1,7 @@
 ccxt
+lightgbm
+numpy
 pandas
 pyarrow
 requests
+scikit-learn

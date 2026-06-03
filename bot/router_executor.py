@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import json
+import signal
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +15,10 @@ from bot.qqq_usdt_executor import QqqUsdtExecutionEngine
 from bot.strategy_router import RoutedSignalCandidate, StrategyRouter
 
 
+class EvaluationTimeoutError(TimeoutError):
+    pass
+
+
 class StrategyRouterExecutionEngine:
     def __init__(self, router: StrategyRouter):
         self.router = router
@@ -19,6 +26,7 @@ class StrategyRouterExecutionEngine:
         self.btc_executor = OkxExecutionEngine.from_file(self.config.btc_strategy_config)
         self.qqq_executor = QqqUsdtExecutionEngine(self.config, self.config.qqq_strategy_config)
         self.execution_state_path = self.router.state_path.with_suffix(self.router.state_path.suffix + ".execution")
+        self.heartbeat_path = self._resolve_heartbeat_path()
 
     @classmethod
     def from_file(cls, path: str | Path) -> "StrategyRouterExecutionEngine":
@@ -144,20 +152,138 @@ class StrategyRouterExecutionEngine:
         return True
 
     def run_loop(self, poll_interval_seconds: int = 30) -> None:
+        self._write_heartbeat("bootstrap_started")
         bootstrap = self.bootstrap()
+        self._write_heartbeat("bootstrap_completed", status=bootstrap.get("status"))
         print(json.dumps({"event": "bootstrap", **bootstrap}, ensure_ascii=False))
         while True:
+            timeout_seconds = self._evaluation_timeout_seconds()
+            started_at = time.time()
+            self._write_heartbeat(
+                "evaluate_started",
+                timeout_seconds=timeout_seconds,
+                deadline_at=started_at + timeout_seconds if timeout_seconds > 0 else None,
+            )
             try:
-                status = self.evaluate_latest()
+                status = self._evaluate_latest_with_timeout(timeout_seconds)
+                self._write_heartbeat(
+                    "evaluate_completed",
+                    status=status.get("status"),
+                    duration_seconds=round(time.time() - started_at, 3),
+                )
                 print(json.dumps({"event": "evaluate", **status}, ensure_ascii=False))
             except KeyboardInterrupt:
+                self._write_heartbeat("stopped")
                 print(json.dumps({"event": "stopped"}, ensure_ascii=False))
                 raise
+            except EvaluationTimeoutError as exc:
+                status = self._timeout_status(str(exc), timeout_seconds, started_at)
+                self._save_loop_status(status)
+                self._write_heartbeat(
+                    "evaluate_timeout",
+                    error=str(exc),
+                    timeout_seconds=timeout_seconds,
+                    duration_seconds=round(time.time() - started_at, 3),
+                )
+                print(json.dumps({"event": "error", **status}, ensure_ascii=False))
+                if bool(self.config.telegram_notify_errors):
+                    self._send_telegram(f"Router 评估超时\n错误: {exc}")
             except Exception as exc:
+                status = self._exception_status(exc, started_at)
+                self._save_loop_status(status)
+                self._write_heartbeat(
+                    "evaluate_error",
+                    error=str(exc),
+                    duration_seconds=round(time.time() - started_at, 3),
+                )
                 print(json.dumps({"event": "error", "error": str(exc)}, ensure_ascii=False))
                 if bool(self.config.telegram_notify_errors):
                     self._send_telegram(f"Router 异常\n错误: {exc}")
             time.sleep(max(1, int(poll_interval_seconds)))
+
+    def _evaluation_timeout_seconds(self) -> float:
+        configured = self.config.router_evaluation_timeout_seconds
+        if configured is None:
+            return 240.0
+        try:
+            return max(0.0, float(configured))
+        except (TypeError, ValueError):
+            return 240.0
+
+    def _evaluate_latest_with_timeout(self, timeout_seconds: float) -> dict[str, Any]:
+        if timeout_seconds <= 0 or not hasattr(signal, "SIGALRM"):
+            return self.evaluate_latest()
+
+        def _raise_timeout(_signum: int, _frame: Any) -> None:
+            raise EvaluationTimeoutError(f"evaluate_latest exceeded {timeout_seconds:.1f}s")
+
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+        try:
+            return self.evaluate_latest()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+            if previous_timer[0] > 0:
+                signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
+
+    def _resolve_heartbeat_path(self) -> Path:
+        configured = self.config.router_heartbeat_path
+        if configured:
+            return Path(configured)
+        return self.router.state_path.with_suffix(self.router.state_path.suffix + ".heartbeat")
+
+    def _write_heartbeat(self, phase: str, **extra: Any) -> None:
+        payload = {
+            "phase": phase,
+            "pid": os.getpid(),
+            "updated_at": int(time.time()),
+            "updated_at_iso": datetime.now(timezone.utc).isoformat(),
+            **extra,
+        }
+        try:
+            self.heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.heartbeat_path.with_suffix(self.heartbeat_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+            tmp.replace(self.heartbeat_path)
+        except Exception:
+            return
+
+    def _timeout_status(self, error: str, timeout_seconds: float, started_at: float) -> dict[str, Any]:
+        return {
+            "status": "error",
+            "mode": self.config.mode,
+            "error_type": "evaluation_timeout",
+            "error": error,
+            "timeout_seconds": timeout_seconds,
+            "duration_seconds": round(time.time() - started_at, 3),
+            "current_executed_strategy": self._current_executed_strategy(),
+            "updated_at": int(time.time()),
+        }
+
+    def _exception_status(self, exc: Exception, started_at: float) -> dict[str, Any]:
+        return {
+            "status": "error",
+            "mode": self.config.mode,
+            "error_type": "evaluation_exception",
+            "error": str(exc),
+            "duration_seconds": round(time.time() - started_at, 3),
+            "current_executed_strategy": self._current_executed_strategy(),
+            "updated_at": int(time.time()),
+        }
+
+    def _save_loop_status(self, status: dict[str, Any]) -> None:
+        execution_state = self._load_execution_state()
+        execution_state.update(
+            {
+                "current_executed_strategy": self._current_executed_strategy(),
+                "last_status": status,
+                "updated_at": int(time.time()),
+            }
+        )
+        self._save_execution_state(execution_state)
 
     def _candidate_from_payload(self, payload: dict[str, Any] | None) -> RoutedSignalCandidate | None:
         if not payload:

@@ -10,11 +10,13 @@ from pathlib import Path
 import pandas as pd
 import requests
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = ROOT / "data" / "public" / "etf"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+LOCAL_US = ZoneInfo("America/New_York")
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end", default=None, help="UTC ISO timestamp. Defaults to now.")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--sleep-seconds", type=float, default=0.25)
+    parser.add_argument("--timeout-seconds", type=float, default=60.0)
     parser.add_argument("--proxy", default=None, help="HTTP proxy URL, e.g. http://127.0.0.1:6244")
     return parser.parse_args()
 
@@ -69,6 +72,14 @@ def normalize_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
     return result[["date", "open", "high", "low", "close", "volume"]]
 
 
+def dedupe_daily_by_us_trade_day(dataframe: pd.DataFrame) -> pd.DataFrame:
+    result = dataframe.copy()
+    result["date"] = pd.to_datetime(result["date"], utc=True, errors="coerce")
+    result["_us_trade_day"] = result["date"].dt.tz_convert(LOCAL_US).dt.date
+    result = result.sort_values("date").drop_duplicates("_us_trade_day", keep="last").reset_index(drop=True)
+    return result.drop(columns=["_us_trade_day"])
+
+
 def fetch_chunk(
     session: requests.Session,
     symbol: str,
@@ -76,6 +87,7 @@ def fetch_chunk(
     end_ms: int,
     timeframe: str,
     proxy: str | None = None,
+    timeout_seconds: float = 60.0,
 ) -> pd.DataFrame:
     params = {
         "period1": int(start_ms / 1000),
@@ -91,7 +103,7 @@ def fetch_chunk(
             "-sS",
             "-L",
             "--max-time",
-            "60",
+            str(max(1.0, float(timeout_seconds))),
             "-A",
             "Mozilla/5.0",
             "--compressed",
@@ -104,7 +116,11 @@ def fetch_chunk(
             raise RuntimeError(f"curl failed for {symbol} {timeframe}: {result.stderr.strip() or result.stdout.strip()}")
         payload = json.loads(result.stdout)
     else:
-        response = session.get(YAHOO_CHART_URL.format(symbol=symbol.upper()), params=params, timeout=60)
+        response = session.get(
+            YAHOO_CHART_URL.format(symbol=symbol.upper()),
+            params=params,
+            timeout=max(1.0, float(timeout_seconds)),
+        )
         response.raise_for_status()
         payload = response.json()
     chart = payload.get("chart", {})
@@ -142,6 +158,7 @@ def fetch_timeframe(
     output_path: Path,
     sleep_seconds: float,
     proxy: str | None = None,
+    timeout_seconds: float = 60.0,
 ) -> pd.DataFrame:
     existing = load_existing(output_path)
     start_dt = normalize_timestamp(start)
@@ -173,6 +190,7 @@ def fetch_timeframe(
             int(chunk_end.timestamp() * 1000),
             timeframe,
             proxy=proxy,
+            timeout_seconds=timeout_seconds,
         )
         if not batch.empty:
             batch = batch[(batch["date"] >= since) & (batch["date"] <= end_dt)]
@@ -189,6 +207,8 @@ def fetch_timeframe(
     fetched = pd.concat(fetched_batches, ignore_index=True) if fetched_batches else pd.DataFrame()
     combined = pd.concat([existing, fetched], ignore_index=True) if not existing.empty else fetched
     combined = normalize_dataframe(combined) if not combined.empty else combined
+    if timeframe == "1d" and not combined.empty:
+        combined = dedupe_daily_by_us_trade_day(combined)
     if not combined.empty:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         combined.to_feather(output_path)
@@ -218,6 +238,7 @@ def main() -> None:
                 output_path=output_path,
                 sleep_seconds=args.sleep_seconds,
                 proxy=args.proxy,
+                timeout_seconds=args.timeout_seconds,
             )
             if df.empty:
                 print(f"{symbol.upper()} {timeframe}: no data written to {output_path}")

@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bot.btc_route_scoring import btc_effective_leverage, btc_route_score  # noqa: E402
+from bot.qqq_macro_proxy_overlay import apply_macro_proxy_overlay, build_macro_proxy_context, macro_proxy_overlay_for_bar  # noqa: E402
 from bot.okx_executor import ExecutorConfig  # noqa: E402
 from scripts.backtest_config_report import load_dataframe, parse_end_timestamp  # noqa: E402
 from scripts.replay_qqq_usdt_10x import is_funding_settlement_bar, load_funding  # noqa: E402
@@ -583,7 +584,12 @@ def build_qqq_usdt_leveraged_path(
     risk_overlay_enabled: bool | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     config = json.loads(config_path.read_text())
-    signal_config, signal_path = load_signal_path(ROOT / str(config["signal_source"]))
+    signal_overrides = config.get("signal_overrides", {})
+    if signal_overrides is None:
+        signal_overrides = {}
+    if not isinstance(signal_overrides, dict):
+        raise TypeError("signal_overrides must be an object")
+    signal_config, signal_path = load_signal_path(ROOT / str(config["signal_source"]), overrides=dict(signal_overrides))
     bars = enrich_bars(attach_daily_state(load_okx_4h(data_4h_path or ROOT / str(config["data_4h"])), signal_path))
     funding = load_funding(funding_path or ROOT / str(config["funding_history_path"]))
     merged = pd.merge_asof(
@@ -633,6 +639,7 @@ def build_qqq_usdt_leveraged_path(
         "long_cycle_frame": long_cycle_frame,
         "long_cycle_score_column": long_cycle_score_column,
     }
+    macro_context = build_macro_proxy_context(config, merged)
 
     capital = float(initial_capital)
     holding = False
@@ -658,13 +665,30 @@ def build_qqq_usdt_leveraged_path(
             else:
                 base_leverage_now = lev_profile["base"]
         leverage_target = base_leverage_now * float(risk_overlay["leverage_multiplier"]) if base_allow_now else 0.0
-        effective_allow = bool(base_allow_now and not risk_overlay["cash_gate"] and leverage_target > 1e-12)
+        risk_adjusted_allow = bool(base_allow_now and not risk_overlay["cash_gate"] and leverage_target > 1e-12)
+        macro_overlay = macro_proxy_overlay_for_bar(
+            config,
+            macro_context,
+            pd.Timestamp(row.date),
+            signal_timestamp=getattr(row, "daily_signal_timestamp", None),
+        )
+        macro_adjusted = apply_macro_proxy_overlay(
+            allow_long=risk_adjusted_allow,
+            leverage_target=leverage_target,
+            overlay=macro_overlay,
+        )
+        effective_allow = bool(macro_adjusted["allow_long"])
+        leverage_target = float(macro_adjusted["leverage_target"])
         entered = False
         exited = False
         stop_hit = False
         risk_exit = False
+        macro_exit = False
         risk_cash_gate = bool(risk_overlay["cash_gate"])
-        risk_capped = bool(float(risk_overlay["leverage_multiplier"]) < 0.999 and effective_allow)
+        risk_capped = bool(float(risk_overlay["leverage_multiplier"]) < 0.999 and risk_adjusted_allow)
+        macro_triggered = bool(macro_adjusted["triggered"])
+        macro_capped = bool(macro_adjusted["capped"])
+        macro_cash_gate = bool(macro_adjusted["cash_gate"])
         funding_cost = 0.0
         funding_settled = False
         fee_cost = 0.0
@@ -678,7 +702,8 @@ def build_qqq_usdt_leveraged_path(
             capital *= 1.0 - fee_cost * leverage_now
             holding = False
             exited = True
-            risk_exit = bool(base_allow_now and not effective_allow)
+            risk_exit = bool(base_allow_now and not risk_adjusted_allow)
+            macro_exit = bool(risk_adjusted_allow and not effective_allow)
             if current_trade is not None:
                 trades.append(
                     {
@@ -753,6 +778,16 @@ def build_qqq_usdt_leveraged_path(
                 "risk_exit": bool(risk_exit),
                 "risk_cash_gate": bool(risk_cash_gate),
                 "risk_capped": bool(risk_capped),
+                "macro_triggered": bool(macro_triggered),
+                "macro_capped": bool(macro_capped),
+                "macro_cash_gate": bool(macro_cash_gate),
+                "macro_exit": bool(macro_exit),
+                "macro_multiplier": float(macro_overlay["leverage_multiplier"]),
+                "macro_score": macro_overlay.get("score"),
+                "macro_raw_value": macro_overlay.get("raw_value"),
+                "macro_signal_date": macro_overlay.get("signal_date"),
+                "macro_macro_signal_date": macro_overlay.get("macro_signal_date"),
+                "macro_reason": macro_overlay.get("reason"),
                 "risk_multiplier": float(risk_overlay["leverage_multiplier"]),
                 "recent_risk_score": risk_overlay["recent_score"],
                 "long_cycle_risk_score": risk_overlay["long_cycle_score"],
@@ -795,6 +830,9 @@ def build_qqq_usdt_leveraged_path(
                 "rel_strength_label": "",
                 "risk_cash_day": bool(group["risk_cash_gate"].any()),
                 "risk_capped_day": bool(group["risk_capped"].any()),
+                "macro_trigger_day": bool(group["macro_triggered"].any()),
+                "macro_cash_day": bool(group["macro_cash_gate"].any()),
+                "macro_cap_day": bool(group["macro_capped"].any()),
                 "avg_leverage_when_active": avg_leverage,
             }
         )
@@ -803,6 +841,7 @@ def build_qqq_usdt_leveraged_path(
     trades_df = pd.DataFrame(trades)
     return daily_path, {
         "config": config,
+        "signal_overrides": dict(signal_overrides),
         "signal_config": signal_config,
         "summary": {
             "total_return_pct": round((float(path_4h.iloc[-1]["capital"]) / float(initial_capital) - 1.0) * 100.0, 2),
@@ -821,11 +860,19 @@ def build_qqq_usdt_leveraged_path(
             "fee_cost_pct_est": round(float(path_4h["fee_cost"].sum() * 100.0), 2),
             "avg_leverage_when_in": round(float(path_4h.loc[path_4h["holding"], "leverage_now"].mean()), 2) if bool(path_4h["holding"].any()) else 0.0,
             "risk_overlay_enabled": bool(risk_enabled),
+            "macro_proxy_overlay_enabled": bool(config.get("macro_proxy_overlay_enabled", False)),
             "risk_cash_bars": int(path_4h["risk_cash_gate"].sum()),
             "risk_capped_bars": int(path_4h["risk_capped"].sum()),
             "risk_exit_events": int(path_4h["risk_exit"].sum()),
+            "macro_trigger_bars": int(path_4h["macro_triggered"].sum()),
+            "macro_cap_bars": int(path_4h["macro_capped"].sum()),
+            "macro_cash_bars": int(path_4h["macro_cash_gate"].sum()),
+            "macro_exit_events": int(path_4h["macro_exit"].sum()),
             "risk_cash_days": int(daily_path["risk_cash_day"].sum()),
             "risk_capped_days": int(daily_path["risk_capped_day"].sum()),
+            "macro_trigger_days": int(daily_path["macro_trigger_day"].sum()),
+            "macro_cap_days": int(daily_path["macro_cap_day"].sum()),
+            "macro_cash_days": int(daily_path["macro_cash_day"].sum()),
             "start": str(path_4h.iloc[0]["date"]),
             "end": str(path_4h.iloc[-1]["date"]),
         },
@@ -1074,6 +1121,8 @@ def main() -> None:
             "btc_proxy_method": btc_meta.get("proxy_method", btc_source),
             "btc_full_engine_metrics": slim_btc_metrics(dict(btc_meta["metrics"])),
             "btc_trades": btc_meta["trades"],
+            "qqq_signal_overrides": qqq_meta.get("signal_overrides", {}),
+            "qqq_effective_max_hold_days": qqq_meta.get("signal_config", {}).get("max_hold_days"),
             "qqq_proxy_summary": qqq_meta["summary"],
         },
     }
