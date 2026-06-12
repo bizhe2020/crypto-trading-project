@@ -7,6 +7,7 @@ from typing import Any
 @dataclass(frozen=True)
 class QqqShadowGateProfile:
     enabled: bool
+    clock: str = "execution_bar"
     reentry_rule: str = "clear"
     reentry_clear_bars: int = 0
     loss_streak_stop: int = 0
@@ -25,6 +26,7 @@ class QqqShadowGateProfile:
         enabled = bool(explicit) if explicit is not None else status in {"runtime_enabled", "enabled"}
         return cls(
             enabled=enabled,
+            clock=str(raw.get("clock", raw.get("cooldown_clock", "execution_bar")) or "execution_bar").lower(),
             reentry_rule=str(raw.get("reentry_rule", "clear") or "clear"),
             reentry_clear_bars=int(raw.get("reentry_clear_bars", 0) or 0),
             loss_streak_stop=int(raw.get("loss_streak_stop", 0) or 0),
@@ -53,6 +55,7 @@ class QqqShadowGateStateMachine:
             "bars_since_stop": None,
             "clear_streak": 0,
             "last_bar_timestamp": None,
+            "observed_timestamps": [],
             "position": None,
             "events": [],
         }
@@ -70,6 +73,8 @@ class QqqShadowGateStateMachine:
         normalized["clear_streak"] = max(0, int(normalized.get("clear_streak", 0) or 0))
         if normalized.get("bars_since_stop") is not None:
             normalized["bars_since_stop"] = max(0, int(normalized.get("bars_since_stop", 0) or 0))
+        observed = normalized.get("observed_timestamps")
+        normalized["observed_timestamps"] = [str(item) for item in observed] if isinstance(observed, list) else []
         events = normalized.get("events")
         normalized["events"] = events if isinstance(events, list) else []
         return normalized
@@ -86,7 +91,7 @@ class QqqShadowGateStateMachine:
         if not self.profile.enabled:
             return state, None
         ts = str(timestamp or "runtime")
-        if state.get("last_bar_timestamp") == ts:
+        if self._already_observed(state, ts):
             return state, None
 
         previous_gate = int(state.get("gate_remaining_bars", 0) or 0)
@@ -108,6 +113,7 @@ class QqqShadowGateStateMachine:
             state["bars_since_stop"] = None
 
         state["last_bar_timestamp"] = ts
+        self._record_observed(state, ts)
         event = {
             "event": "observe_bar",
             "timestamp": ts,
@@ -220,6 +226,8 @@ class QqqShadowGateStateMachine:
         state["bars_since_stop"] = 0 if stop_reason else None
         state["clear_streak"] = 0
         state["position"] = None
+        if triggers:
+            state["observed_timestamps"] = []
 
         event = {
             "event": "close",
@@ -244,6 +252,41 @@ class QqqShadowGateStateMachine:
             return
         state["gate_remaining_bars"] = max(int(state.get("gate_remaining_bars", 0) or 0), int(bars))
         state["gate_reason"] = reason
+
+    @staticmethod
+    def _session_sort_key(timestamp: str) -> str | None:
+        prefix = "signal_session:"
+        if not str(timestamp).startswith(prefix):
+            return None
+        return str(timestamp)[len(prefix) :]
+
+    def _already_observed(self, state: dict[str, Any], timestamp: str) -> bool:
+        observed = state.get("observed_timestamps")
+        if not isinstance(observed, list):
+            observed = []
+        ts = str(timestamp)
+        if ts in {str(item) for item in observed}:
+            return True
+        if state.get("last_bar_timestamp") == ts:
+            return True
+        session = self._session_sort_key(ts)
+        if session is None:
+            return False
+        observed_sessions = [
+            existing
+            for item in observed
+            for existing in [self._session_sort_key(str(item))]
+            if existing is not None
+        ]
+        return bool(observed_sessions and session <= max(observed_sessions))
+
+    @staticmethod
+    def _record_observed(state: dict[str, Any], timestamp: str) -> None:
+        observed = state.get("observed_timestamps")
+        if not isinstance(observed, list):
+            observed = []
+        observed.append(str(timestamp))
+        state["observed_timestamps"] = [str(item) for item in observed[-250:]]
 
     @staticmethod
     def _append_event(state: dict[str, Any], event: dict[str, Any]) -> None:

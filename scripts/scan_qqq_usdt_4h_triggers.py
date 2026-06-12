@@ -119,7 +119,12 @@ def load_okx_4h(path: Path) -> pd.DataFrame:
     return df
 
 
-def attach_daily_state(okx_4h: pd.DataFrame, signal_path: pd.DataFrame) -> pd.DataFrame:
+def attach_daily_state(
+    okx_4h: pd.DataFrame,
+    signal_path: pd.DataFrame,
+    *,
+    trim_to_signal_end: bool = True,
+) -> pd.DataFrame:
     daily = signal_path[["date", "position"]].copy().sort_values("date").reset_index(drop=True)
     merged = pd.merge_asof(
         okx_4h.sort_values("date"),
@@ -128,7 +133,8 @@ def attach_daily_state(okx_4h: pd.DataFrame, signal_path: pd.DataFrame) -> pd.Da
         direction="backward",
         allow_exact_matches=True,
     )
-    merged = merged[merged["date"] <= daily["date"].max()].copy()
+    if trim_to_signal_end:
+        merged = merged[merged["date"] <= daily["date"].max()].copy()
     merged["allow_long"] = merged["position"].eq("TQQQ")
     return merged.reset_index(drop=True)
 

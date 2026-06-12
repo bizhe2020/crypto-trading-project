@@ -7,6 +7,7 @@ Final paper/shadow router baseline:
 - Main config: `config/config.paper.strategy-router.json`
 - BTC leg: `config/config.paper.high-leverage-structure.json`
 - QQQ leg: `config/config.paper.qqq-usdt-aggressive-frozen.json`
+- Live QQQ leg: `config/config.paper.qqq-usdt-aggressive-runtime.json`
 - Research comparison config retained: `config/config.paper.strategy-router.extreme-qqq-research.json`
 
 The router is frozen around fair BTC vs QQQ competition with trend continuity. BTC is not a core allocation and QQQ is not a permanent satellite. Both can hold the single capital pool after passing their own empirical validity gates.
@@ -86,6 +87,7 @@ The QQQ leg was updated from the 2026-05-30 balanced shadow profile to the 2026-
 ```json
 {
   "stop_loss_pct": 4.0,
+  "clock": "signal_session",
   "reentry_rule": "clear",
   "reentry_clear_bars": 2,
   "loss_streak_stop": 0,
@@ -110,6 +112,7 @@ Rolling window improvement of V2 versus current balanced:
 Runtime config alignment:
 
 - `config/config.paper.qqq-usdt-aggressive-frozen.json` now carries the V2 shadow profile.
+- Runtime shadow gate uses `clock=signal_session`, matching the NQ dailyproxy scan clock rather than consuming cooldown on every QQQ/USDT 4h execution bar.
 - `config/config.live.strategy-router.template.json` is aligned to the frozen router thresholds: `qqq_min_route_score=96`, `switch_advantage=6`, takeover margins `6/6`.
 - Legacy router-side `qqq_stop_reentry_*` settings are removed from the live template; V2 reentry and cooldown are owned only by `shadow_gate_replay_profile`.
 
@@ -132,6 +135,12 @@ Shared-path verification against the same config with macro overlay disabled:
 | Router replay real overlap | `269.50% / DD 22.13%` | `269.50% / DD 22.13%` |
 
 Current overlap remains unchanged because the short OKX window has `0` macro-trigger bars. In the long NQ proxy sample, the shared audit path reproduces the prior sidecar study topline while using the stricter signal-day alignment.
+
+Runtime risk input isolation:
+
+- `config/config.paper.qqq-usdt-aggressive-runtime.json` reads rolling risk CSVs from `var/runtime/qqq_risk/`.
+- `config/config.paper.qqq-usdt-aggressive-frozen.json` keeps frozen/replay risk CSV artifacts pinned under `var/reports/`; these files must not be overwritten by the live refresh job.
+- `scripts/refresh_qqq_risk_runtime_inputs.py` defaults to `var/runtime/qqq_risk/` for recent, long-cycle, and refresh summary outputs.
 
 Artifacts:
 

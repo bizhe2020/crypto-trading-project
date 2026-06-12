@@ -4,6 +4,8 @@
 
 - 信号来源：`QQQ` 日线 frozen 主线  
   `config/config.paper.tqqq-only-strict-recovery-frozen.json`
+- Frozen/replay 配置：`config/config.paper.qqq-usdt-aggressive-frozen.json`
+- Live/runtime 配置：`config/config.paper.qqq-usdt-aggressive-runtime.json`
 - 执行标的：`QQQ/USDT:USDT`
 - 执行周期：`4h`
 - `1h` 入场优化：已审，当前样本无额外增益，不纳入 frozen
@@ -17,9 +19,11 @@
 - 止损：`4.0%`
 - 止盈：`none`
 - 两层风控 overlay：已接入 `QqqUsdtSignalAdapter.preview()`
-  - 近期战术层：`var/reports/qqq_drawdown_lgb_shadow_predictions_macro_subfactor_core.csv`
+  - 实盘 runtime 近期战术层：`var/runtime/qqq_risk/qqq_recent_risk_runtime_predictions.csv`
+  - Frozen/replay 近期战术层固定输入：`var/reports/qqq_drawdown_lgb_shadow_predictions_macro_subfactor_core.csv`
   - 近期战术规则：上一条可用 `raw_prob_10d >= 0.50` 时 QQQ/USDT 候选直接转现金
-  - 长周期层：`var/reports/qqq_long_cycle_correction20d10_qqqonly_lgb_predictions.csv`
+  - 实盘 runtime 长周期层：`var/runtime/qqq_risk/qqq_long_cycle_risk_runtime_predictions.csv`
+  - Frozen/replay 长周期层固定输入：`var/reports/qqq_long_cycle_correction20d10_qqqonly_lgb_predictions.csv`
   - 长周期规则：`raw_prob_10d >= 0.35/0.50/0.65` 时分别把杠杆乘以 `0.75/0.50/0.25`
   - 风控文件使用上一条已完成日线信号，避免同日收盘信号前视
   - `risk_overlay_fail_open=false`，风控文件缺失、字段缺失或过期时 QQQ/USDT 主入口硬失败，不静默忽略
@@ -42,6 +46,7 @@
 
 - Runtime 生效参数：`stop_loss_pct = 4.0`
 - Runtime shadow gate profile：
+  - `clock = signal_session`
   - `reentry_rule = clear`
   - `reentry_clear_bars = 2`
   - `loss_streak_stop = 0`
@@ -68,6 +73,7 @@
 
 - Frozen config：
   - `config/config.paper.qqq-usdt-aggressive-frozen.json`
+  - live/runtime variant: `config/config.paper.qqq-usdt-aggressive-runtime.json`
   - `frozen_label = qqq_usdt_aggressive_fixed10_risk_overlay_stop4_shadow_v2_low_dd_dollar_cap50_z1_5_20260603`
 - Combined audit 对比口径：candidate 为当前 frozen；baseline 为同配置临时关闭 macro overlay
 - Full NQ router：
@@ -105,6 +111,7 @@
 - router live 模板不再携带旧 `qqq_stop_reentry_*` 字段；V2 的 reentry / cooldown 只由 QQQ frozen 配置内的 `shadow_gate_replay_profile` 驱动。
 - Shadow gate 状态持久化在 QQQ state DB 的 `qqq_shadow_gate_state` key；动作轨迹写入同一 DB 的 `action_log`。
 - Shadow gate 只阻断新的 QQQ 开仓/切换，不会阻止已有 QQQ 仓位因 signal off、router switch 或 stop hit 被平仓。
+- Shadow gate 的 live runtime clock 与 frozen NQ dailyproxy 扫参对齐为 `signal_session`：`equity_dd_cooldown_bars = 20` 表示约 20 个 QQQ/NQ 信号交易日 observation，不是 20 个自然日，也不是 20 根 4h execution bar。由于 frozen 扫参使用 `gate_until_idx = idx + bars` / `idx < gate_until_idx`，实际释放发生在第 20 个新 observation，通常表现为后续 19 个 session rows 被 gate active 覆盖。
 
 长周期 QQQ 日线 proxy 结果：
 
@@ -121,7 +128,8 @@
   - `4h`: `2026-04-09 -> 2026-05-29`
   - `1h`: `2026-05-16 -> 2026-05-29`
 - 因此该 frozen 只能视为短样本激进候选，不能等同于长期稳定结论。
-- 两个风险 CSV 目前是离线生成产物；如果没有纳入每日生成流程，5 个自然日 stale guard 会阻断 QQQ/USDT 候选。
+- 风控 CSV 已按用途隔离：实盘刷新脚本默认只写 `var/runtime/qqq_risk/`；`var/reports/` 下两份白名单 CSV 是 frozen/replay 固定输入，不能被 runtime refresh 覆盖。
+- 如果 runtime 风控 CSV 没有纳入每日生成流程，5 个自然日 stale guard 会阻断 QQQ/USDT 候选。
 
 本轮研究结论：
 

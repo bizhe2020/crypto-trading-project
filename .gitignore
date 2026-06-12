@@ -14,7 +14,9 @@ state/*
 !state/.gitkeep
 var/log/*
 !var/log/.gitkeep
+var/backups/
 var/run/
+var/runtime/
 var/live_readiness/
 var/tmp/
 var/reports/*

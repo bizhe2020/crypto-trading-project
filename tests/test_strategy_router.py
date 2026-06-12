@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bot.btc_route_scoring import btc_effective_leverage, btc_route_score
+from bot.okx_executor import ExecutorConfig, OkxExecutionEngine
 from bot.qqq_macro_proxy_overlay import apply_macro_proxy_overlay
 from bot.qqq_usdt_executor import QqqOrderContext, QqqUsdtExecutionEngine
 from bot.qqq_runtime_policy import filter_closed_bars, market_time_window_status, trading_calendar_status
@@ -21,6 +23,14 @@ from bot.router_executor import StrategyRouterExecutionEngine
 from bot.strategy_router import RoutedSignalCandidate, StrategyRouter, StrategyRouterConfig
 import scripts.scan_qqq_usdt_4h_triggers as qqq_trigger_scan
 from scripts.replay_qqq_usdt_10x import run_10x_replay
+
+
+class _FakeAdapter:
+    def __init__(self, candidate: RoutedSignalCandidate):
+        self.candidate = candidate
+
+    def preview(self) -> RoutedSignalCandidate:
+        return self.candidate
 
 
 def build_router() -> StrategyRouter:
@@ -77,6 +87,16 @@ def test_strategy_router_config_respects_explicit_notional_gap_disable() -> None
     assert config.qqq_rebalance_on_notional_gap is False
 
 
+def test_live_router_template_uses_damped_qqq_rebalance() -> None:
+    template = json.loads((ROOT / "config" / "config.live.strategy-router.template.json").read_text())
+
+    assert template["qqq_strategy_config"] == "config/config.paper.qqq-usdt-aggressive-runtime.json"
+    assert template["qqq_rebalance_on_notional_gap"] is False
+    assert template["qqq_min_rebalance_notional_usdt"] == 30000.0
+    assert template["qqq_min_rebalance_gap_ratio"] == 0.1
+    assert template["qqq_rebalance_cooldown_seconds"] == 14400.0
+
+
 def test_strategy_router_config_ignores_legacy_stop_reentry_fields() -> None:
     config = StrategyRouterConfig.from_dict(
         {
@@ -95,6 +115,150 @@ def test_strategy_router_config_ignores_legacy_stop_reentry_fields() -> None:
     assert not hasattr(config, "qqq_stop_reentry_guard_enabled")
 
 
+def test_router_startup_message_includes_bootstrap_errors() -> None:
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+
+    message = engine._format_startup_message(
+        {
+            "mode": "live",
+            "btc": {"bootstrap_error": "btc leverage failed"},
+            "qqq": {"status": "error", "error": "qqq leverage failed"},
+        }
+    )
+
+    assert "BTC: 异常" in message
+    assert "QQQ: 异常" in message
+    assert "BTC错误: btc leverage failed" in message
+    assert "QQQ错误: qqq leverage failed" in message
+
+
+def test_qqq_bootstrap_reports_completed_step_in_paper(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "exchange_leverage": 10.0,
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 4.0
+}
+""".strip()
+    )
+    markets_cache = tmp_path / "markets.json"
+    markets_cache.write_text('{"QQQ/USDT:USDT": {"symbol": "QQQ/USDT:USDT"}}')
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            okx_markets_cache_path=str(markets_cache),
+        ),
+        config_path,
+    )
+
+    result = engine.bootstrap()
+
+    assert result["status"] == "ok"
+    assert result["bootstrap_step"] == "completed"
+    assert result["market_loaded"] is True
+
+
+def test_qqq_markets_cache_hydrates_ccxt_exchange(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "exchange_leverage": 10.0,
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 4.0
+}
+""".strip()
+    )
+    markets_cache = tmp_path / "markets.json"
+    markets_cache.write_text(
+        json.dumps(
+            {
+                "QQQ/USDT:USDT": {
+                    "id": "QQQ-USDT-SWAP",
+                    "symbol": "QQQ/USDT:USDT",
+                    "type": "swap",
+                    "swap": True,
+                    "linear": True,
+                    "contract": True,
+                    "contractSize": 1.0,
+                }
+            }
+        )
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            okx_markets_cache_path=str(markets_cache),
+        ),
+        config_path,
+    )
+    engine.client.load_markets = lambda: pytest.fail("must use local markets cache")  # type: ignore[method-assign]
+    hydrated: list[list[dict[str, Any]]] = []
+    engine.client.exchange.set_markets = lambda markets: hydrated.append(markets)  # type: ignore[method-assign]
+
+    markets = engine._load_markets()
+
+    assert "QQQ/USDT:USDT" in markets
+    assert hydrated
+    assert hydrated[0][0]["id"] == "QQQ-USDT-SWAP"
+
+
+def test_btc_executor_uses_markets_cache_without_ccxt_load(tmp_path: Path) -> None:
+    markets_cache = tmp_path / "markets.json"
+    markets_cache.write_text(
+        json.dumps(
+            {
+                "BTC/USDT:USDT": {
+                    "id": "BTC-USDT-SWAP",
+                    "symbol": "BTC/USDT:USDT",
+                    "type": "swap",
+                    "swap": True,
+                    "linear": True,
+                    "contract": True,
+                    "contractSize": 0.01,
+                }
+            }
+        )
+    )
+    engine = OkxExecutionEngine(
+        ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="isolated",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=str(tmp_path / "btc_state.db"),
+            markets_cache_path=str(markets_cache),
+        )
+    )
+    engine.client.load_markets = lambda: pytest.fail("must use local markets cache")  # type: ignore[method-assign]
+    hydrated: list[list[dict[str, Any]]] = []
+    engine.client.exchange.set_markets = lambda markets: hydrated.append(markets)  # type: ignore[method-assign]
+
+    markets = engine._load_markets()
+
+    assert "BTC/USDT:USDT" in markets
+    assert hydrated
+    assert hydrated[0][0]["id"] == "BTC-USDT-SWAP"
+
+
 def test_live_router_template_uses_shadow_gate_v2_profile_only() -> None:
     template = json.loads((ROOT / "config" / "config.live.strategy-router.template.json").read_text())
 
@@ -106,6 +270,7 @@ def test_live_router_template_uses_shadow_gate_v2_profile_only() -> None:
     qqq_config = json.loads((ROOT / str(template["qqq_strategy_config"])).read_text())
     profile = qqq_config["shadow_gate_replay_profile"]
     assert profile["runtime_enabled"] is True
+    assert profile["clock"] == "signal_session"
     assert profile["reentry_rule"] == "clear"
     assert profile["reentry_clear_bars"] == 2
     assert profile["loss_streak_stop"] == 0
@@ -354,6 +519,76 @@ def test_qqq_fixed10_profile_keeps_defense_at_ten_x() -> None:
     assert QqqUsdtSignalAdapter._current_leverage(profile, pd.Series({"defense_state": True})) == (10.0, "defense")
 
 
+def test_attach_daily_state_can_extend_signal_past_daily_end_for_runtime() -> None:
+    okx_4h = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-06-04T20:00:00Z",
+                    "2026-06-05T00:00:00Z",
+                ],
+                utc=True,
+            ),
+            "close": [100.0, 101.0],
+        }
+    )
+    signal_path = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-06-04T20:00:00Z"], utc=True),
+            "position": ["TQQQ"],
+        }
+    )
+
+    trimmed = qqq_trigger_scan.attach_daily_state(okx_4h, signal_path)
+    extended = qqq_trigger_scan.attach_daily_state(okx_4h, signal_path, trim_to_signal_end=False)
+
+    assert list(trimmed["date"]) == [pd.Timestamp("2026-06-04T20:00:00Z")]
+    assert list(extended["date"]) == [
+        pd.Timestamp("2026-06-04T20:00:00Z"),
+        pd.Timestamp("2026-06-05T00:00:00Z"),
+    ]
+    assert extended["allow_long"].tolist() == [True, True]
+
+
+def test_qqq_runtime_daily_columns_extend_to_latest_4h_bar() -> None:
+    bars = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                [
+                    "2026-06-04T20:00:00Z",
+                    "2026-06-05T00:00:00Z",
+                ],
+                utc=True,
+            ),
+            "close": [100.0, 101.0],
+        }
+    )
+    signal_path = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2026-06-04T20:00:00Z"], utc=True),
+            "entry_type": ["base"],
+            "overlay_mode": [False],
+            "overlay_allocation": [1.0],
+            "vix_label": ["vix_low"],
+            "ixic_trend_label": ["ixic_up"],
+            "rel_strength_label": ["qqq_strong"],
+        }
+    )
+
+    trimmed = QqqUsdtSignalAdapter._attach_daily_columns(bars, signal_path)
+    extended = QqqUsdtSignalAdapter._attach_daily_columns(bars, signal_path, trim_to_signal_end=False)
+
+    assert list(trimmed["date"]) == [pd.Timestamp("2026-06-04T20:00:00Z")]
+    assert list(extended["date"]) == [
+        pd.Timestamp("2026-06-04T20:00:00Z"),
+        pd.Timestamp("2026-06-05T00:00:00Z"),
+    ]
+    assert extended["daily_signal_timestamp"].tolist() == [
+        pd.Timestamp("2026-06-04T20:00:00Z"),
+        pd.Timestamp("2026-06-04T20:00:00Z"),
+    ]
+
+
 def test_qqq_daily_refresh_passes_configured_timeout(monkeypatch: Any, tmp_path: Path) -> None:
     adapter = QqqUsdtSignalAdapter(tmp_path / "qqq.json")
     seen: dict[str, Any] = {}
@@ -534,7 +769,7 @@ def _mock_qqq_preview(
     monkeypatch.setattr("bot.qqq_usdt_signal_adapter.load_strict_config", lambda path: {"data_root": str(tmp_path)})
     monkeypatch.setattr("bot.qqq_usdt_signal_adapter.load_signal_path", lambda path, overrides=None: ({}, signal_path.copy()))
     monkeypatch.setattr("bot.qqq_usdt_signal_adapter.load_okx_4h", lambda path: bars.copy())
-    monkeypatch.setattr("bot.qqq_usdt_signal_adapter.attach_daily_state", lambda okx, signal: okx.copy())
+    monkeypatch.setattr("bot.qqq_usdt_signal_adapter.attach_daily_state", lambda okx, signal, **_: okx.copy())
     monkeypatch.setattr("bot.qqq_usdt_signal_adapter.enrich_bars", lambda frame: frame.copy())
 
     return QqqUsdtSignalAdapter(config_path).preview()
@@ -1711,6 +1946,361 @@ def test_qqq_rebalance_on_notional_gap_triggers_without_leverage_change(tmp_path
     assert captured["target_notional"] == 29000.0
 
 
+def test_qqq_rebalance_gap_ratio_blocks_small_relative_drift(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "exchange_leverage": 10.0,
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_sizing_basis="total_equity",
+            qqq_rebalance_on_notional_gap=True,
+            qqq_min_rebalance_notional_usdt=5000.0,
+            qqq_min_rebalance_gap_ratio=0.05,
+        ),
+        config_path,
+    )
+    engine.save_state({"position": {"leverage": 10.0, "stop_price": 675.5}})
+
+    class FakeClient:
+        def fetch_balance(self):
+            return {"info": {"data": [{"details": [{"ccy": "USDT", "eq": "30000"}]}]}}
+
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=700.0,
+        latest_low=690.0,
+        stop_price=675.5,
+        stop_hit=False,
+        route_score=100.0,
+        candidate={"timestamp": "2026-05-29 12:00:00+00:00"},
+    )
+    engine.client = FakeClient()
+    engine.fetch_position_state = lambda: {"contracts": 1.0, "notional_usdt": 286000.0, "raw": None}  # type: ignore[method-assign]
+    engine._build_context = lambda candidate: context  # type: ignore[method-assign]
+    engine.update_trailing_stop = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    engine.rebalance_position = lambda *args, **kwargs: pytest.fail("small relative drift should not rebalance")  # type: ignore[method-assign]
+
+    result = engine.evaluate_latest(RoutedSignalCandidate("qqq_usdt_aggressive", "QQQ/USDT:USDT", True, 100.0))
+
+    assert result["actions"] == []
+
+
+def test_qqq_rebalance_cooldown_blocks_repeated_rebalance(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "exchange_leverage": 10.0,
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_sizing_basis="total_equity",
+            qqq_rebalance_on_notional_gap=True,
+            qqq_min_rebalance_notional_usdt=500.0,
+            qqq_rebalance_cooldown_seconds=1800.0,
+        ),
+        config_path,
+    )
+    engine.save_state(
+        {
+            "position": {
+                "leverage": 10.0,
+                "stop_price": 675.5,
+                "last_rebalance_at": pd.Timestamp.now(tz="UTC").isoformat(),
+            }
+        }
+    )
+
+    class FakeClient:
+        def fetch_balance(self):
+            return {"info": {"data": [{"details": [{"ccy": "USDT", "eq": "3000"}]}]}}
+
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=700.0,
+        latest_low=690.0,
+        stop_price=675.5,
+        stop_hit=False,
+        route_score=100.0,
+        candidate={"timestamp": "2026-05-29 12:00:00+00:00"},
+    )
+    engine.client = FakeClient()
+    engine.fetch_position_state = lambda: {"contracts": 1.0, "notional_usdt": 10000.0, "raw": None}  # type: ignore[method-assign]
+    engine._build_context = lambda candidate: context  # type: ignore[method-assign]
+    engine.rebalance_position = lambda *args, **kwargs: pytest.fail("cooldown should block rebalance")  # type: ignore[method-assign]
+
+    result = engine.evaluate_latest(RoutedSignalCandidate("qqq_usdt_aggressive", "QQQ/USDT:USDT", True, 100.0))
+
+    assert result["actions"][0]["reason"] == "rebalance_cooldown_active"
+
+
+def test_qqq_state_from_context_preserves_rebalance_runtime_fields(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "exchange_leverage": 10.0,
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+        ),
+        config_path,
+    )
+    last_rebalance_at = "2026-06-03T14:00:00+00:00"
+    engine.save_state(
+        {
+            "position": {
+                "leverage": 10.0,
+                "peak_price": 700.0,
+                "entry_price": 690.0,
+                "last_rebalance_at": last_rebalance_at,
+                "last_rebalance_side": "buy",
+                "last_rebalance_delta_notional_usdt": 15000.0,
+            }
+        }
+    )
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=3.5,
+        reference_price=710.0,
+        latest_low=700.0,
+        stop_price=681.625,
+        stop_hit=False,
+        route_score=100.0,
+        candidate={"timestamp": "2026-05-29 12:00:00+00:00"},
+    )
+
+    updated = engine._state_from_context(context)
+
+    assert updated["last_rebalance_at"] == last_rebalance_at
+    assert updated["last_rebalance_side"] == "buy"
+    assert updated["last_rebalance_delta_notional_usdt"] == 15000.0
+
+
+def test_qqq_flat_entry_requires_min_route_score(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "exchange_leverage": 10.0,
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 4.0
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_min_route_score=96.0,
+        ),
+        config_path,
+    )
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=4.0,
+        reference_price=736.15,
+        latest_low=720.63,
+        stop_price=719.2032,
+        stop_hit=False,
+        route_score=88.0,
+        candidate={"timestamp": "2026-06-05 12:00:00+00:00"},
+    )
+    engine.fetch_position_state = lambda: {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}  # type: ignore[method-assign]
+    engine._build_context = lambda candidate: context  # type: ignore[method-assign]
+    engine.open_position = lambda context: pytest.fail("below-threshold flat entry must not open")  # type: ignore[method-assign]
+
+    result = engine.evaluate_latest(
+        RoutedSignalCandidate(
+            "qqq_usdt_aggressive",
+            "QQQ/USDT:USDT",
+            True,
+            88.0,
+            timestamp="2026-06-05 12:00:00+00:00",
+            leverage=10.0,
+        )
+    )
+
+    assert result["position_open"] is False
+    assert result["actions"][0]["reason"] == "qqq_entry_score_below_min"
+
+
+def test_qqq_external_flat_sync_clears_state_and_locks_same_signal(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "exchange_leverage": 10.0,
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 4.0,
+  "shadow_gate_replay_profile": {
+    "runtime_enabled": true,
+    "stop_loss_pct": 4.0,
+    "reentry_rule": "clear",
+    "reentry_clear_bars": 2,
+    "loss_streak_stop": 0,
+    "loss_streak_cooldown_bars": 0,
+    "equity_dd_stop_pct": 15.0,
+    "equity_dd_cooldown_bars": 20
+  }
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_min_route_score=96.0,
+        ),
+        config_path,
+    )
+    engine.save_state(
+        {
+            "position": {
+                "symbol": "QQQ/USDT:USDT",
+                "entry_price": 742.8,
+                "entry_candidate_timestamp": "2026-06-04 20:00:00+00:00",
+                "leverage": 10.0,
+                "stop_price": 719.2032,
+                "latest_low": 720.63,
+                "peak_price": 749.17,
+            }
+        }
+    )
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=4.0,
+        reference_price=736.15,
+        latest_low=718.5,
+        stop_price=719.2032,
+        stop_hit=False,
+        route_score=100.0,
+        candidate={"timestamp": "2026-06-05 12:00:00+00:00"},
+    )
+
+    result = engine.sync_external_flat(reason="exchange_position_flat", context=context)
+    state = engine.load_state()
+
+    assert result["status"] == "synced"
+    assert result["stop_like"] is True
+    assert state["position"] is None
+    assert state["last_stop_hit"]["candidate_timestamp"] == "2026-06-05 12:00:00+00:00"
+    assert engine._same_signal_stop_locked(context) is True
+
+
+def test_qqq_flat_entry_skips_invalid_initial_stop_price(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "exchange_leverage": 10.0,
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 4.0
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_min_route_score=96.0,
+        ),
+        config_path,
+    )
+    context = QqqOrderContext(
+        symbol="QQQ/USDT:USDT",
+        margin_mode="isolated",
+        leverage=10.0,
+        stop_loss_pct=4.0,
+        reference_price=718.5,
+        latest_low=718.5,
+        stop_price=719.2032,
+        stop_hit=False,
+        route_score=100.0,
+        candidate={"timestamp": "2026-06-05 12:00:00+00:00"},
+    )
+    engine.fetch_position_state = lambda: {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}  # type: ignore[method-assign]
+    engine._build_context = lambda candidate: context  # type: ignore[method-assign]
+    engine.open_position = lambda context: pytest.fail("invalid initial stop must not reach exchange open")  # type: ignore[method-assign]
+
+    result = engine.evaluate_latest(
+        RoutedSignalCandidate(
+            "qqq_usdt_aggressive",
+            "QQQ/USDT:USDT",
+            True,
+            100.0,
+            timestamp="2026-06-05 12:00:00+00:00",
+            leverage=10.0,
+        )
+    )
+
+    assert result["position_open"] is False
+    assert result["actions"][0]["reason"] == "qqq_invalid_initial_stop_price"
+
+
 def test_qqq_inactive_target_closes_existing_position_once(tmp_path: Path) -> None:
     config_path = tmp_path / "qqq.json"
     config_path.write_text(
@@ -2107,6 +2697,290 @@ def test_router_does_not_flatten_btc_before_blocked_qqq_shadow_gate_switch(tmp_p
     assert flatten_calls == []
     assert result["current_executed_strategy"] == "btc_sota"
     assert result["execution_results"][0]["result"]["reason"] == "qqq_shadow_gate_blocked_before_switch"
+
+
+def test_router_advances_qqq_shadow_gate_before_score_gate(tmp_path: Path) -> None:
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.qqq_executor = None
+    engine.btc_executor = None
+    engine._load_execution_state = lambda: {"current_executed_strategy": None}  # type: ignore[method-assign]
+    router.candidate_preprocessor = engine._preprocess_route_candidates
+    observe_calls: list[str | None] = []
+
+    class FakeQqqExecutor:
+        def shadow_gate_observe_candidate(self, candidate):
+            observe_calls.append(candidate.timestamp)
+            return {
+                "enabled": True,
+                "allow": False,
+                "reason": "gate_cooldown",
+                "gate_remaining_bars": 19,
+            }
+
+    engine.qqq_executor = FakeQqqExecutor()
+    router.btc_adapter = _FakeAdapter(RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0))
+    router.qqq_adapter = _FakeAdapter(
+        RoutedSignalCandidate(
+            "qqq_usdt_aggressive",
+            "QQQ/USDT:USDT",
+            True,
+            88.0,
+            timestamp="2026-06-07 04:00:00+00:00",
+            direction="BULL",
+            event_type="qqq_usdt_long",
+            leverage=10.0,
+            metadata={"defense_state": True},
+        )
+    )
+
+    result = router.evaluate_latest(current_strategy=None)
+
+    assert observe_calls == ["2026-06-07 04:00:00+00:00"]
+    assert result["decision_reason"] == "no_eligible_candidates"
+    qqq = next(item for item in result["candidates"] if item["strategy_id"] == "qqq_usdt_aggressive")
+    assert qqq["active"] is False
+    assert qqq["route_score"] == 0.0
+    assert qqq["strength_label"] == "shadow_gate_blocked"
+    assert qqq["metadata"]["pre_shadow_gate_route_score"] == 88.0
+    assert qqq["metadata"]["shadow_gate"]["gate_remaining_bars"] == 19
+
+
+def test_router_shadow_gate_does_not_block_current_qqq_hold(tmp_path: Path) -> None:
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine._load_execution_state = lambda: {"current_executed_strategy": "qqq_usdt_aggressive"}  # type: ignore[method-assign]
+    router.candidate_preprocessor = engine._preprocess_route_candidates
+
+    class FakeQqqExecutor:
+        def shadow_gate_observe_candidate(self, candidate):
+            return {
+                "enabled": True,
+                "allow": False,
+                "reason": "gate_cooldown",
+                "gate_remaining_bars": 19,
+            }
+
+    engine.qqq_executor = FakeQqqExecutor()
+    router.btc_adapter = _FakeAdapter(RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0))
+    router.qqq_adapter = _FakeAdapter(
+        RoutedSignalCandidate(
+            "qqq_usdt_aggressive",
+            "QQQ/USDT:USDT",
+            True,
+            100.0,
+            timestamp="2026-06-07 04:00:00+00:00",
+            direction="BULL",
+            event_type="qqq_usdt_long",
+            leverage=10.0,
+        )
+    )
+
+    result = router.evaluate_latest(current_strategy="qqq_usdt_aggressive")
+
+    assert result["selected_strategy"] == "qqq_usdt_aggressive"
+    assert result["decision_reason"] == "hold_current_no_challenger"
+    qqq = next(item for item in result["candidates"] if item["strategy_id"] == "qqq_usdt_aggressive")
+    assert qqq["active"] is True
+    assert qqq["route_score"] == 100.0
+    assert qqq["metadata"]["shadow_gate"]["gate_remaining_bars"] == 19
+
+
+def test_router_resyncs_external_qqq_flat_before_flat_entry_gate(tmp_path: Path) -> None:
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.execution_state_path = tmp_path / "router.execution.json"
+    execution_state = {"current_executed_strategy": "qqq_usdt_aggressive"}
+
+    engine._load_execution_state = lambda: dict(execution_state)  # type: ignore[method-assign]
+
+    def save_execution_state(payload: dict[str, Any]) -> None:
+        execution_state.clear()
+        execution_state.update(payload)
+
+    engine._save_execution_state = save_execution_state  # type: ignore[method-assign]
+    engine._maybe_send_telegram_notifications = lambda payload: None  # type: ignore[method-assign]
+    qqq_calls: list[str] = []
+
+    class FakeQqqExecutor:
+        symbol = "QQQ/USDT:USDT"
+
+        def fetch_position_state(self):
+            return {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
+
+        def sync_external_flat(self, *, reason: str, context=None):
+            qqq_calls.append(f"sync:{reason}:{context is not None}")
+            return {"status": "synced", "reason": reason}
+
+        def evaluate_latest(self, candidate):
+            qqq_calls.append("evaluate")
+            return {"status": "should_not_run", "position_open": True}
+
+        def risk_on_window_status(self):
+            return {"enabled": True, "open": True}
+
+        def shadow_gate_pre_switch_status(self, candidate):
+            return {"enabled": True, "allow": True}
+
+    class FakeBtcExecutor:
+        def _fetch_position_state(self, pos_side):
+            return {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
+
+    engine.qqq_executor = FakeQqqExecutor()
+    engine.btc_executor = FakeBtcExecutor()
+    router.btc_adapter = _FakeAdapter(RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0))
+    router.qqq_adapter = _FakeAdapter(
+        RoutedSignalCandidate(
+            "qqq_usdt_aggressive",
+            "QQQ/USDT:USDT",
+            True,
+            88.0,
+            timestamp="2026-06-05 12:00:00+00:00",
+            leverage=10.0,
+        )
+    )
+
+    result = engine.evaluate_latest()
+
+    assert qqq_calls == ["sync:router_exchange_flat_sync:False"]
+    assert result["route"]["decision_reason"] == "no_eligible_candidates"
+    assert result["current_executed_strategy"] is None
+    assert execution_state["current_executed_strategy"] is None
+    assert result["exchange_position_sync"]["synced"] is True
+
+
+def test_router_external_qqq_flat_sync_uses_candidate_context_before_reentry(tmp_path: Path) -> None:
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.execution_state_path = tmp_path / "router.execution.json"
+    execution_state = {"current_executed_strategy": "qqq_usdt_aggressive"}
+    engine._load_execution_state = lambda: dict(execution_state)  # type: ignore[method-assign]
+
+    def save_execution_state(payload: dict[str, Any]) -> None:
+        execution_state.clear()
+        execution_state.update(payload)
+
+    engine._save_execution_state = save_execution_state  # type: ignore[method-assign]
+    engine._maybe_send_telegram_notifications = lambda payload: None  # type: ignore[method-assign]
+    qqq_calls: list[str] = []
+    candidate_timestamp = "2026-06-05 12:00:00+00:00"
+
+    class FakeQqqExecutor:
+        symbol = "QQQ/USDT:USDT"
+
+        def fetch_position_state(self):
+            return {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
+
+        def _build_context(self, candidate):
+            qqq_calls.append(f"context:{candidate.timestamp}")
+            return QqqOrderContext(
+                symbol="QQQ/USDT:USDT",
+                margin_mode="isolated",
+                leverage=10.0,
+                stop_loss_pct=4.0,
+                reference_price=736.15,
+                latest_low=718.5,
+                stop_price=719.2032,
+                stop_hit=False,
+                route_score=float(candidate.route_score),
+                candidate=candidate.to_dict(),
+            )
+
+        def sync_external_flat(self, *, reason: str, context=None):
+            assert context is not None
+            qqq_calls.append(f"sync:{reason}:{context.candidate.get('timestamp')}")
+            return {
+                "status": "synced",
+                "reason": reason,
+                "candidate_timestamp": context.candidate.get("timestamp"),
+            }
+
+        def evaluate_latest(self, candidate):
+            qqq_calls.append("evaluate")
+            return {"status": "ok", "actions": [{"reason": "qqq_stop_hit_same_signal_lock"}], "position_open": False}
+
+        def risk_on_window_status(self):
+            return {"enabled": True, "open": True}
+
+        def shadow_gate_pre_switch_status(self, candidate):
+            return {"enabled": True, "allow": True}
+
+    class FakeBtcExecutor:
+        def _fetch_position_state(self, pos_side):
+            return {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
+
+    engine.qqq_executor = FakeQqqExecutor()
+    engine.btc_executor = FakeBtcExecutor()
+    router.btc_adapter = _FakeAdapter(RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0))
+    router.qqq_adapter = _FakeAdapter(
+        RoutedSignalCandidate(
+            "qqq_usdt_aggressive",
+            "QQQ/USDT:USDT",
+            True,
+            100.0,
+            timestamp=candidate_timestamp,
+            leverage=10.0,
+        )
+    )
+
+    result = engine.evaluate_latest()
+
+    assert qqq_calls == [
+        f"context:{candidate_timestamp}",
+        f"sync:router_exchange_flat_sync:{candidate_timestamp}",
+        "evaluate",
+    ]
+    assert result["current_executed_strategy"] is None
+    assert result["exchange_position_sync"]["qqq_external_flat_sync"]["candidate_timestamp"] == candidate_timestamp
+    assert result["execution_results"][0]["result"]["position_open"] is False
 
 
 def test_router_telegram_route_message_uses_router_context() -> None:

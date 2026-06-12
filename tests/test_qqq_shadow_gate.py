@@ -170,3 +170,150 @@ def test_qqq_executor_writes_shadow_gate_action_log(tmp_path: Path) -> None:
     assert "observe_bar" in events
     assert "open" in events
     assert "close" in events
+
+
+def test_qqq_shadow_gate_signal_session_clock_does_not_decrement_per_4h_bar(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "execution_symbol": "QQQ/USDT:USDT",
+                "base_leverage": 10.0,
+                "offense_leverage": 10.0,
+                "stop_loss_pct": 4.0,
+                "initial_capital": 1000.0,
+                "taker_fee_rate": 0.0,
+                "slippage_bps": 0.0,
+                "shadow_gate_replay_profile": {
+                    "status": "runtime_enabled",
+                    "runtime_enabled": True,
+                    "clock": "signal_session",
+                    "reentry_rule": "clear",
+                    "reentry_clear_bars": 2,
+                    "equity_dd_stop_pct": 15.0,
+                    "equity_dd_cooldown_bars": 20,
+                },
+            }
+        )
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+        ),
+        config_path,
+    )
+    state = engine.shadow_gate.default_state()
+    state["gate_remaining_bars"] = 2
+    state["gate_reason"] = "equity_dd"
+    engine._save_shadow_gate_state(state)
+
+    def context(execution_timestamp: str, signal_timestamp: str) -> QqqOrderContext:
+        return QqqOrderContext(
+            symbol="QQQ/USDT:USDT",
+            margin_mode="isolated",
+            leverage=10.0,
+            stop_loss_pct=4.0,
+            reference_price=100.0,
+            latest_low=100.0,
+            stop_price=96.0,
+            stop_hit=False,
+            route_score=100.0,
+            candidate={
+                "active": True,
+                "timestamp": execution_timestamp,
+                "metadata": {
+                    "daily_signal_timestamp": signal_timestamp,
+                    "defense_state": False,
+                },
+            },
+        )
+
+    engine._shadow_gate_observe_context(context("2026-06-07T00:00:00Z", "2026-06-05T13:30:00Z"))
+    after_first = engine._load_shadow_gate_state()
+    assert after_first["gate_remaining_bars"] == 1
+    assert after_first["last_bar_timestamp"] == "signal_session:2026-06-05"
+
+    engine._shadow_gate_observe_context(context("2026-06-07T04:00:00Z", "2026-06-05T13:30:00Z"))
+    after_same_session = engine._load_shadow_gate_state()
+    assert after_same_session["gate_remaining_bars"] == 1
+
+    engine._shadow_gate_observe_context(context("2026-06-08T14:00:00Z", "2026-06-08T13:30:00Z"))
+    after_next_session = engine._load_shadow_gate_state()
+    assert after_next_session["gate_remaining_bars"] == 0
+    assert after_next_session["last_bar_timestamp"] == "signal_session:2026-06-08"
+
+
+def test_qqq_shadow_gate_signal_session_clock_ignores_replayed_older_sessions(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "execution_symbol": "QQQ/USDT:USDT",
+                "base_leverage": 10.0,
+                "offense_leverage": 10.0,
+                "stop_loss_pct": 4.0,
+                "initial_capital": 1000.0,
+                "taker_fee_rate": 0.0,
+                "slippage_bps": 0.0,
+                "shadow_gate_replay_profile": {
+                    "status": "runtime_enabled",
+                    "runtime_enabled": True,
+                    "clock": "signal_session",
+                    "reentry_rule": "clear",
+                    "reentry_clear_bars": 2,
+                    "equity_dd_stop_pct": 15.0,
+                    "equity_dd_cooldown_bars": 20,
+                },
+            }
+        )
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+        ),
+        config_path,
+    )
+    state = engine.shadow_gate.default_state()
+    state["gate_remaining_bars"] = 4
+    state["gate_reason"] = "equity_dd"
+    engine._save_shadow_gate_state(state)
+
+    def context(session: str) -> QqqOrderContext:
+        return QqqOrderContext(
+            symbol="QQQ/USDT:USDT",
+            margin_mode="isolated",
+            leverage=10.0,
+            stop_loss_pct=4.0,
+            reference_price=100.0,
+            latest_low=100.0,
+            stop_price=96.0,
+            stop_hit=False,
+            route_score=100.0,
+            candidate={
+                "active": False,
+                "timestamp": f"{session}T16:00:00Z",
+                "metadata": {
+                    "daily_signal_timestamp": f"{session}T13:30:00Z",
+                    "defense_state": False,
+                },
+            },
+        )
+
+    engine._shadow_gate_observe_context(context("2026-06-08"))
+    assert engine._load_shadow_gate_state()["gate_remaining_bars"] == 3
+    engine._shadow_gate_observe_context(context("2026-06-09"))
+    assert engine._load_shadow_gate_state()["gate_remaining_bars"] == 2
+    engine._shadow_gate_observe_context(context("2026-06-08"))
+    assert engine._load_shadow_gate_state()["gate_remaining_bars"] == 2
+    engine._shadow_gate_observe_context(context("2026-06-10"))
+    final_state = engine._load_shadow_gate_state()
+    assert final_state["gate_remaining_bars"] == 1
+    assert final_state["last_bar_timestamp"] == "signal_session:2026-06-10"

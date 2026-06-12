@@ -76,8 +76,37 @@ def dedupe_daily_by_us_trade_day(dataframe: pd.DataFrame) -> pd.DataFrame:
     result = dataframe.copy()
     result["date"] = pd.to_datetime(result["date"], utc=True, errors="coerce")
     result["_us_trade_day"] = result["date"].dt.tz_convert(LOCAL_US).dt.date
-    result = result.sort_values("date").drop_duplicates("_us_trade_day", keep="last").reset_index(drop=True)
+    result = result.sort_values("date", kind="mergesort").drop_duplicates("_us_trade_day", keep="last").reset_index(drop=True)
     return result.drop(columns=["_us_trade_day"])
+
+
+def merge_history(existing: pd.DataFrame, fetched: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    existing_norm = normalize_dataframe(existing) if not existing.empty else existing
+    fetched_norm = normalize_dataframe(fetched) if not fetched.empty else fetched
+    if timeframe != "1d":
+        combined = pd.concat([existing_norm, fetched_norm], ignore_index=True) if not existing_norm.empty else fetched_norm
+        return normalize_dataframe(combined) if not combined.empty else combined
+
+    if existing_norm.empty:
+        return dedupe_daily_by_us_trade_day(fetched_norm) if not fetched_norm.empty else fetched_norm
+    if fetched_norm.empty:
+        return dedupe_daily_by_us_trade_day(existing_norm)
+
+    existing_daily = dedupe_daily_by_us_trade_day(existing_norm).copy()
+    fetched_daily = dedupe_daily_by_us_trade_day(fetched_norm).copy()
+    existing_daily["_source_rank"] = 0
+    fetched_daily["_source_rank"] = 1
+    combined = pd.concat([existing_daily, fetched_daily], ignore_index=True)
+    combined["_row_order"] = range(len(combined))
+    combined["_us_trade_day"] = combined["date"].dt.tz_convert(LOCAL_US).dt.date
+    combined = (
+        combined.sort_values(["_us_trade_day", "_source_rank", "_row_order"], kind="mergesort")
+        .drop_duplicates("_us_trade_day", keep="last")
+        .drop(columns=["_source_rank", "_row_order", "_us_trade_day"])
+        .sort_values("date", kind="mergesort")
+        .reset_index(drop=True)
+    )
+    return combined[["date", "open", "high", "low", "close", "volume"]]
 
 
 def fetch_chunk(
@@ -163,11 +192,6 @@ def fetch_timeframe(
     existing = load_existing(output_path)
     start_dt = normalize_timestamp(start)
     end_dt = normalize_timestamp(end, default_now=True)
-    since = start_dt
-    if not existing.empty:
-        since = max(since, existing["date"].max() + pd.Timedelta(minutes=1))
-
-    fetched_batches: list[pd.DataFrame] = []
     max_span = {
         "1d": pd.Timedelta(days=3650),
         "1h": pd.Timedelta(days=700),
@@ -180,6 +204,17 @@ def fetch_timeframe(
         "15m": pd.Timedelta(minutes=15),
         "5m": pd.Timedelta(minutes=5),
     }.get(timeframe, pd.Timedelta(minutes=15))
+    since = start_dt
+    if not existing.empty:
+        latest_existing = existing["date"].max()
+        if timeframe == "1d":
+            # Refetch recent daily bars because Yahoo can first return an intraday
+            # snapshot for today's 1d candle, then later revise the same trade day.
+            since = max(since, latest_existing - pd.Timedelta(days=7))
+        else:
+            since = max(since, latest_existing + pd.Timedelta(minutes=1))
+
+    fetched_batches: list[pd.DataFrame] = []
 
     while since < end_dt:
         chunk_end = min(since + max_span, end_dt)
@@ -205,10 +240,7 @@ def fetch_timeframe(
         time.sleep(max(sleep_seconds, 0.0))
 
     fetched = pd.concat(fetched_batches, ignore_index=True) if fetched_batches else pd.DataFrame()
-    combined = pd.concat([existing, fetched], ignore_index=True) if not existing.empty else fetched
-    combined = normalize_dataframe(combined) if not combined.empty else combined
-    if timeframe == "1d" and not combined.empty:
-        combined = dedupe_daily_by_us_trade_day(combined)
+    combined = merge_history(existing, fetched, timeframe)
     if not combined.empty:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         combined.to_feather(output_path)

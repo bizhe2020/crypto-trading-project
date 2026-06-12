@@ -81,6 +81,7 @@ class ExecutorConfig:
     fixed_notional_usdt: float | None = None
     pos_side: str = "long"
     data_root: str = "data/okx/futures"
+    markets_cache_path: str | None = "var/okx/markets_cache.json"
     rr_ratio: float = 4.0
     pullback_window: int = 30
     sl_buffer_pct: float = 1.0
@@ -4787,8 +4788,38 @@ class OkxExecutionEngine:
 
     def _load_markets(self) -> dict[str, Any]:
         if self._markets_cache is None:
-            self._markets_cache = self.client.load_markets()
+            cache = self._load_markets_cache()
+            if cache:
+                self._markets_cache = cache
+                self._hydrate_exchange_markets(cache)
+            else:
+                self._markets_cache = self.client.load_markets()
         return self._markets_cache
+
+    def _load_markets_cache(self) -> dict[str, Any]:
+        configured = self.config.markets_cache_path
+        if not configured:
+            return {}
+        path = self._resolve_runtime_path(configured)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        symbol = str(self.config.symbol)
+        market = payload.get(symbol)
+        if isinstance(market, dict):
+            return {symbol: market}
+        return {key: value for key, value in payload.items() if isinstance(key, str) and isinstance(value, dict)}
+
+    def _hydrate_exchange_markets(self, markets: dict[str, Any]) -> None:
+        try:
+            self.client.exchange.set_markets(list(markets.values()))
+        except Exception:
+            return
 
     def _market(self) -> dict[str, Any]:
         markets = self._load_markets()

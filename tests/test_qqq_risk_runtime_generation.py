@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -8,6 +9,11 @@ import requests
 
 from scripts.qqq_risk_runtime_generation import append_latest_signal_row
 from scripts.refresh_qqq_risk_runtime_inputs import (
+    DEFAULT_LONG_CSV,
+    DEFAULT_RECENT_CSV,
+    DEFAULT_RUNTIME_DIR,
+    DEFAULT_SUMMARY,
+    ROOT,
     build_market_proxy_macro_file,
     refresh_etf_symbol,
     run_step,
@@ -106,6 +112,39 @@ def test_run_step_records_failure_metadata() -> None:
     payload = summary["steps"]["broken"]
     assert payload["status"] == "error"
     assert "RuntimeError: boom" in payload["error"]
+
+
+def test_runtime_risk_defaults_do_not_target_frozen_report_artifacts() -> None:
+    recent = DEFAULT_RECENT_CSV.relative_to(ROOT)
+    long_cycle = DEFAULT_LONG_CSV.relative_to(ROOT)
+    summary = DEFAULT_SUMMARY.relative_to(ROOT)
+
+    assert DEFAULT_RECENT_CSV.parent == DEFAULT_RUNTIME_DIR
+    assert DEFAULT_LONG_CSV.parent == DEFAULT_RUNTIME_DIR
+    assert DEFAULT_SUMMARY.parent == DEFAULT_RUNTIME_DIR
+    assert str(recent) == "var/runtime/qqq_risk/qqq_recent_risk_runtime_predictions.csv"
+    assert str(long_cycle) == "var/runtime/qqq_risk/qqq_long_cycle_risk_runtime_predictions.csv"
+    assert str(summary) == "var/runtime/qqq_risk/qqq_risk_runtime_refresh_summary.json"
+    assert "var/reports" not in str(DEFAULT_RECENT_CSV)
+    assert "var/reports" not in str(DEFAULT_LONG_CSV)
+
+
+def test_runtime_qqq_config_uses_runtime_risk_csvs() -> None:
+    config_path = Path("config/config.paper.qqq-usdt-aggressive-runtime.json")
+    payload = json.loads(config_path.read_text())
+
+    assert payload["recent_risk_predictions_csv"] == "var/runtime/qqq_risk/qqq_recent_risk_runtime_predictions.csv"
+    assert payload["long_cycle_risk_predictions_csv"] == "var/runtime/qqq_risk/qqq_long_cycle_risk_runtime_predictions.csv"
+    assert payload["recent_risk_predictions_csv"] != "var/reports/qqq_drawdown_lgb_shadow_predictions_macro_subfactor_core.csv"
+    assert payload["long_cycle_risk_predictions_csv"] != "var/reports/qqq_long_cycle_correction20d10_qqqonly_lgb_predictions.csv"
+
+
+def test_frozen_qqq_config_keeps_frozen_report_risk_csvs() -> None:
+    config_path = Path("config/config.paper.qqq-usdt-aggressive-frozen.json")
+    payload = json.loads(config_path.read_text())
+
+    assert payload["recent_risk_predictions_csv"] == "var/reports/qqq_drawdown_lgb_shadow_predictions_macro_subfactor_core.csv"
+    assert payload["long_cycle_risk_predictions_csv"] == "var/reports/qqq_long_cycle_correction20d10_qqqonly_lgb_predictions.csv"
 
 
 def test_refresh_etf_symbol_retries_later_start_on_http_400(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

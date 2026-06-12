@@ -25,6 +25,7 @@ class StrategyRouterExecutionEngine:
         self.config = router.config
         self.btc_executor = OkxExecutionEngine.from_file(self.config.btc_strategy_config)
         self.qqq_executor = QqqUsdtExecutionEngine(self.config, self.config.qqq_strategy_config)
+        self.router.candidate_preprocessor = self._preprocess_route_candidates
         self.execution_state_path = self.router.state_path.with_suffix(self.router.state_path.suffix + ".execution")
         self.heartbeat_path = self._resolve_heartbeat_path()
 
@@ -45,11 +46,16 @@ class StrategyRouterExecutionEngine:
         return payload
 
     def evaluate_latest(self) -> dict[str, Any]:
+        stored_previous_executed = self._current_executed_strategy()
+        position_sync = self._sync_executed_strategy_with_exchange(stored_previous_executed)
         previous_executed = self._current_executed_strategy()
         route = self.router.evaluate_latest(current_strategy=previous_executed)
         selected_strategy = route.get("selected_strategy")
         selected_candidate = route.get("selected_candidate") if isinstance(route.get("selected_candidate"), dict) else None
         qqq_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "qqq_usdt_aggressive" else None
+        external_qqq_flat_sync = self._sync_external_qqq_flat_after_route(position_sync, route)
+        if external_qqq_flat_sync is not None:
+            position_sync["qqq_external_flat_sync"] = external_qqq_flat_sync
         execution_results: list[dict[str, Any]] = []
         risk_on_window = None
         if selected_strategy == "qqq_usdt_aggressive" and previous_executed != "qqq_usdt_aggressive":
@@ -89,8 +95,10 @@ class StrategyRouterExecutionEngine:
                     "status": "blocked",
                     "mode": self.config.mode,
                     "route": route,
+                    "stored_previous_executed_strategy": stored_previous_executed,
                     "previous_executed_strategy": previous_executed,
                     "current_executed_strategy": self._current_executed_strategy(),
+                    "exchange_position_sync": position_sync,
                     "execution_results": execution_results,
                     "blocked_reason": "flatten_not_confirmed",
                     "updated_at": int(time.time()),
@@ -100,6 +108,7 @@ class StrategyRouterExecutionEngine:
                 execution_state.update(
                     {
                         "current_executed_strategy": self._current_executed_strategy(),
+                        "exchange_position_sync": position_sync,
                         "last_status": payload,
                         "updated_at": int(time.time()),
                     }
@@ -112,8 +121,12 @@ class StrategyRouterExecutionEngine:
             self._set_current_executed_strategy("btc_sota")
         elif selected_strategy == "qqq_usdt_aggressive":
             candidate = qqq_candidate or self._candidate_from_payload(selected_candidate)
-            execution_results.append({"strategy": "qqq_usdt_aggressive", "result": self.qqq_executor.evaluate_latest(candidate)})
-            self._set_current_executed_strategy("qqq_usdt_aggressive")
+            qqq_result = self.qqq_executor.evaluate_latest(candidate)
+            execution_results.append({"strategy": "qqq_usdt_aggressive", "result": qqq_result})
+            if bool(qqq_result.get("position_open")):
+                self._set_current_executed_strategy("qqq_usdt_aggressive")
+            else:
+                self._set_current_executed_strategy(None)
         else:
             if bool(self.config.flatten_on_no_signal):
                 execution_results.extend(self._flatten_strategy(previous_executed, reason="router_no_signal"))
@@ -123,8 +136,10 @@ class StrategyRouterExecutionEngine:
             "status": "ok",
             "mode": self.config.mode,
             "route": route,
+            "stored_previous_executed_strategy": stored_previous_executed,
             "previous_executed_strategy": previous_executed,
             "current_executed_strategy": self._current_executed_strategy(),
+            "exchange_position_sync": position_sync,
             "execution_results": execution_results,
             "updated_at": int(time.time()),
         }
@@ -133,12 +148,61 @@ class StrategyRouterExecutionEngine:
         execution_state.update(
             {
                 "current_executed_strategy": self._current_executed_strategy(),
+                "exchange_position_sync": position_sync,
                 "last_status": payload,
                 "updated_at": int(time.time()),
             }
         )
         self._save_execution_state(execution_state)
         return payload
+
+    def _preprocess_route_candidates(self, candidates: list[RoutedSignalCandidate]) -> list[RoutedSignalCandidate]:
+        processed: list[RoutedSignalCandidate] = []
+        for candidate in candidates:
+            if candidate.strategy_id != "qqq_usdt_aggressive":
+                processed.append(candidate)
+                continue
+            shadow_gate = self.qqq_executor.shadow_gate_observe_candidate(candidate)
+            if not bool(shadow_gate.get("allow", True)) and self._current_executed_strategy() != "qqq_usdt_aggressive":
+                metadata = dict(candidate.metadata)
+                metadata["shadow_gate"] = shadow_gate
+                metadata["shadow_gate_blocked"] = True
+                metadata["pre_shadow_gate_active"] = bool(candidate.active)
+                metadata["pre_shadow_gate_route_score"] = float(candidate.route_score)
+                processed.append(
+                    RoutedSignalCandidate(
+                        strategy_id=candidate.strategy_id,
+                        symbol=candidate.symbol,
+                        active=False,
+                        route_score=0.0,
+                        timestamp=candidate.timestamp,
+                        direction=None,
+                        event_type=None,
+                        leverage=None,
+                        strength_label="shadow_gate_blocked",
+                        source_config=candidate.source_config,
+                        metadata=metadata,
+                    )
+                )
+                continue
+            metadata = dict(candidate.metadata)
+            metadata["shadow_gate"] = shadow_gate
+            processed.append(
+                RoutedSignalCandidate(
+                    strategy_id=candidate.strategy_id,
+                    symbol=candidate.symbol,
+                    active=candidate.active,
+                    route_score=candidate.route_score,
+                    timestamp=candidate.timestamp,
+                    direction=candidate.direction,
+                    event_type=candidate.event_type,
+                    leverage=candidate.leverage,
+                    strength_label=candidate.strength_label,
+                    source_config=candidate.source_config,
+                    metadata=metadata,
+                )
+            )
+        return processed
 
     @staticmethod
     def _flatten_confirmed(results: list[dict[str, Any]]) -> bool:
@@ -284,6 +348,100 @@ class StrategyRouterExecutionEngine:
             }
         )
         self._save_execution_state(execution_state)
+
+    def _sync_executed_strategy_with_exchange(self, stored_strategy: str | None) -> dict[str, Any]:
+        if self.config.mode != "live":
+            return {"status": "skipped", "reason": "not_live", "current_executed_strategy": stored_strategy}
+        sync = self._fetch_exchange_position_sync()
+        if sync.get("status") != "ok":
+            return sync
+        exchange_strategy = self._executed_strategy_from_position_sync(sync, stored_strategy)
+        if exchange_strategy == stored_strategy:
+            state = self._load_execution_state()
+            state["exchange_position_sync"] = sync
+            state["updated_at"] = int(time.time())
+            self._save_execution_state(state)
+            return {**sync, "current_executed_strategy": stored_strategy, "synced": False}
+        if stored_strategy == "qqq_usdt_aggressive" and exchange_strategy is None:
+            sync["requires_qqq_external_flat_sync"] = True
+        self._set_current_executed_strategy(exchange_strategy)
+        state = self._load_execution_state()
+        state["exchange_position_sync"] = sync
+        state["last_external_execution_sync"] = {
+            "from": stored_strategy,
+            "to": exchange_strategy,
+            "reason": "exchange_position_mismatch",
+            "updated_at": int(time.time()),
+        }
+        state["updated_at"] = int(time.time())
+        self._save_execution_state(state)
+        return {
+            **sync,
+            "synced": True,
+            "previous_current_executed_strategy": stored_strategy,
+            "current_executed_strategy": exchange_strategy,
+        }
+
+    def _sync_external_qqq_flat_after_route(self, position_sync: dict[str, Any], route: dict[str, Any]) -> dict[str, Any] | None:
+        if not bool(position_sync.get("requires_qqq_external_flat_sync")):
+            return None
+        candidate = self._route_candidate(route, "qqq_usdt_aggressive")
+        context = None
+        if candidate is not None and hasattr(self.qqq_executor, "_build_context"):
+            try:
+                context = self.qqq_executor._build_context(candidate)
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "reason": "qqq_external_flat_context_failed",
+                    "error": str(exc),
+                }
+        try:
+            return self.qqq_executor.sync_external_flat(reason="router_exchange_flat_sync", context=context)
+        except TypeError:
+            return self.qqq_executor.sync_external_flat(reason="router_exchange_flat_sync")
+        except Exception as exc:
+            return {"status": "error", "reason": "qqq_external_flat_sync_failed", "error": str(exc)}
+
+    def _route_candidate(self, route: dict[str, Any], strategy_id: str) -> RoutedSignalCandidate | None:
+        selected = route.get("selected_candidate") if isinstance(route.get("selected_candidate"), dict) else None
+        if selected and selected.get("strategy_id") == strategy_id:
+            return self._candidate_from_payload(selected)
+        for payload in route.get("candidates", []) or []:
+            if isinstance(payload, dict) and payload.get("strategy_id") == strategy_id:
+                return self._candidate_from_payload(payload)
+        return None
+
+    def _fetch_exchange_position_sync(self) -> dict[str, Any]:
+        try:
+            qqq_position = self.qqq_executor.fetch_position_state()
+            btc_long = self.btc_executor._fetch_position_state("long")
+            btc_short = self.btc_executor._fetch_position_state("short")
+        except Exception as exc:
+            return {"status": "error", "reason": "exchange_position_sync_failed", "error": str(exc)}
+        return {
+            "status": "ok",
+            "btc_long_contracts": float(btc_long.get("contracts", 0.0) or 0.0),
+            "btc_short_contracts": float(btc_short.get("contracts", 0.0) or 0.0),
+            "qqq_contracts": float(qqq_position.get("contracts", 0.0) or 0.0),
+            "qqq_notional_usdt": float(qqq_position.get("notional_usdt", 0.0) or 0.0),
+            "updated_at": int(time.time()),
+        }
+
+    @staticmethod
+    def _executed_strategy_from_position_sync(sync: dict[str, Any], fallback: str | None = None) -> str | None:
+        btc_open = (
+            float(sync.get("btc_long_contracts", 0.0) or 0.0) > 0
+            or float(sync.get("btc_short_contracts", 0.0) or 0.0) > 0
+        )
+        qqq_open = float(sync.get("qqq_contracts", 0.0) or 0.0) > 0
+        if btc_open and qqq_open:
+            return fallback
+        if btc_open:
+            return "btc_sota"
+        if qqq_open:
+            return "qqq_usdt_aggressive"
+        return None
 
     def _candidate_from_payload(self, payload: dict[str, Any] | None) -> RoutedSignalCandidate | None:
         if not payload:
@@ -436,17 +594,31 @@ class StrategyRouterExecutionEngine:
         return [str(status)] if status else []
 
     def _format_startup_message(self, payload: dict[str, Any]) -> str:
-        btc_status = "ok" if isinstance(payload.get("btc"), dict) and payload["btc"].get("status") != "error" else "异常"
-        qqq_status = "ok" if isinstance(payload.get("qqq"), dict) and payload["qqq"].get("status") != "error" else "异常"
-        return "\n".join(
-            [
-                "Router 启动",
-                f"模式: {payload.get('mode')}",
-                "链路: BTC SOTA / QQQ-USDT",
-                f"BTC: {btc_status}",
-                f"QQQ: {qqq_status}",
-            ]
-        )
+        btc = payload.get("btc") if isinstance(payload.get("btc"), dict) else {}
+        qqq = payload.get("qqq") if isinstance(payload.get("qqq"), dict) else {}
+        btc_status, btc_error = self._bootstrap_component_status(btc)
+        qqq_status, qqq_error = self._bootstrap_component_status(qqq)
+        lines = [
+            "Router 启动",
+            f"模式: {payload.get('mode')}",
+            "链路: BTC SOTA / QQQ-USDT",
+            f"BTC: {btc_status}",
+            f"QQQ: {qqq_status}",
+        ]
+        if btc_error:
+            lines.append(f"BTC错误: {btc_error}")
+        if qqq_error:
+            lines.append(f"QQQ错误: {qqq_error}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _bootstrap_component_status(component: dict[str, Any]) -> tuple[str, str | None]:
+        if not isinstance(component, dict):
+            return "异常", "missing bootstrap payload"
+        error = component.get("error") or component.get("bootstrap_error")
+        if component.get("status") == "error" or error:
+            return "异常", str(error) if error else None
+        return "ok", None
 
     @staticmethod
     def _format_route_message(payload: dict[str, Any], route: dict[str, Any]) -> str:

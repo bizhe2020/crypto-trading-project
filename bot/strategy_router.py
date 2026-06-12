@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,8 @@ class StrategyRouterConfig:
     qqq_max_notional_usdt: float | None = None
     qqq_min_order_notional_usdt: float = 10.0
     qqq_min_rebalance_notional_usdt: float = 10.0
+    qqq_min_rebalance_gap_ratio: float = 0.0
+    qqq_rebalance_cooldown_seconds: float = 0.0
     qqq_rebalance_on_leverage_change: bool = True
     qqq_rebalance_on_notional_gap: bool = False
     qqq_max_close_order_contracts: float | None = None
@@ -114,6 +117,7 @@ class StrategyRouter:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.btc_adapter = None
         self.qqq_adapter = None
+        self.candidate_preprocessor: Callable[[list[RoutedSignalCandidate]], list[RoutedSignalCandidate]] | None = None
 
     @classmethod
     def from_file(cls, path: str | Path) -> "StrategyRouter":
@@ -269,6 +273,8 @@ class StrategyRouter:
         else:
             effective_current_strategy = str(effective_override) if effective_override else None
         candidates = self._collect_candidates()
+        if self.candidate_preprocessor is not None:
+            candidates = list(self.candidate_preprocessor(candidates))
         selected, reason = self._choose_candidate(candidates, effective_current_strategy)
 
         payload = {

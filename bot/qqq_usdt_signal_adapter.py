@@ -60,14 +60,14 @@ class QqqUsdtSignalAdapter:
                     "signal_overrides": signal_overrides,
                 },
             )
-        bars = enrich_bars(attach_daily_state(load_okx_4h(data_4h), signal_path))
+        bars = enrich_bars(attach_daily_state(load_okx_4h(data_4h), signal_path, trim_to_signal_end=False))
         if bool(config.get("use_closed_execution_bars", True)):
             bars = filter_closed_bars(
                 bars,
                 timeframe=str(config.get("execution_timeframe", "4h")),
                 grace_seconds=int(config.get("closed_bar_grace_seconds", 30) or 0),
             )
-        bars = self._attach_daily_columns(bars, signal_path)
+        bars = self._attach_daily_columns(bars, signal_path, trim_to_signal_end=False)
         if bars.empty:
             return self._inactive_candidate(
                 config,
@@ -79,7 +79,6 @@ class QqqUsdtSignalAdapter:
                     "signal_overrides": signal_overrides,
                 },
             )
-
         latest = bars.iloc[-1]
         allow_long = bool(latest.get("allow_long", False))
         lev_profile = self._leverage_profile(config)
@@ -513,7 +512,12 @@ class QqqUsdtSignalAdapter:
         }
 
     @staticmethod
-    def _attach_daily_columns(bars: pd.DataFrame, signal_path: pd.DataFrame) -> pd.DataFrame:
+    def _attach_daily_columns(
+        bars: pd.DataFrame,
+        signal_path: pd.DataFrame,
+        *,
+        trim_to_signal_end: bool = True,
+    ) -> pd.DataFrame:
         daily = signal_path[
             [
                 "date",
@@ -534,7 +538,8 @@ class QqqUsdtSignalAdapter:
             direction="backward",
             allow_exact_matches=True,
         )
-        merged = merged[merged["date"] <= daily["date"].max()].copy()
+        if trim_to_signal_end:
+            merged = merged[merged["date"] <= daily["date"].max()].copy()
         return merged.reset_index(drop=True)
 
     @staticmethod

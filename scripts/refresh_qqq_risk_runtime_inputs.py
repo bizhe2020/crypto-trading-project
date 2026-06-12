@@ -23,9 +23,12 @@ from scripts.qqq_risk_runtime_generation import write_summary  # noqa: E402
 DEFAULT_ETF_OUTPUT_DIR = ROOT / "data" / "public" / "etf"
 DEFAULT_BREADTH_OUTPUT = ROOT / "data" / "public" / "breadth" / "qqq_constituent_breadth-1d.feather"
 DEFAULT_MACRO_OUTPUT = ROOT / "data" / "public" / "macro" / "fred_macro-1d.feather"
-DEFAULT_RECENT_CSV = ROOT / "var" / "reports" / "qqq_drawdown_lgb_shadow_predictions_macro_subfactor_core.csv"
-DEFAULT_LONG_CSV = ROOT / "var" / "reports" / "qqq_long_cycle_correction20d10_qqqonly_lgb_predictions.csv"
-DEFAULT_SUMMARY = ROOT / "var" / "reports" / "qqq_risk_runtime_refresh_summary.json"
+DEFAULT_RUNTIME_DIR = ROOT / "var" / "runtime" / "qqq_risk"
+DEFAULT_RECENT_CSV = DEFAULT_RUNTIME_DIR / "qqq_recent_risk_runtime_predictions.csv"
+DEFAULT_LONG_CSV = DEFAULT_RUNTIME_DIR / "qqq_long_cycle_risk_runtime_predictions.csv"
+DEFAULT_RECENT_REPORT = DEFAULT_RUNTIME_DIR / "qqq_recent_risk_runtime_report.json"
+DEFAULT_LONG_REPORT = DEFAULT_RUNTIME_DIR / "qqq_long_cycle_risk_runtime_report.json"
+DEFAULT_SUMMARY = DEFAULT_RUNTIME_DIR / "qqq_risk_runtime_refresh_summary.json"
 
 RISK_ETF_SYMBOLS = [
     "QQQ",
@@ -316,6 +319,9 @@ def main() -> None:
             "fred_api_key_configured": bool(args.fred_api_key),
             "macro_refresh_mode": str(args.macro_refresh_mode),
             "max_output_lag_days": int(args.max_output_lag_days),
+            "recent_csv": str(args.recent_csv),
+            "long_csv": str(args.long_csv),
+            "summary_json": str(args.summary_json),
         },
         "steps": {},
     }
@@ -386,7 +392,7 @@ def main() -> None:
                         "--output-csv",
                         str(args.recent_csv),
                         "--output-json",
-                        str(ROOT / "var" / "reports" / "qqq_recent_risk_runtime_report.json"),
+                        str(DEFAULT_RECENT_REPORT),
                     ]
                 ),
             )
@@ -411,7 +417,7 @@ def main() -> None:
                         "--output-csv",
                         str(args.long_csv),
                         "--output-json",
-                        str(ROOT / "var" / "reports" / "qqq_long_cycle_correction20d10_qqqonly_lgb_report.json"),
+                        str(DEFAULT_LONG_REPORT),
                     ]
                 ),
             )
