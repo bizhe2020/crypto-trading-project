@@ -31,6 +31,15 @@ Useful flags:
 
 The script backs up remote dirty git status and diff under `var/backups/git_deploy_tokyo_*`, stashes remote uncommitted changes, runs `git fetch`, `git checkout`, `git pull --ff-only`, validates JSON configs, compiles the router/runtime modules, restarts the router, and prints heartbeat plus recent bootstrap/evaluate summaries.
 
+The active release still owns local, ignored runtime assets that are not deployed by git:
+
+- `.venv`: Python environment used by systemd `ExecStart`
+- `data/okx`: OKX market data symlink used by the QQQ/USDT adapter
+- `config/config.live.strategy-router.json`: live router config
+- `var/okx/markets_cache.json`: local OKX market metadata cache
+
+The deploy wrapper checks the systemd Python executable before restart. If `.venv` is missing or points to a stale location, fix that local symlink/environment first.
+
 ## Frozen And Runtime Configs
 
 The frozen replay config and live runtime config are deliberately separate:
@@ -77,4 +86,3 @@ Expected healthy bootstrap:
   }
 }
 ```
-

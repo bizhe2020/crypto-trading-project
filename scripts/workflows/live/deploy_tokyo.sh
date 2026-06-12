@@ -102,8 +102,12 @@ if [ '${SYNC_ROUTER_LIVE_CONFIG}' = '1' ]; then
   cp config/config.live.strategy-router.template.json '${TOKYO_ROUTER_CONFIG_PATH}'
 fi
 python3 -m json.tool '${TOKYO_ROUTER_CONFIG_PATH}' >/dev/null
-PYTHON_BIN='.venv/bin/python'
-if [ ! -x \"\$PYTHON_BIN\" ]; then PYTHON_BIN='python3'; fi
+PYTHON_BIN=\"\$(systemctl cat '${TOKYO_SERVICE}' 2>/dev/null | sed -n 's/^ExecStart=\\([^ ]*\\).*$/\\1/p' | tail -n 1)\"
+if [ -z \"\$PYTHON_BIN\" ]; then PYTHON_BIN='.venv/bin/python'; fi
+if [ ! -x \"\$PYTHON_BIN\" ]; then
+  echo \"Missing systemd python executable: \$PYTHON_BIN\" >&2
+  exit 1
+fi
 \"\$PYTHON_BIN\" -m py_compile \
   bot/strategy_router.py \
   bot/router_executor.py \
@@ -117,7 +121,18 @@ if [ ! -x \"\$PYTHON_BIN\" ]; then PYTHON_BIN='python3'; fi
 "
 
 if [[ "$RESTART_SERVICE" == "1" ]]; then
-  "${SSH_CMD[@]}" "$TARGET" "systemctl restart '${TOKYO_SERVICE}' && systemctl is-active '${TOKYO_SERVICE}'"
+  "${SSH_CMD[@]}" "$TARGET" "set -e
+systemctl restart '${TOKYO_SERVICE}'
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  state=\$(systemctl is-active '${TOKYO_SERVICE}' || true)
+  if [ \"\$state\" = 'active' ]; then
+    echo \"\$state\"
+    exit 0
+  fi
+  sleep 5
+done
+systemctl is-active '${TOKYO_SERVICE}'
+"
 else
   echo "RESTART_SERVICE=${RESTART_SERVICE}; not restarting ${TOKYO_SERVICE}."
 fi
