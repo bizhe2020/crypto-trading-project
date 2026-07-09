@@ -38,6 +38,21 @@ class BtcSignalAdapter:
             selected = self._preview_selected_candidate(executor, engine, actions, latest_closed_idx, latest_timestamp)
             if selected is not None:
                 return selected
+            raw_open_actions = self._raw_open_actions(actions)
+            if raw_open_actions:
+                return RoutedSignalCandidate(
+                    strategy_id="btc_sota",
+                    symbol=executor.config.symbol,
+                    active=False,
+                    route_score=0.0,
+                    timestamp=latest_timestamp,
+                    source_config=str(self.config_path),
+                    metadata={
+                        "reason": "no_live_candidate",
+                        "raw_open_actions": len(raw_open_actions),
+                        "position_fallback_suppressed": True,
+                    },
+                )
             position_obj = getattr(engine, "position", None)
             if position_obj is not None:
                 return self._candidate_from_position(executor, position_obj)
@@ -69,7 +84,7 @@ class BtcSignalAdapter:
         latest_closed_idx: int,
         latest_timestamp: str,
     ) -> RoutedSignalCandidate | None:
-        raw_open_actions = [item for item in actions if item.type.value in {"OPEN_LONG", "OPEN_SHORT"}]
+        raw_open_actions = self._raw_open_actions(actions)
         if not raw_open_actions:
             return None
 
@@ -118,6 +133,14 @@ class BtcSignalAdapter:
         if not fresh_actions:
             return None
         return self._candidate_from_action(executor, fresh_actions[-1], latest_timestamp)
+
+    @staticmethod
+    def _raw_open_actions(actions: list[Any]) -> list[Any]:
+        return [
+            item
+            for item in actions
+            if getattr(getattr(item, "type", None), "value", None) in {"OPEN_LONG", "OPEN_SHORT"}
+        ]
 
     def _candidate_from_selected(
         self,

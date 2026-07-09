@@ -117,8 +117,12 @@ class StrategyRouterExecutionEngine:
                 return payload
 
         if selected_strategy == "btc_sota":
-            execution_results.append({"strategy": "btc_sota", "result": self.btc_executor.evaluate_latest()})
-            self._set_current_executed_strategy("btc_sota")
+            btc_result = self.btc_executor.evaluate_latest()
+            execution_results.append({"strategy": "btc_sota", "result": btc_result})
+            if self._btc_position_open_confirmed(btc_result):
+                self._set_current_executed_strategy("btc_sota")
+            else:
+                self._set_current_executed_strategy(None)
         elif selected_strategy == "qqq_usdt_aggressive":
             candidate = qqq_candidate or self._candidate_from_payload(selected_candidate)
             qqq_result = self.qqq_executor.evaluate_latest(candidate)
@@ -203,6 +207,15 @@ class StrategyRouterExecutionEngine:
                 )
             )
         return processed
+
+    @staticmethod
+    def _btc_position_open_confirmed(result: dict[str, Any]) -> bool:
+        if bool(result.get("position_open")):
+            return True
+        snapshot = result.get("snapshot")
+        if isinstance(snapshot, dict) and snapshot.get("position") is not None:
+            return True
+        return False
 
     @staticmethod
     def _flatten_confirmed(results: list[dict[str, Any]]) -> bool:

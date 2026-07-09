@@ -4,6 +4,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -14,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from bot.btc_route_scoring import btc_effective_leverage, btc_route_score
+from bot.btc_signal_adapter import BtcSignalAdapter
 from bot.okx_executor import ExecutorConfig, OkxExecutionEngine
 from bot.qqq_macro_proxy_overlay import apply_macro_proxy_overlay
 from bot.qqq_usdt_executor import QqqOrderContext, QqqUsdtExecutionEngine
@@ -46,6 +48,77 @@ def build_router() -> StrategyRouter:
             persist_state=False,
         )
     )
+
+
+def test_btc_preview_suppresses_position_fallback_after_rejected_live_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    latest_timestamp = "2026-06-17 01:15"
+    open_action = SimpleNamespace(
+        type=SimpleNamespace(value="OPEN_LONG"),
+        timestamp=latest_timestamp,
+        direction="BULL",
+        entry_price=65000.0,
+        stop_price=64000.0,
+        target_price=68000.0,
+        metadata={"index": 10},
+    )
+
+    class FakeStore:
+        def load_snapshot(self):
+            return {}
+
+        def get_value(self, key: str):
+            return None
+
+    class FakeEngine:
+        position = SimpleNamespace(
+            entry_time=latest_timestamp,
+            direction="BULL",
+            entry_idx=10,
+            entry_regime_score=9,
+            risk_regime="normal",
+            regime_label="normal",
+            trail_style="normal",
+            candidate_event_type="sota_long",
+        )
+
+        def evaluate_range(self, start_idx: int, end_idx: int):
+            return [open_action]
+
+        def _timestamp_for_idx(self, idx: int) -> str:
+            return latest_timestamp
+
+    fake_engine = FakeEngine()
+
+    class FakeExecutor:
+        config = SimpleNamespace(symbol="BTC/USDT:USDT")
+        store = FakeStore()
+
+        def load_engine(self):
+            return fake_engine, 0
+
+        def _latest_closed_index(self, engine):
+            return 10
+
+        def _live_candidate_arbitration_enabled(self):
+            return True
+
+        def _apply_sota_score_gate_to_open_actions(self, engine, actions, latest_closed_idx):
+            return [], [{"reason": "sota_score_gate", "candidate": {"timestamp": latest_timestamp}}]
+
+        def _apply_sota_structure_gate_to_open_actions(self, actions):
+            return actions, [], []
+
+    monkeypatch.setattr(OkxExecutionEngine, "from_file", staticmethod(lambda path: FakeExecutor()))
+
+    candidate = BtcSignalAdapter(tmp_path / "btc.json").preview()
+
+    assert candidate.active is False
+    assert candidate.route_score == 0.0
+    assert candidate.metadata["reason"] == "no_live_candidate"
+    assert candidate.metadata["raw_open_actions"] == 1
+    assert candidate.metadata["position_fallback_suppressed"] is True
 
 
 def test_router_prefers_higher_score_when_margin_large() -> None:
@@ -2981,6 +3054,60 @@ def test_router_external_qqq_flat_sync_uses_candidate_context_before_reentry(tmp
     assert result["current_executed_strategy"] is None
     assert result["exchange_position_sync"]["qqq_external_flat_sync"]["candidate_timestamp"] == candidate_timestamp
     assert result["execution_results"][0]["result"]["position_open"] is False
+
+
+def test_router_does_not_mark_btc_executed_when_btc_evaluate_opens_nothing(tmp_path: Path) -> None:
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+            flatten_before_switch=False,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.execution_state_path = tmp_path / "router.execution.json"
+    execution_state = {"current_executed_strategy": None}
+    engine._load_execution_state = lambda: dict(execution_state)  # type: ignore[method-assign]
+
+    def save_execution_state(payload: dict[str, Any]) -> None:
+        execution_state.clear()
+        execution_state.update(payload)
+
+    engine._save_execution_state = save_execution_state  # type: ignore[method-assign]
+    engine._maybe_send_telegram_notifications = lambda payload: None  # type: ignore[method-assign]
+    engine._sync_executed_strategy_with_exchange = lambda stored: {"status": "skipped"}  # type: ignore[method-assign]
+    engine._sync_external_qqq_flat_after_route = lambda position_sync, route: None  # type: ignore[method-assign]
+    engine.router.evaluate_latest = lambda current_strategy=None: {  # type: ignore[method-assign]
+        "selected_strategy": "btc_sota",
+        "selected_candidate": {
+            "strategy_id": "btc_sota",
+            "symbol": "BTC/USDT:USDT",
+            "active": True,
+            "route_score": 75.0,
+        },
+    }
+
+    class FakeBtcExecutor:
+        def evaluate_latest(self):
+            return {"status": "ok", "actions": [], "position_open": False}
+
+    engine.btc_executor = FakeBtcExecutor()
+    engine.qqq_executor = object()
+
+    result = engine.evaluate_latest()
+
+    assert result["current_executed_strategy"] is None
+    assert execution_state["current_executed_strategy"] is None
+    assert result["execution_results"] == [
+        {"strategy": "btc_sota", "result": {"status": "ok", "actions": [], "position_open": False}}
+    ]
 
 
 def test_router_telegram_route_message_uses_router_context() -> None:
