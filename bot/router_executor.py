@@ -53,6 +53,7 @@ class StrategyRouterExecutionEngine:
         selected_strategy = route.get("selected_strategy")
         selected_candidate = route.get("selected_candidate") if isinstance(route.get("selected_candidate"), dict) else None
         qqq_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "qqq_usdt_aggressive" else None
+        btc_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "btc_sota" else None
         external_qqq_flat_sync = self._sync_external_qqq_flat_after_route(position_sync, route)
         if external_qqq_flat_sync is not None:
             position_sync["qqq_external_flat_sync"] = external_qqq_flat_sync
@@ -86,6 +87,27 @@ class StrategyRouterExecutionEngine:
                         }
                     )
                     selected_strategy = previous_executed
+
+        if selected_strategy == "btc_sota" and previous_executed != "btc_sota":
+            btc_shadow_gate = self._btc_pre_switch_status(btc_candidate)
+            if not bool(btc_shadow_gate.get("allow", True)):
+                execution_results.append(
+                    {
+                        "strategy": "btc_sota",
+                        "result": {
+                            "status": "skipped",
+                            "reason": "btc_shadow_gate_blocked_before_switch",
+                            "shadow_gate": btc_shadow_gate,
+                        },
+                    }
+                )
+                selected_strategy = previous_executed
+                selected_candidate = self._candidate_payload_for_strategy(route, selected_strategy)
+                qqq_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "qqq_usdt_aggressive"
+                    else None
+                )
 
         if selected_strategy != previous_executed and bool(self.config.flatten_before_switch):
             execution_results.extend(self._flatten_strategy(previous_executed, reason=f"router_switch_to_{selected_strategy or 'cash'}"))
@@ -216,6 +238,22 @@ class StrategyRouterExecutionEngine:
         if isinstance(snapshot, dict) and snapshot.get("position") is not None:
             return True
         return False
+
+    def _btc_pre_switch_status(self, candidate: RoutedSignalCandidate | None) -> dict[str, Any]:
+        status_fn = getattr(self.btc_executor, "shadow_gate_pre_switch_status", None)
+        if status_fn is None:
+            return {"enabled": False, "allow": True, "reason": "unavailable"}
+        status = status_fn(candidate)
+        return status if isinstance(status, dict) else {"enabled": False, "allow": True, "reason": "invalid_status"}
+
+    @staticmethod
+    def _candidate_payload_for_strategy(route: dict[str, Any], strategy_id: str | None) -> dict[str, Any] | None:
+        if not strategy_id:
+            return None
+        for item in route.get("candidates", []) if isinstance(route.get("candidates"), list) else []:
+            if isinstance(item, dict) and item.get("strategy_id") == strategy_id:
+                return item
+        return None
 
     @staticmethod
     def _flatten_confirmed(results: list[dict[str, Any]]) -> bool:

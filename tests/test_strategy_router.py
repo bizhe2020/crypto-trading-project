@@ -25,6 +25,7 @@ from bot.router_executor import StrategyRouterExecutionEngine
 from bot.strategy_router import RoutedSignalCandidate, StrategyRouter, StrategyRouterConfig
 import scripts.scan_qqq_usdt_4h_triggers as qqq_trigger_scan
 from scripts.replay_qqq_usdt_10x import run_10x_replay
+from strategy.scalp_robust_v2_core import ActionType, StrategyAction
 
 
 class _FakeAdapter:
@@ -119,6 +120,65 @@ def test_btc_preview_suppresses_position_fallback_after_rejected_live_open(
     assert candidate.metadata["reason"] == "no_live_candidate"
     assert candidate.metadata["raw_open_actions"] == 1
     assert candidate.metadata["position_fallback_suppressed"] is True
+
+
+def test_btc_shadow_gate_skipped_open_rolls_back_local_position(tmp_path: Path) -> None:
+    executor = OkxExecutionEngine(
+        ExecutorConfig(
+            mode="live",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="isolated",
+            max_open_positions=1,
+            risk_per_trade=0.025,
+            state_db_path=str(tmp_path / "btc_state.db"),
+            enable_shadow_risk_gate=True,
+            shadow_consecutive_loss_stop=1,
+        )
+    )
+    executor.store.set_value(
+        "shadow_risk_gate_state",
+        json.dumps(
+            {
+                "mode": "shadow_risk_gate",
+                "capital": 1000.0,
+                "drawdown_peak": 1000.0,
+                "pause_until_ts": 4102444800.0,
+                "real_position_open": False,
+                "real_position_direction": None,
+                "paper_entry_time": None,
+                "day_start_capital": {},
+                "day_pnl": {},
+                "loss_streak": 1,
+                "events": [],
+            }
+        ),
+    )
+    action = StrategyAction(
+        type=ActionType.OPEN_LONG,
+        timestamp="2026-07-11 01:15",
+        direction="BULL",
+        entry_price=64198.3,
+        stop_price=63243.2525,
+        target_price=69166.1324,
+    )
+    engine = SimpleNamespace(
+        position=SimpleNamespace(entry_time="2026-07-11 01:15", direction="BULL"),
+        capital=1000.0,
+    )
+
+    result = executor.execute_action(action, engine)
+
+    assert result["status"] == "shadow_gate_skipped_open"
+    assert engine.position is None
+    recent = executor.store.recent_actions(5)
+    action_types = [item["action_type"] for item in recent]
+    assert "EXECUTION_SKIPPED" in action_types
+    rollback = next(item for item in recent if item["action_type"] == "UNEXECUTED_OPEN_ROLLBACK")
+    assert rollback["payload"]["rolled_back"] is True
+    assert rollback["payload"]["reason"] == "shadow_gate_skipped_open"
 
 
 def test_router_prefers_higher_score_when_margin_large() -> None:
@@ -3108,6 +3168,111 @@ def test_router_does_not_mark_btc_executed_when_btc_evaluate_opens_nothing(tmp_p
     assert result["execution_results"] == [
         {"strategy": "btc_sota", "result": {"status": "ok", "actions": [], "position_open": False}}
     ]
+
+
+def test_router_does_not_flatten_qqq_before_blocked_btc_shadow_gate_switch(tmp_path: Path) -> None:
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+            flatten_before_switch=True,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.execution_state_path = tmp_path / "router.execution.json"
+    execution_state = {"current_executed_strategy": "qqq_usdt_aggressive"}
+    engine._load_execution_state = lambda: dict(execution_state)  # type: ignore[method-assign]
+
+    def save_execution_state(payload: dict[str, Any]) -> None:
+        execution_state.clear()
+        execution_state.update(payload)
+
+    engine._save_execution_state = save_execution_state  # type: ignore[method-assign]
+    engine._maybe_send_telegram_notifications = lambda payload: None  # type: ignore[method-assign]
+    engine._sync_executed_strategy_with_exchange = lambda stored: {"status": "skipped"}  # type: ignore[method-assign]
+    engine._sync_external_qqq_flat_after_route = lambda position_sync, route: None  # type: ignore[method-assign]
+    flatten_calls: list[tuple[str | None, str]] = []
+    engine._flatten_strategy = lambda strategy, *, reason: flatten_calls.append((strategy, reason)) or []  # type: ignore[method-assign]
+    engine.router.evaluate_latest = lambda current_strategy=None: {  # type: ignore[method-assign]
+        "selected_strategy": "btc_sota",
+        "selected_candidate": {
+            "strategy_id": "btc_sota",
+            "symbol": "BTC/USDT:USDT",
+            "active": True,
+            "route_score": 114.8,
+            "timestamp": "2026-07-11 01:15",
+            "direction": "BULL",
+            "event_type": "sota_long",
+        },
+        "candidates": [
+            {
+                "strategy_id": "btc_sota",
+                "symbol": "BTC/USDT:USDT",
+                "active": True,
+                "route_score": 114.8,
+                "timestamp": "2026-07-11 01:15",
+                "direction": "BULL",
+                "event_type": "sota_long",
+            },
+            {
+                "strategy_id": "qqq_usdt_aggressive",
+                "symbol": "QQQ/USDT:USDT",
+                "active": True,
+                "route_score": 96.0,
+                "timestamp": "2026-07-10 20:00:00+00:00",
+                "direction": "BULL",
+                "event_type": "qqq_usdt_long",
+                "leverage": 10.0,
+                "metadata": {},
+            },
+        ],
+    }
+    btc_calls: list[str] = []
+    qqq_calls: list[str] = []
+
+    class FakeBtcExecutor:
+        def shadow_gate_pre_switch_status(self, candidate):
+            btc_calls.append(f"pre_switch:{candidate.strategy_id}:{candidate.timestamp}")
+            return {
+                "enabled": True,
+                "allow": False,
+                "reason": "btc_shadow_gate_paused",
+                "pause_until": "2026-07-12 00:00:00",
+            }
+
+        def evaluate_latest(self):
+            btc_calls.append("evaluate")
+            return {"status": "should_not_run", "position_open": True}
+
+    class FakeQqqExecutor:
+        symbol = "QQQ/USDT:USDT"
+
+        def evaluate_latest(self, candidate):
+            qqq_calls.append(f"evaluate:{candidate.strategy_id}:{candidate.timestamp}")
+            return {"status": "ok", "position_open": True}
+
+    engine.btc_executor = FakeBtcExecutor()
+    engine.qqq_executor = FakeQqqExecutor()
+
+    result = engine.evaluate_latest()
+
+    assert flatten_calls == []
+    assert btc_calls == ["pre_switch:btc_sota:2026-07-11 01:15"]
+    assert qqq_calls == ["evaluate:qqq_usdt_aggressive:2026-07-10 20:00:00+00:00"]
+    assert result["current_executed_strategy"] == "qqq_usdt_aggressive"
+    assert execution_state["current_executed_strategy"] == "qqq_usdt_aggressive"
+    assert result["execution_results"][0]["result"]["reason"] == "btc_shadow_gate_blocked_before_switch"
+    assert result["execution_results"][1] == {
+        "strategy": "qqq_usdt_aggressive",
+        "result": {"status": "ok", "position_open": True},
+    }
 
 
 def test_router_telegram_route_message_uses_router_context() -> None:

@@ -3518,16 +3518,40 @@ class OkxExecutionEngine:
                     },
                 )
                 self._save_shadow_gate_state(state)
-            return {
+            decision = {
                 "status": "telegram_paused_skipped_open",
                 "action": action.type.value,
                 "direction": action.direction,
                 "reason": "telegram_open_paused",
             }
+            self._rollback_unexecuted_open(action, engine, reason="telegram_open_paused")
+            self.store.append_action(
+                action.timestamp,
+                "EXECUTION_SKIPPED",
+                {
+                    "action": asdict(action),
+                    "decision": decision,
+                },
+            )
+            return decision
         shadow_decision = self._shadow_gate_pre_execute(action, engine)
         if shadow_decision is not None:
             if action.type == ActionType.CLOSE_POSITION:
                 self._rollback_unexecuted_close(action, engine, reason=str(shadow_decision.get("status") or "skipped_close"))
+                self.store.append_action(
+                    action.timestamp,
+                    "EXECUTION_SKIPPED",
+                    {
+                        "action": asdict(action),
+                        "decision": shadow_decision,
+                    },
+                )
+            elif action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}:
+                self._rollback_unexecuted_open(
+                    action,
+                    engine,
+                    reason=str(shadow_decision.get("status") or "skipped_open"),
+                )
                 self.store.append_action(
                     action.timestamp,
                     "EXECUTION_SKIPPED",
@@ -4036,6 +4060,46 @@ class OkxExecutionEngine:
             }
 
         return None
+
+    def shadow_gate_pre_switch_status(self, candidate: Any | None = None) -> dict[str, Any]:
+        if self._telegram_open_paused():
+            return {
+                "enabled": True,
+                "allow": False,
+                "reason": "telegram_open_paused",
+            }
+        if not self._shadow_gate_enabled():
+            return {"enabled": False, "allow": True, "reason": "disabled"}
+        state = self._load_shadow_gate_state()
+        pause_until_ts = float(state.get("pause_until_ts", 0.0) or 0.0)
+        candidate_timestamp = getattr(candidate, "timestamp", None)
+        if candidate_timestamp:
+            try:
+                candidate_dt = datetime.fromisoformat(str(candidate_timestamp))
+                if candidate_dt.tzinfo is None:
+                    candidate_dt = candidate_dt.replace(tzinfo=timezone.utc)
+                else:
+                    candidate_dt = candidate_dt.astimezone(timezone.utc)
+                action_ts = candidate_dt.timestamp()
+            except ValueError:
+                action_ts = datetime.now(timezone.utc).timestamp()
+        else:
+            action_ts = datetime.now(timezone.utc).timestamp()
+        if action_ts < pause_until_ts:
+            return {
+                "enabled": True,
+                "allow": False,
+                "reason": "btc_shadow_gate_paused",
+                "pause_until": self._shadow_format_ts(pause_until_ts),
+                "candidate_timestamp": candidate_timestamp,
+            }
+        return {
+            "enabled": True,
+            "allow": True,
+            "reason": "ok",
+            "pause_until": self._shadow_format_ts(pause_until_ts),
+            "candidate_timestamp": candidate_timestamp,
+        }
 
     def _high_leverage_guard_enabled(self) -> bool:
         return (
