@@ -3472,3 +3472,413 @@ def test_router_flattens_btc_through_executor_router_switch_close() -> None:
             "result": {"status": "submitted", "reason": "router_switch_to_qqq_usdt_aggressive"},
         }
     ]
+
+
+def test_btc_live_arbitration_selects_latest_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix A: the executor's live-candidate arbitration must pick the LATEST
+    candidate (highest entry_idx), matching the adapter's preview sort, so the
+    engine does not open an early signal whose local position diverges from the
+    selected exchange candidate."""
+    executor = OkxExecutionEngine(
+        ExecutorConfig(
+            mode="live",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="isolated",
+            max_open_positions=1,
+            risk_per_trade=0.025,
+            state_db_path=str(tmp_path / "btc_state.db"),
+            enable_live_candidate_arbitration=True,
+        )
+    )
+    monkeypatch.setattr(executor, "_smc_short_candidate", lambda engine, latest_closed_idx: None)
+    monkeypatch.setattr(executor, "_gap_smc_short_candidate", lambda engine, latest_closed_idx: None)
+    monkeypatch.setattr(executor, "_smc_long_candidate", lambda engine, latest_closed_idx: None)
+
+    early = StrategyAction(
+        type=ActionType.OPEN_LONG,
+        timestamp="2026-08-04 01:00",
+        direction="BULL",
+        entry_price=65000.0,
+        stop_price=64000.0,
+        target_price=68000.0,
+        metadata={"index": 10, "candidate_event_type": "sota_long"},
+    )
+    latest = StrategyAction(
+        type=ActionType.OPEN_LONG,
+        timestamp="2026-08-04 01:30",
+        direction="BULL",
+        entry_price=66000.0,
+        stop_price=65000.0,
+        target_price=69000.0,
+        metadata={"index": 11, "candidate_event_type": "sota_long"},
+    )
+    engine = SimpleNamespace(position=None)
+
+    output_actions, decision = executor._apply_live_candidate_arbitration(engine, [early, latest], latest_closed_idx=10)
+
+    assert decision["decision"] == "accepted"
+    assert decision["selected"]["timestamp"] == "2026-08-04 01:30"
+    assert [action.timestamp for action in output_actions] == ["2026-08-04 01:30"]
+
+
+def test_dynamic_high_leverage_skip_records_paper_entry_time(tmp_path: Path) -> None:
+    """Fix C: when the dynamic high-leverage pre-open gate skips an open because
+    the stop distance is too wide for defense mode, it must record the skipped
+    action's timestamp as paper_entry_time so the shadow gate can later reconcile
+    the unmirrored local position instead of asserting live-state sync."""
+    executor = OkxExecutionEngine(
+        ExecutorConfig(
+            mode="paper",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="isolated",
+            max_open_positions=1,
+            risk_per_trade=0.01,
+            state_db_path=str(tmp_path / "btc_state.db"),
+            enable_dynamic_high_leverage_structure=True,
+            enable_shadow_risk_gate=True,
+            shadow_daily_loss_stop_pct=5.0,
+            dynamic_defense_max_stop_distance_pct=1.5,
+            dynamic_max_stop_distance_pct=1.5,
+            dynamic_high_growth_max_stop_distance_pct=2.0,
+        )
+    )
+    executor.store.set_value(
+        "shadow_risk_gate_state",
+        json.dumps(
+            {
+                "mode": "shadow_risk_gate",
+                "capital": 1000.0,
+                "drawdown_peak": 1000.0,
+                "pause_until_ts": 0.0,
+                "real_position_open": False,
+                "real_position_direction": None,
+                "paper_entry_time": None,
+                "day_start_capital": {},
+                "day_pnl": {},
+                "loss_streak": 0,
+                "events": [],
+            }
+        ),
+    )
+    action = StrategyAction(
+        type=ActionType.OPEN_LONG,
+        timestamp="2026-08-04 01:15",
+        direction="BULL",
+        entry_price=65000.0,
+        stop_price=64000.0,  # stop distance 1.54% > 1.5% defense max
+        target_price=68000.0,
+    )
+    engine = SimpleNamespace(capital=1000.0, position=None)
+    sizing = {"available_usdt": 1000.0, "status": "ok", "amount": 1.0}
+
+    _sizing, decision = executor._dynamic_high_leverage_pre_open(action, sizing, engine)
+
+    assert decision["status"] == "dynamic_high_leverage_skipped_open"
+    assert decision["reason"] == "stop_distance_too_wide"
+    state = json.loads(executor.store.get_value("shadow_risk_gate_state"))
+    assert state["paper_entry_time"] == "2026-08-04 01:15"
+
+
+def test_router_restores_qqq_when_btc_switch_evaluate_raises(tmp_path: Path) -> None:
+    """Fix D: if the target strategy raises while opening after the incumbent was
+    flattened, the router must restore the flattened QQQ position from the rollback
+    context captured before flattening, set current_executed_strategy back to QQQ,
+    and record a switch-rollback guard."""
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+            flatten_before_switch=True,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.execution_state_path = tmp_path / "router.execution.json"
+    execution_state = {"current_executed_strategy": "qqq_usdt_aggressive"}
+    engine._load_execution_state = lambda: dict(execution_state)  # type: ignore[method-assign]
+
+    def save_execution_state(payload: dict[str, Any]) -> None:
+        execution_state.clear()
+        execution_state.update(payload)
+
+    engine._save_execution_state = save_execution_state  # type: ignore[method-assign]
+    engine._maybe_send_telegram_notifications = lambda payload: None  # type: ignore[method-assign]
+    engine._sync_executed_strategy_with_exchange = lambda stored: {"status": "skipped"}  # type: ignore[method-assign]
+    engine._sync_external_qqq_flat_after_route = lambda position_sync, route: None  # type: ignore[method-assign]
+    flatten_calls: list[tuple[str | None, str]] = []
+    engine._flatten_strategy = (  # type: ignore[method-assign]
+        lambda strategy, *, reason: flatten_calls.append((strategy, reason))
+        or [{"strategy": strategy, "result": {"status": "closed_confirmed"}}]
+    )
+    engine.router.evaluate_latest = lambda current_strategy=None: {  # type: ignore[method-assign]
+        "selected_strategy": "btc_sota",
+        "selected_candidate": {
+            "strategy_id": "btc_sota",
+            "symbol": "BTC/USDT:USDT",
+            "active": True,
+            "route_score": 96.0,
+            "timestamp": "2026-08-04 01:15",
+            "direction": "BULL",
+            "event_type": "sota_long",
+        },
+        "candidates": [
+            {
+                "strategy_id": "btc_sota",
+                "symbol": "BTC/USDT:USDT",
+                "active": True,
+                "route_score": 96.0,
+                "timestamp": "2026-08-04 01:15",
+                "direction": "BULL",
+                "event_type": "sota_long",
+            },
+            {
+                "strategy_id": "qqq_usdt_aggressive",
+                "symbol": "QQQ/USDT:USDT",
+                "active": True,
+                "route_score": 96.0,
+                "timestamp": "2026-08-04 01:15",
+                "direction": "BULL",
+                "event_type": "qqq_usdt_long",
+                "leverage": 10.0,
+                "metadata": {},
+            },
+        ],
+    }
+    restore_calls: list[dict[str, Any]] = []
+
+    class FakeBtcExecutor:
+        def evaluate_latest(self):
+            raise RuntimeError("mock btc evaluate failure")
+
+    class FakeQqqExecutor:
+        symbol = "QQQ/USDT:USDT"
+
+        def load_state(self):
+            return {
+                "position": {
+                    "contracts": 119.81,
+                    "entry_price": 723.0,
+                    "stop_price": 690.0,
+                    "leverage": 10.0,
+                    "route_score": 96.0,
+                }
+            }
+
+        def fetch_position_state(self):
+            return {"contracts": 119.81, "notional_usdt": 86500.0}
+
+        def restore_position(self, rollback):
+            restore_calls.append(rollback)
+            return {"status": "submitted", "action": "restore_qqq_usdt_long"}
+
+    engine.btc_executor = FakeBtcExecutor()
+    engine.qqq_executor = FakeQqqExecutor()
+
+    result = engine.evaluate_latest()
+
+    assert flatten_calls == [("qqq_usdt_aggressive", "router_switch_to_btc_sota")]
+    assert len(restore_calls) == 1
+    assert restore_calls[0]["position"]["contracts"] == 119.81
+    assert result["current_executed_strategy"] == "qqq_usdt_aggressive"
+    assert execution_state["current_executed_strategy"] == "qqq_usdt_aggressive"
+    assert execution_state["switch_rollback_guard"]["strategy"] == "qqq_usdt_aggressive"
+    rollback_entries = [item for item in result["execution_results"] if item.get("rollback")]
+    assert len(rollback_entries) == 1
+    assert rollback_entries[0]["rollback_reason"] == "btc_evaluate_latest_failed"
+    assert rollback_entries[0]["result"]["status"] == "submitted"
+    assert rollback_entries[0]["strategy"] == "qqq_usdt_aggressive"
+
+
+def test_router_holds_qqq_during_switch_rollback_cooldown(tmp_path: Path) -> None:
+    """Fix D: while a switch-rollback guard is active, the router must refuse to
+    flatten the incumbent again, hold the current strategy, and NOT re-run the
+    incumbent executor (which could otherwise close the freshly restored position
+    if its candidate is inactive)."""
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+            flatten_before_switch=True,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.execution_state_path = tmp_path / "router.execution.json"
+    execution_state = {
+        "current_executed_strategy": "qqq_usdt_aggressive",
+        "switch_rollback_guard": {
+            "strategy": "qqq_usdt_aggressive",
+            "until_ts": int(time.time()) + 3600,
+        },
+    }
+    engine._load_execution_state = lambda: dict(execution_state)  # type: ignore[method-assign]
+
+    def save_execution_state(payload: dict[str, Any]) -> None:
+        execution_state.clear()
+        execution_state.update(payload)
+
+    engine._save_execution_state = save_execution_state  # type: ignore[method-assign]
+    engine._maybe_send_telegram_notifications = lambda payload: None  # type: ignore[method-assign]
+    engine._sync_executed_strategy_with_exchange = lambda stored: {"status": "skipped"}  # type: ignore[method-assign]
+    engine._sync_external_qqq_flat_after_route = lambda position_sync, route: None  # type: ignore[method-assign]
+    flatten_calls: list[tuple[str | None, str]] = []
+    engine._flatten_strategy = (  # type: ignore[method-assign]
+        lambda strategy, *, reason: flatten_calls.append((strategy, reason))
+        or [{"strategy": strategy, "result": {"status": "closed_confirmed"}}]
+    )
+    engine.router.evaluate_latest = lambda current_strategy=None: {  # type: ignore[method-assign]
+        "selected_strategy": "btc_sota",
+        "selected_candidate": {
+            "strategy_id": "btc_sota",
+            "symbol": "BTC/USDT:USDT",
+            "active": True,
+            "route_score": 96.0,
+            "timestamp": "2026-08-04 01:15",
+            "direction": "BULL",
+            "event_type": "sota_long",
+        },
+        "candidates": [
+            {
+                "strategy_id": "btc_sota",
+                "symbol": "BTC/USDT:USDT",
+                "active": True,
+                "route_score": 96.0,
+                "timestamp": "2026-08-04 01:15",
+                "direction": "BULL",
+                "event_type": "sota_long",
+            },
+            {
+                "strategy_id": "qqq_usdt_aggressive",
+                "symbol": "QQQ/USDT:USDT",
+                "active": True,
+                "route_score": 96.0,
+                "timestamp": "2026-08-04 01:15",
+                "direction": "BULL",
+                "event_type": "qqq_usdt_long",
+                "leverage": 10.0,
+                "metadata": {},
+            },
+        ],
+    }
+    qqq_calls: list[str] = []
+
+    class FakeBtcExecutor:
+        def evaluate_latest(self):
+            return {"status": "ok", "position_open": True}
+
+    class FakeQqqExecutor:
+        symbol = "QQQ/USDT:USDT"
+
+        def evaluate_latest(self, candidate):
+            qqq_calls.append(candidate.strategy_id)
+            return {"status": "ok", "position_open": True}
+
+    engine.btc_executor = FakeBtcExecutor()
+    engine.qqq_executor = FakeQqqExecutor()
+
+    result = engine.evaluate_latest()
+
+    assert flatten_calls == []
+    assert qqq_calls == []
+    assert result["current_executed_strategy"] == "qqq_usdt_aggressive"
+    assert execution_state["current_executed_strategy"] == "qqq_usdt_aggressive"
+    reasons = [item["result"]["reason"] for item in result["execution_results"]]
+    assert reasons == ["switch_rollback_cooldown", "switch_rollback_cooldown_hold"]
+
+
+def test_qqq_restore_position_buys_back_captured_contracts(tmp_path: Path) -> None:
+    config_path = tmp_path / "qqq.json"
+    config_path.write_text(
+        """
+{
+  "execution_symbol": "QQQ/USDT:USDT",
+  "exchange_leverage": 10.0,
+  "base_leverage": 10.0,
+  "offense_leverage": 10.0,
+  "stop_loss_pct": 3.5
+}
+""".strip()
+    )
+    engine = QqqUsdtExecutionEngine(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config=str(config_path),
+            qqq_state_db_path=str(tmp_path / "qqq_state.db"),
+            qqq_enable_exchange_stop=False,
+            qqq_market_order_chunk_delay_seconds=0.0,
+        ),
+        config_path,
+    )
+    engine._markets_cache = {
+        "QQQ/USDT:USDT": {
+            "id": "QQQ-USDT-SWAP",
+            "contract": True,
+            "contractSize": 1.0,
+            "precision": {"amount": 0.01, "price": 0.01},
+            "limits": {"amount": {"min": 0.01, "max": None}},
+            "info": {"maxMktSz": "3"},
+        }
+    }
+    calls: list[tuple[Any, ...]] = []
+
+    class FakeClient:
+        def set_leverage(self, leverage, symbol, margin_mode="isolated", pos_side=None):
+            calls.append(("set_leverage", leverage, symbol, margin_mode, pos_side))
+            return {"code": "0"}
+
+        def create_order(self, symbol, order_type, side, amount, price=None, *, params=None):
+            calls.append(("create_order", symbol, order_type, side, amount, params))
+            return {"id": f"restore-{len([c for c in calls if c[0] == 'create_order'])}"}
+
+    engine.client = FakeClient()
+    engine._latest_bar = lambda: {"close": 723.0, "low": 715.0}  # type: ignore[method-assign]
+    engine._market_order_chunks = lambda amount: [3.0, 3.0, 2.0]  # type: ignore[method-assign]
+    engine._attach_stop_to_order_params = lambda params, context: None  # type: ignore[method-assign]
+    engine._market_order_chunk_delay_seconds = lambda: 0.0  # type: ignore[method-assign]
+    rollback = {
+        "strategy": "qqq_usdt_aggressive",
+        "position": {
+            "contracts": 8.0,
+            "entry_price": 700.0,
+            "stop_price": 675.5,
+            "leverage": 10.0,
+            "peak_price": 705.0,
+            "route_score": 96.0,
+            "entry_candidate_timestamp": "2026-08-04 01:15",
+        },
+        "exchange_position": {"contracts": 8.0, "notional_usdt": 5600.0},
+    }
+
+    result = engine.restore_position(rollback)
+
+    assert result["status"] == "submitted"
+    assert result["action"] == "restore_qqq_usdt_long"
+    assert result["amount"] == 8.0
+    assert result["stop_price"] == 675.5  # preserved from captured position
+    assert [call[4] for call in calls if call[0] == "create_order"] == [3.0, 3.0, 2.0]
+    assert ("set_leverage", 10, "QQQ/USDT:USDT", "isolated", "long") in calls
+    state = engine.load_state()
+    assert state["position"]["restored"] is True
+    assert state["position"]["entry_price"] == 700.0
+    assert state["position"]["stop_price"] == 675.5
+    assert state["position"]["leverage"] == 10.0

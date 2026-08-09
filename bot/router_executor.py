@@ -109,6 +109,31 @@ class StrategyRouterExecutionEngine:
                     else None
                 )
 
+        rollback_context = None
+        hold_incumbent = False
+        if selected_strategy != previous_executed and previous_executed and bool(self.config.flatten_before_switch):
+            if self._switch_rollback_guard_active(previous_executed):
+                execution_results.append(
+                    {
+                        "strategy": selected_strategy,
+                        "result": {
+                            "status": "skipped",
+                            "reason": "switch_rollback_cooldown",
+                            "rollback_guard": self._switch_rollback_guard(),
+                        },
+                    }
+                )
+                selected_strategy = previous_executed
+                selected_candidate = self._candidate_payload_for_strategy(route, selected_strategy)
+                qqq_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "qqq_usdt_aggressive"
+                    else None
+                )
+                hold_incumbent = True
+            else:
+                rollback_context = self._capture_rollback_context(previous_executed)
+
         if selected_strategy != previous_executed and bool(self.config.flatten_before_switch):
             execution_results.extend(self._flatten_strategy(previous_executed, reason=f"router_switch_to_{selected_strategy or 'cash'}"))
             if not self._flatten_confirmed(execution_results):
@@ -138,21 +163,80 @@ class StrategyRouterExecutionEngine:
                 self._save_execution_state(execution_state)
                 return payload
 
-        if selected_strategy == "btc_sota":
-            btc_result = self.btc_executor.evaluate_latest()
-            execution_results.append({"strategy": "btc_sota", "result": btc_result})
-            if self._btc_position_open_confirmed(btc_result):
+        if hold_incumbent:
+            execution_results.append(
+                {
+                    "strategy": previous_executed,
+                    "result": {
+                        "status": "held",
+                        "reason": "switch_rollback_cooldown_hold",
+                    },
+                }
+            )
+            self._set_current_executed_strategy(previous_executed)
+        elif selected_strategy == "btc_sota":
+            btc_result = None
+            btc_error = None
+            try:
+                btc_result = self.btc_executor.evaluate_latest()
+            except Exception as exc:
+                btc_error = str(exc)
+            if btc_error is not None:
+                execution_results.append(
+                    {
+                        "strategy": "btc_sota",
+                        "result": {"status": "error", "reason": "btc_evaluate_latest_failed", "error": btc_error},
+                    }
+                )
+                self._rollback_after_switch_failure(
+                    previous_executed,
+                    rollback_context,
+                    reason="btc_evaluate_latest_failed",
+                    execution_results=execution_results,
+                )
+            elif self._btc_position_open_confirmed(btc_result):
+                execution_results.append({"strategy": "btc_sota", "result": btc_result})
                 self._set_current_executed_strategy("btc_sota")
             else:
-                self._set_current_executed_strategy(None)
+                execution_results.append({"strategy": "btc_sota", "result": btc_result})
+                self._rollback_after_switch_failure(
+                    previous_executed,
+                    rollback_context,
+                    reason="btc_open_not_confirmed",
+                    execution_results=execution_results,
+                )
         elif selected_strategy == "qqq_usdt_aggressive":
             candidate = qqq_candidate or self._candidate_from_payload(selected_candidate)
-            qqq_result = self.qqq_executor.evaluate_latest(candidate)
-            execution_results.append({"strategy": "qqq_usdt_aggressive", "result": qqq_result})
-            if bool(qqq_result.get("position_open")):
+            qqq_result = None
+            qqq_error = None
+            try:
+                qqq_result = self.qqq_executor.evaluate_latest(candidate)
+            except Exception as exc:
+                qqq_error = str(exc)
+            if qqq_error is not None:
+                execution_results.append(
+                    {
+                        "strategy": "qqq_usdt_aggressive",
+                        "result": {"status": "error", "reason": "qqq_evaluate_latest_failed", "error": qqq_error},
+                    }
+                )
+                self._rollback_after_switch_failure(
+                    previous_executed,
+                    rollback_context,
+                    reason="qqq_evaluate_latest_failed",
+                    execution_results=execution_results,
+                )
+            elif bool(qqq_result.get("position_open")):
+                execution_results.append({"strategy": "qqq_usdt_aggressive", "result": qqq_result})
                 self._set_current_executed_strategy("qqq_usdt_aggressive")
             else:
-                self._set_current_executed_strategy(None)
+                execution_results.append({"strategy": "qqq_usdt_aggressive", "result": qqq_result})
+                self._rollback_after_switch_failure(
+                    previous_executed,
+                    rollback_context,
+                    reason="qqq_open_not_confirmed",
+                    execution_results=execution_results,
+                )
         else:
             if bool(self.config.flatten_on_no_signal):
                 execution_results.extend(self._flatten_strategy(previous_executed, reason="router_no_signal"))
@@ -571,6 +655,104 @@ class StrategyRouterExecutionEngine:
 
     def _flatten_btc(self, *, reason: str) -> dict[str, Any]:
         return self.btc_executor.close_for_router_switch(reason=reason)
+
+    def _capture_rollback_context(self, strategy_id: str | None) -> dict[str, Any] | None:
+        """Snapshot the incumbent before flattening so a failed switch can restore it."""
+        if not strategy_id:
+            return None
+        context: dict[str, Any] = {"strategy": strategy_id, "captured_at": datetime.now(timezone.utc).isoformat()}
+        try:
+            if strategy_id == "qqq_usdt_aggressive":
+                state = self.qqq_executor.load_state()
+                position = state.get("position") if isinstance(state.get("position"), dict) else None
+                exchange_position = self.qqq_executor.fetch_position_state()
+                context["position"] = position
+                context["exchange_position"] = exchange_position if isinstance(exchange_position, dict) else {}
+            elif strategy_id == "btc_sota":
+                btc_state = self.btc_executor.store.load_snapshot() or {}
+                context["position"] = btc_state.get("position") if isinstance(btc_state.get("position"), dict) else None
+        except Exception as exc:
+            context["capture_error"] = str(exc)
+        return context
+
+    def _rollback_after_switch_failure(
+        self,
+        previous_executed: str | None,
+        rollback_context: dict[str, Any] | None,
+        *,
+        reason: str,
+        execution_results: list[dict[str, Any]],
+    ) -> None:
+        """Restore the incumbent after a failed switch so the account is not left flat."""
+        if rollback_context is None:
+            # No incumbent was flattened this cycle (the selected strategy was
+            # already being managed, or the account was flat). Keep the flat
+            # outcome; the next cycle reconciles current_executed_strategy with
+            # the exchange.
+            self._set_current_executed_strategy(None)
+            return
+        incumbent = rollback_context.get("strategy") or previous_executed
+        if incumbent == "qqq_usdt_aggressive":
+            try:
+                restore = self.qqq_executor.restore_position(rollback_context)
+            except Exception as exc:
+                restore = {"status": "error", "reason": "restore_qqq_failed", "error": str(exc)}
+            execution_results.append(
+                {
+                    "strategy": "qqq_usdt_aggressive",
+                    "result": restore,
+                    "rollback": True,
+                    "rollback_reason": reason,
+                }
+            )
+            if str(restore.get("status")) in {"submitted", "paper_restored"}:
+                self._set_current_executed_strategy("qqq_usdt_aggressive")
+                self._record_switch_rollback("qqq_usdt_aggressive")
+            else:
+                self._set_current_executed_strategy(None)
+        elif incumbent == "btc_sota":
+            try:
+                redo = self.btc_executor.evaluate_latest()
+            except Exception as exc:
+                redo = {"status": "error", "reason": "btc_restore_evaluate_failed", "error": str(exc)}
+            execution_results.append(
+                {
+                    "strategy": "btc_sota",
+                    "result": redo,
+                    "rollback": True,
+                    "rollback_reason": reason,
+                }
+            )
+            if self._btc_position_open_confirmed(redo):
+                self._set_current_executed_strategy("btc_sota")
+                self._record_switch_rollback("btc_sota")
+            else:
+                self._set_current_executed_strategy(None)
+        else:
+            self._set_current_executed_strategy(None)
+
+    def _record_switch_rollback(self, strategy_id: str) -> None:
+        state = self._load_execution_state()
+        state["switch_rollback_guard"] = {
+            "strategy": strategy_id,
+            "until_ts": int(time.time()) + max(0.0, float(self.config.switch_rollback_cooldown_seconds)),
+            "updated_at": int(time.time()),
+        }
+        self._save_execution_state(state)
+
+    def _switch_rollback_guard(self) -> dict[str, Any] | None:
+        state = self._load_execution_state()
+        guard = state.get("switch_rollback_guard")
+        return guard if isinstance(guard, dict) else None
+
+    def _switch_rollback_guard_active(self, incumbent_strategy: str | None) -> bool:
+        guard = self._switch_rollback_guard()
+        if not isinstance(guard, dict):
+            return False
+        if str(guard.get("strategy") or "") != str(incumbent_strategy or ""):
+            return False
+        until_ts = float(guard.get("until_ts", 0.0) or 0.0)
+        return time.time() < until_ts
 
     def _telegram_credentials(self) -> tuple[str | None, str | None, str | None]:
         token = self.config.telegram_token

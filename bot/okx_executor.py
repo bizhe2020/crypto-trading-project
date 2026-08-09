@@ -3402,11 +3402,29 @@ class OkxExecutionEngine:
         candidates.sort(
             key=lambda item: (
                 int(item.get("entry_idx", latest_closed_idx) or latest_closed_idx),
-                self._live_candidate_priority_value(str(item["event_type"])),
+                -self._live_candidate_priority_value(str(item.get("event_type") or "")),
             )
         )
-        selected = candidates[0]
+        selected = candidates[-1]
         selected_event_type = str(selected["event_type"])
+        # Reconcile a stale local engine position that belongs to a different
+        # signal than the one just selected. evaluate_range leaves engine.position
+        # reflecting the latest simulated open, while arbitration selects the latest
+        # candidate by entry_idx. If they disagree, the local position is a phantom
+        # from an earlier open that was never mirrored on the exchange; clear it so
+        # the later live-state sync does not crash on an unmirrored position.
+        selected_action = selected.get("action")
+        if selected_action is not None:
+            position = getattr(engine, "position", None)
+            if position is not None:
+                position_entry_idx = getattr(position, "entry_idx", None)
+                selected_entry_idx = selected.get("entry_idx")
+                if (
+                    position_entry_idx is not None
+                    and selected_entry_idx is not None
+                    and int(position_entry_idx) != int(selected_entry_idx)
+                ):
+                    engine.position = None
         rejected = [item for item in candidates[1:]]
         for item in candidates:
             source_key = item.get("source_key")
@@ -4122,7 +4140,7 @@ class OkxExecutionEngine:
             state = self._load_shadow_gate_state()
             state["real_position_open"] = False
             state["real_position_direction"] = None
-            state["paper_entry_time"] = None
+            state["paper_entry_time"] = action.timestamp
             self._shadow_append_event(
                 state,
                 {
@@ -4720,7 +4738,7 @@ class OkxExecutionEngine:
                 shadow_state = self._load_shadow_gate_state(engine)
                 shadow_state["real_position_open"] = False
                 shadow_state["real_position_direction"] = None
-                shadow_state["paper_entry_time"] = None
+                shadow_state["paper_entry_time"] = action.timestamp
                 self._shadow_append_event(
                     shadow_state,
                     {

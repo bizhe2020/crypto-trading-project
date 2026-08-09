@@ -967,6 +967,127 @@ class QqqUsdtExecutionEngine:
         self.store.append_action(str(context.candidate.get("timestamp") or "runtime"), "OPEN_QQQ_USDT", payload)
         return payload
 
+    def restore_position(self, rollback: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Re-open the QQQ long after a failed strategy switch, bypassing entry gates.
+
+        The router captures a rollback context (position state + exchange position)
+        BEFORE flattening the incumbent. If the target strategy fails to open, this
+        restores the QQQ position at market with the captured stop, so the account is
+        not left flat by a botched switch.
+        """
+        if self.router_config.mode == "paper":
+            return {"status": "paper_restored", "symbol": self.symbol, "action": "restore_qqq_usdt_long"}
+
+        state = self.load_state()
+        position_state = state.get("position") if isinstance(state.get("position"), dict) else None
+        exchange_state: dict[str, Any] = {}
+        if isinstance(rollback, dict):
+            captured_position = rollback.get("position") if isinstance(rollback.get("position"), dict) else None
+            captured_exchange = rollback.get("exchange_position") if isinstance(rollback.get("exchange_position"), dict) else {}
+            if position_state is None:
+                position_state = captured_position
+            if isinstance(captured_exchange, dict):
+                exchange_state = captured_exchange
+
+        contracts = float(exchange_state.get("contracts", 0.0) or 0.0)
+        notional = float(exchange_state.get("notional_usdt", 0.0) or 0.0)
+        if contracts <= 0 and isinstance(position_state, dict):
+            contracts = float(position_state.get("contracts", 0.0) or 0.0)
+        if contracts <= 0 and notional <= 0:
+            return {"status": "skipped", "reason": "no_restore_size"}
+
+        latest = self._latest_bar()
+        reference_price = float(latest["close"])
+        latest_low = float(latest["low"])
+        if reference_price <= 0:
+            return {"status": "error", "reason": "invalid_reference_price"}
+
+        if contracts <= 0:
+            contracts = self._order_amount(notional, reference_price)
+        if contracts <= 0:
+            return {"status": "error", "reason": "non_positive_amount"}
+
+        stop_loss_pct = float(self.qqq_config.get("stop_loss_pct", 4.0) or 4.0)
+        stop_price = float(position_state.get("stop_price", 0.0) or 0.0) if isinstance(position_state, dict) else 0.0
+        if stop_price <= 0 or stop_price >= reference_price:
+            stop_price = reference_price * (1.0 - stop_loss_pct / 100.0)
+
+        leverage = float(
+            position_state.get("leverage", self.qqq_config["base_leverage"])
+            if isinstance(position_state, dict)
+            else self.qqq_config["base_leverage"]
+        ) or float(self.qqq_config["base_leverage"])
+        exchange_leverage = self._exchange_leverage()
+        self.client.set_leverage(
+            int(round(exchange_leverage)),
+            self.symbol,
+            margin_mode=str(self.router_config.qqq_margin_mode),
+            pos_side="long",
+        )
+
+        context = QqqOrderContext(
+            symbol=self.symbol,
+            margin_mode=str(self.router_config.qqq_margin_mode),
+            leverage=leverage,
+            stop_loss_pct=stop_loss_pct,
+            reference_price=reference_price,
+            latest_low=latest_low,
+            stop_price=stop_price,
+            stop_hit=False,
+            route_score=float(position_state.get("route_score", 100.0) or 100.0) if isinstance(position_state, dict) else 100.0,
+            candidate=dict(position_state) if isinstance(position_state, dict) else {},
+        )
+
+        chunks = self._market_order_chunks(contracts)
+        orders = []
+        exchange_stops = []
+        for idx, chunk_amount in enumerate(chunks):
+            params: dict[str, Any] = {"tdMode": context.margin_mode, "posSide": "long"}
+            exchange_stop = self._attach_stop_to_order_params(params, context)
+            order = self.client.create_order(self.symbol, "market", "buy", chunk_amount, params=params)
+            orders.append({"order": order, "amount": chunk_amount})
+            if exchange_stop is not None:
+                exchange_stops.append(self._with_order_id(exchange_stop, order))
+            chunk_delay = self._market_order_chunk_delay_seconds()
+            if idx < len(chunks) - 1 and chunk_delay > 0:
+                time.sleep(chunk_delay)
+
+        previous_peak = float(position_state.get("peak_price", reference_price) or reference_price) if isinstance(position_state, dict) else reference_price
+        entry_price = float(position_state.get("entry_price", reference_price) or reference_price) if isinstance(position_state, dict) else reference_price
+        entry_candidate_ts = position_state.get("entry_candidate_timestamp") if isinstance(position_state, dict) else None
+        saved_position = {
+            "symbol": self.symbol,
+            "leverage": leverage,
+            "stop_loss_pct": stop_loss_pct,
+            "stop_price": stop_price,
+            "latest_low": latest_low,
+            "peak_price": max(previous_peak, reference_price),
+            "entry_price": entry_price,
+            "entry_leverage": leverage,
+            "entry_candidate_timestamp": entry_candidate_ts,
+            "route_score": context.route_score,
+            "restored": True,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.save_state({"position": saved_position, "last_candidate": position_state})
+
+        payload = {
+            "status": "submitted",
+            "action": "restore_qqq_usdt_long",
+            "orders": orders,
+            "amount": contracts,
+            "notional_usdt": round(contracts * reference_price, 6),
+            "leverage": leverage,
+            "exchange_leverage": exchange_leverage,
+            "stop_price": stop_price,
+            "exchange_stop": exchange_stops[-1] if exchange_stops else None,
+            "restore_source": "router_switch_rollback",
+        }
+        if exchange_stops:
+            payload["exchange_stops"] = exchange_stops
+        self.store.append_action("runtime", "RESTORE_QQQ_USDT", payload)
+        return payload
+
     def sync_leverage_setting(self, context: QqqOrderContext) -> dict[str, Any]:
         exchange_leverage = self._exchange_leverage()
         if self.router_config.mode == "paper":

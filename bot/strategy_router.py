@@ -99,6 +99,7 @@ class StrategyRouterConfig:
     router_audit_log_path: str | None = None
     router_evaluation_timeout_seconds: float = 240.0
     router_heartbeat_path: str | None = None
+    switch_rollback_cooldown_seconds: float = 3600.0
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "StrategyRouterConfig":
