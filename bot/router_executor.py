@@ -90,6 +90,7 @@ class StrategyRouterExecutionEngine:
 
         if selected_strategy == "btc_sota" and previous_executed != "btc_sota":
             btc_shadow_gate = self._btc_pre_switch_status(btc_candidate)
+            btc_open_check = self._btc_pre_switch_open_confirmation()
             if not bool(btc_shadow_gate.get("allow", True)):
                 execution_results.append(
                     {
@@ -98,6 +99,24 @@ class StrategyRouterExecutionEngine:
                             "status": "skipped",
                             "reason": "btc_shadow_gate_blocked_before_switch",
                             "shadow_gate": btc_shadow_gate,
+                        },
+                    }
+                )
+                selected_strategy = previous_executed
+                selected_candidate = self._candidate_payload_for_strategy(route, selected_strategy)
+                qqq_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "qqq_usdt_aggressive"
+                    else None
+                )
+            elif not bool(btc_open_check.get("allow", True)):
+                execution_results.append(
+                    {
+                        "strategy": "btc_sota",
+                        "result": {
+                            "status": "skipped",
+                            "reason": "btc_open_not_confirmed_before_switch",
+                            "open_check": btc_open_check,
                         },
                     }
                 )
@@ -329,6 +348,24 @@ class StrategyRouterExecutionEngine:
             return {"enabled": False, "allow": True, "reason": "unavailable"}
         status = status_fn(candidate)
         return status if isinstance(status, dict) else {"enabled": False, "allow": True, "reason": "invalid_status"}
+
+    def _btc_pre_switch_open_confirmation(self) -> dict[str, Any]:
+        """Dry-run whether the BTC executor would actually open right now.
+
+        Guards against a BTC takeover that flattens QQQ but then cannot open BTC
+        (arbitration/score-gate rejection at a new candle boundary, sizing failure,
+        high-leverage guard, etc.). Any rejection here holds the incumbent instead.
+        """
+        confirm_fn = getattr(self.btc_executor, "pre_switch_open_confirm", None)
+        if confirm_fn is None:
+            return {"enabled": False, "allow": True, "reason": "unavailable"}
+        try:
+            confirmation = confirm_fn()
+        except Exception as exc:
+            return {"enabled": True, "allow": False, "reason": "btc_open_confirm_error", "error": str(exc)}
+        if not isinstance(confirmation, dict):
+            return {"enabled": False, "allow": True, "reason": "invalid_confirmation"}
+        return confirmation
 
     @staticmethod
     def _candidate_payload_for_strategy(route: dict[str, Any], strategy_id: str | None) -> dict[str, Any] | None:
@@ -675,6 +712,26 @@ class StrategyRouterExecutionEngine:
             context["capture_error"] = str(exc)
         return context
 
+    def _exchange_position_open_state(self) -> tuple[bool, bool, dict[str, Any]] | None:
+        """Return (btc_open, qqq_open, sync) from the live exchange, or None on failure.
+
+        Used before a rollback restore so the router does not re-open an incumbent
+        on top of a target that actually filled, and does not restore an incumbent
+        that was never flattened on the exchange in the first place.
+        """
+        try:
+            sync = self._fetch_exchange_position_sync()
+        except Exception:
+            return None
+        if not isinstance(sync, dict) or sync.get("status") != "ok":
+            return None
+        btc_open = (
+            float(sync.get("btc_long_contracts", 0.0) or 0.0) > 0
+            or float(sync.get("btc_short_contracts", 0.0) or 0.0) > 0
+        )
+        qqq_open = float(sync.get("qqq_contracts", 0.0) or 0.0) > 0
+        return (btc_open, qqq_open, sync)
+
     def _rollback_after_switch_failure(
         self,
         previous_executed: str | None,
@@ -693,6 +750,51 @@ class StrategyRouterExecutionEngine:
             return
         incumbent = rollback_context.get("strategy") or previous_executed
         if incumbent == "qqq_usdt_aggressive":
+            exchange_state = self._exchange_position_open_state()
+            if exchange_state is not None:
+                btc_open, qqq_open, exchange_sync = exchange_state
+                if btc_open and not qqq_open:
+                    # The BTC target actually opened despite the failure signal;
+                    # restoring QQQ on top of it would create a double position.
+                    # Adopt BTC; the next cycle's exchange sync reconciles any
+                    # residual mismatch (e.g., a partially-filled open).
+                    execution_results.append(
+                        {
+                            "strategy": "btc_sota",
+                            "result": {
+                                "status": "btc_open_detected_on_rollback",
+                                "rollback_reason": reason,
+                                "exchange_position_sync": exchange_sync,
+                            },
+                            "rollback": True,
+                            "rollback_reason": reason,
+                        }
+                    )
+                    self._set_current_executed_strategy("btc_sota")
+                    return
+                if qqq_open and not btc_open:
+                    # The incumbent QQQ was never actually flattened on the
+                    # exchange (or the QQQ target filled), so there is nothing to
+                    # restore -- the position we want is already open.
+                    execution_results.append(
+                        {
+                            "strategy": "qqq_usdt_aggressive",
+                            "result": {
+                                "status": "qqq_retained_on_rollback",
+                                "rollback_reason": reason,
+                                "exchange_position_sync": exchange_sync,
+                            },
+                            "rollback": True,
+                            "rollback_reason": reason,
+                        }
+                    )
+                    self._set_current_executed_strategy("qqq_usdt_aggressive")
+                    return
+                if btc_open and qqq_open:
+                    # Double position -- never add more. Keep the stored incumbent
+                    # and let the next cycle's exchange sync reconcile.
+                    self._set_current_executed_strategy("qqq_usdt_aggressive")
+                    return
             try:
                 restore = self.qqq_executor.restore_position(rollback_context)
             except Exception as exc:

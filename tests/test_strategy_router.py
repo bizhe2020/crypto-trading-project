@@ -3882,3 +3882,445 @@ def test_qqq_restore_position_buys_back_captured_contracts(tmp_path: Path) -> No
     assert state["position"]["entry_price"] == 700.0
     assert state["position"]["stop_price"] == 675.5
     assert state["position"]["leverage"] == 10.0
+
+
+def _btc_open_action() -> StrategyAction:
+    return StrategyAction(
+        type=ActionType.OPEN_LONG,
+        timestamp="2026-08-04 01:15",
+        direction="BULL",
+        entry_price=65000.0,
+        stop_price=64000.0,
+        target_price=68000.0,
+        metadata={"index": 10, "candidate_event_type": "sota_long"},
+    )
+
+
+def _monkeypatch_open_confirm_executor(
+    executor: OkxExecutionEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    open_action: StrategyAction | None,
+) -> None:
+    engine = SimpleNamespace(
+        position=None,
+        capital=1000.0,
+        evaluate_range=lambda start, end: [open_action] if open_action is not None else [],
+    )
+    monkeypatch.setattr(executor, "load_engine", lambda: (engine, 0))
+    monkeypatch.setattr(executor, "_latest_closed_index", lambda engine: 100)
+    monkeypatch.setattr(executor, "_telegram_open_paused", lambda: False)
+    monkeypatch.setattr(executor, "_shadow_gate_enabled", lambda: False)
+    monkeypatch.setattr(executor, "_live_candidate_arbitration_enabled", lambda: False)
+    monkeypatch.setattr(executor, "_dynamic_high_leverage_enabled", lambda: False)
+    executor.store.set_value("last_processed_candle_time", "2026-08-04 01:00")
+
+
+def test_btc_pre_switch_open_confirm_allows_when_pipeline_would_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix A: pre_switch_open_confirm returns allow=True when the next
+    evaluate_latest would place an open order (all gates pass)."""
+    executor = OkxExecutionEngine(
+        ExecutorConfig(
+            mode="live",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="isolated",
+            max_open_positions=1,
+            risk_per_trade=0.025,
+            state_db_path=str(tmp_path / "btc_state.db"),
+        )
+    )
+    _monkeypatch_open_confirm_executor(executor, monkeypatch, open_action=_btc_open_action())
+    monkeypatch.setattr(
+        executor,
+        "_resolve_order_sizing",
+        lambda action, engine: {"status": "ok", "available_usdt": 1000.0, "notional_usdt": 65000.0, "amount": 1.0},
+    )
+    monkeypatch.setattr(executor, "_high_leverage_guard_enabled", lambda: False)
+
+    result = executor.pre_switch_open_confirm()
+
+    assert result["allow"] is True
+    assert result["reason"] == "ok"
+    assert result["event_type"] == "sota_long"
+    assert result["direction"] == "BULL"
+
+
+def test_btc_pre_switch_open_confirm_rejects_when_no_open_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix A: if arbitration produces no open action (e.g. score gate rejected the
+    candidate at a new candle boundary), the confirmation must disallow the switch."""
+    executor = OkxExecutionEngine(
+        ExecutorConfig(
+            mode="live",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="isolated",
+            max_open_positions=1,
+            risk_per_trade=0.025,
+            state_db_path=str(tmp_path / "btc_state.db"),
+        )
+    )
+    _monkeypatch_open_confirm_executor(executor, monkeypatch, open_action=None)
+
+    result = executor.pre_switch_open_confirm()
+
+    assert result["allow"] is False
+    assert result["reason"] == "no_open_action"
+
+
+def test_btc_pre_switch_open_confirm_rejects_when_sizing_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix A: a sizing rejection (e.g. balance unavailable) disallows the switch
+    before QQQ is flattened."""
+    executor = OkxExecutionEngine(
+        ExecutorConfig(
+            mode="live",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="isolated",
+            max_open_positions=1,
+            risk_per_trade=0.025,
+            state_db_path=str(tmp_path / "btc_state.db"),
+        )
+    )
+    _monkeypatch_open_confirm_executor(executor, monkeypatch, open_action=_btc_open_action())
+    monkeypatch.setattr(
+        executor,
+        "_resolve_order_sizing",
+        lambda action, engine: {"status": "error", "reason": "balance_unavailable"},
+    )
+    monkeypatch.setattr(executor, "_high_leverage_guard_enabled", lambda: False)
+
+    result = executor.pre_switch_open_confirm()
+
+    assert result["allow"] is False
+    assert result["reason"] == "balance_unavailable"
+
+
+def test_btc_pre_switch_open_confirm_rejects_when_high_leverage_guard_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix A: the high-leverage guard is part of the confirmation surface; a
+    liquidation-buffer rejection disallows the switch before QQQ is flattened."""
+    executor = OkxExecutionEngine(
+        ExecutorConfig(
+            mode="live",
+            symbol="BTC/USDT:USDT",
+            timeframe="15m",
+            informative_timeframe="4h",
+            leverage=10,
+            margin_mode="isolated",
+            max_open_positions=1,
+            risk_per_trade=0.025,
+            state_db_path=str(tmp_path / "btc_state.db"),
+            high_leverage_min_liquidation_buffer_pct=1.2,
+            high_leverage_max_stop_distance_pct=2.0,
+            high_leverage_max_account_effective_leverage=20.0,
+            high_leverage_maintenance_margin_pct=0.5,
+        )
+    )
+    _monkeypatch_open_confirm_executor(executor, monkeypatch, open_action=_btc_open_action())
+    monkeypatch.setattr(
+        executor,
+        "_resolve_order_sizing",
+        lambda action, engine: {"status": "ok", "available_usdt": 1000.0, "notional_usdt": 65000.0, "amount": 1.0},
+    )
+    monkeypatch.setattr(executor, "_high_leverage_guard_enabled", lambda: True)
+
+    def bad_diagnostics(action: Any, sizing: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "configured_leverage": 10.0,
+            "entry_price": 65000.0,
+            "stop_price": 64000.0,
+            "estimated_liquidation_price": 58500.0,
+            "stop_distance_pct": 1.54,
+            "liquidation_buffer_pct": 0.5,  # below the 1.2% minimum
+            "account_effective_leverage": 10.0,
+            "expected_notional_usdt": 65000.0,
+            "available_usdt": 1000.0,
+            "min_liquidation_buffer_pct": 1.2,
+            "max_stop_distance_pct": 2.0,
+            "max_account_effective_leverage": 20.0,
+            "maintenance_margin_pct": 0.5,
+        }
+
+    monkeypatch.setattr(executor, "_high_leverage_open_diagnostics", bad_diagnostics)
+
+    result = executor.pre_switch_open_confirm()
+
+    assert result["allow"] is False
+    assert result["reason"] == "high_leverage_guard_liquidation_buffer_too_small"
+
+
+def test_router_holds_qqq_when_btc_open_confirmation_disallows(tmp_path: Path) -> None:
+    """Fix A (router): when the BTC pre-switch open confirmation rejects, the router
+    must hold QQQ instead of flattening it for a takeover that cannot open."""
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+            flatten_before_switch=True,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.execution_state_path = tmp_path / "router.execution.json"
+    execution_state = {"current_executed_strategy": "qqq_usdt_aggressive"}
+    engine._load_execution_state = lambda: dict(execution_state)  # type: ignore[method-assign]
+
+    def save_execution_state(payload: dict[str, Any]) -> None:
+        execution_state.clear()
+        execution_state.update(payload)
+
+    engine._save_execution_state = save_execution_state  # type: ignore[method-assign]
+    engine._maybe_send_telegram_notifications = lambda payload: None  # type: ignore[method-assign]
+    engine._sync_executed_strategy_with_exchange = lambda stored: {"status": "skipped"}  # type: ignore[method-assign]
+    engine._sync_external_qqq_flat_after_route = lambda position_sync, route: None  # type: ignore[method-assign]
+    flatten_calls: list[tuple[str | None, str]] = []
+    engine._flatten_strategy = (  # type: ignore[method-assign]
+        lambda strategy, *, reason: flatten_calls.append((strategy, reason))
+        or [{"strategy": strategy, "result": {"status": "closed_confirmed"}}]
+    )
+    engine._btc_pre_switch_status = lambda candidate: {"enabled": True, "allow": True, "reason": "ok"}  # type: ignore[method-assign]
+    engine._btc_pre_switch_open_confirmation = lambda: {  # type: ignore[method-assign]
+        "enabled": True,
+        "allow": False,
+        "reason": "high_leverage_guard_liquidation_buffer_too_small",
+    }
+    engine.router.evaluate_latest = lambda current_strategy=None: {  # type: ignore[method-assign]
+        "selected_strategy": "btc_sota",
+        "selected_candidate": {
+            "strategy_id": "btc_sota",
+            "symbol": "BTC/USDT:USDT",
+            "active": True,
+            "route_score": 96.0,
+            "timestamp": "2026-08-04 01:15",
+            "direction": "BULL",
+            "event_type": "sota_long",
+        },
+        "candidates": [
+            {
+                "strategy_id": "btc_sota",
+                "symbol": "BTC/USDT:USDT",
+                "active": True,
+                "route_score": 96.0,
+                "timestamp": "2026-08-04 01:15",
+                "direction": "BULL",
+                "event_type": "sota_long",
+            },
+            {
+                "strategy_id": "qqq_usdt_aggressive",
+                "symbol": "QQQ/USDT:USDT",
+                "active": True,
+                "route_score": 96.0,
+                "timestamp": "2026-08-04 01:15",
+                "direction": "BULL",
+                "event_type": "qqq_usdt_long",
+                "leverage": 10.0,
+                "metadata": {},
+            },
+        ],
+    }
+
+    class FakeBtcExecutor:
+        def evaluate_latest(self):
+            raise AssertionError("BTC executor must not run when confirmation disallows")
+
+    class FakeQqqExecutor:
+        symbol = "QQQ/USDT:USDT"
+
+        def evaluate_latest(self, candidate):
+            return {"status": "ok", "position_open": True}
+
+    engine.btc_executor = FakeBtcExecutor()
+    engine.qqq_executor = FakeQqqExecutor()
+
+    result = engine.evaluate_latest()
+
+    assert flatten_calls == []
+    assert result["current_executed_strategy"] == "qqq_usdt_aggressive"
+    assert execution_state["current_executed_strategy"] == "qqq_usdt_aggressive"
+    reasons = [
+        item["result"]["reason"]
+        for item in result["execution_results"]
+        if "reason" in item.get("result", {})
+    ]
+    assert "btc_open_not_confirmed_before_switch" in reasons
+    blocked = next(
+        item["result"]
+        for item in result["execution_results"]
+        if item.get("result", {}).get("reason") == "btc_open_not_confirmed_before_switch"
+    )
+    assert blocked["open_check"]["allow"] is False
+
+
+def _rollback_router_engine(tmp_path: Path) -> tuple[StrategyRouterExecutionEngine, dict[str, Any]]:
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+            flatten_before_switch=True,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.execution_state_path = tmp_path / "router.execution.json"
+    execution_state = {"current_executed_strategy": "qqq_usdt_aggressive"}
+    engine._load_execution_state = lambda: dict(execution_state)  # type: ignore[method-assign]
+
+    def save_execution_state(payload: dict[str, Any]) -> None:
+        execution_state.clear()
+        execution_state.update(payload)
+
+    engine._save_execution_state = save_execution_state  # type: ignore[method-assign]
+    engine._maybe_send_telegram_notifications = lambda payload: None  # type: ignore[method-assign]
+    engine._sync_executed_strategy_with_exchange = lambda stored: {"status": "skipped"}  # type: ignore[method-assign]
+    engine._sync_external_qqq_flat_after_route = lambda position_sync, route: None  # type: ignore[method-assign]
+    flatten_calls: list[tuple[str | None, str]] = []
+    engine._flatten_strategy = (  # type: ignore[method-assign]
+        lambda strategy, *, reason: flatten_calls.append((strategy, reason))
+        or [{"strategy": strategy, "result": {"status": "closed_confirmed"}}]
+    )
+    engine.router.evaluate_latest = lambda current_strategy=None: {  # type: ignore[method-assign]
+        "selected_strategy": "btc_sota",
+        "selected_candidate": {
+            "strategy_id": "btc_sota",
+            "symbol": "BTC/USDT:USDT",
+            "active": True,
+            "route_score": 96.0,
+            "timestamp": "2026-08-04 01:15",
+            "direction": "BULL",
+            "event_type": "sota_long",
+        },
+        "candidates": [
+            {
+                "strategy_id": "btc_sota",
+                "symbol": "BTC/USDT:USDT",
+                "active": True,
+                "route_score": 96.0,
+                "timestamp": "2026-08-04 01:15",
+                "direction": "BULL",
+                "event_type": "sota_long",
+            },
+            {
+                "strategy_id": "qqq_usdt_aggressive",
+                "symbol": "QQQ/USDT:USDT",
+                "active": True,
+                "route_score": 96.0,
+                "timestamp": "2026-08-04 01:15",
+                "direction": "BULL",
+                "event_type": "qqq_usdt_long",
+                "leverage": 10.0,
+                "metadata": {},
+            },
+        ],
+    }
+    return engine, execution_state
+
+
+def test_router_rollback_adopts_btc_when_btc_opened_despite_error(tmp_path: Path) -> None:
+    """Fix B: when the BTC target actually opened on the exchange despite the
+    evaluate_latest failure signal, the rollback must adopt BTC and NOT restore
+    QQQ on top of it (which would create a double position)."""
+    engine, execution_state = _rollback_router_engine(tmp_path)
+    engine._exchange_position_open_state = lambda: (  # type: ignore[method-assign]
+        True,
+        False,
+        {"status": "ok", "btc_long_contracts": 1.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0},
+    )
+    restore_calls: list[dict[str, Any]] = []
+
+    class FakeBtcExecutor:
+        def evaluate_latest(self):
+            raise RuntimeError("mock btc evaluate failure")
+
+    class FakeQqqExecutor:
+        symbol = "QQQ/USDT:USDT"
+
+        def load_state(self):
+            return {"position": {"contracts": 119.81, "entry_price": 723.0, "stop_price": 690.0, "leverage": 10.0}}
+
+        def fetch_position_state(self):
+            return {"contracts": 119.81, "notional_usdt": 86500.0}
+
+        def restore_position(self, rollback):
+            restore_calls.append(rollback)
+            return {"status": "submitted", "action": "restore_qqq_usdt_long"}
+
+    engine.btc_executor = FakeBtcExecutor()
+    engine.qqq_executor = FakeQqqExecutor()
+
+    result = engine.evaluate_latest()
+
+    assert restore_calls == []
+    assert result["current_executed_strategy"] == "btc_sota"
+    assert execution_state["current_executed_strategy"] == "btc_sota"
+    rollback_entries = [item for item in result["execution_results"] if item.get("rollback")]
+    assert len(rollback_entries) == 1
+    assert rollback_entries[0]["result"]["status"] == "btc_open_detected_on_rollback"
+    assert rollback_entries[0]["strategy"] == "btc_sota"
+
+
+def test_router_rollback_retains_qqq_when_not_actually_flattened(tmp_path: Path) -> None:
+    """Fix B: when the exchange still holds QQQ (the flatten never went through),
+    the rollback must retain QQQ and NOT issue a redundant restore buy."""
+    engine, execution_state = _rollback_router_engine(tmp_path)
+    engine._exchange_position_open_state = lambda: (  # type: ignore[method-assign]
+        False,
+        True,
+        {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 119.81},
+    )
+    restore_calls: list[dict[str, Any]] = []
+
+    class FakeBtcExecutor:
+        def evaluate_latest(self):
+            raise RuntimeError("mock btc evaluate failure")
+
+    class FakeQqqExecutor:
+        symbol = "QQQ/USDT:USDT"
+
+        def load_state(self):
+            return {"position": {"contracts": 119.81, "entry_price": 723.0, "stop_price": 690.0, "leverage": 10.0}}
+
+        def fetch_position_state(self):
+            return {"contracts": 119.81, "notional_usdt": 86500.0}
+
+        def restore_position(self, rollback):
+            restore_calls.append(rollback)
+            return {"status": "submitted", "action": "restore_qqq_usdt_long"}
+
+    engine.btc_executor = FakeBtcExecutor()
+    engine.qqq_executor = FakeQqqExecutor()
+
+    result = engine.evaluate_latest()
+
+    assert restore_calls == []
+    assert result["current_executed_strategy"] == "qqq_usdt_aggressive"
+    assert execution_state["current_executed_strategy"] == "qqq_usdt_aggressive"
+    rollback_entries = [item for item in result["execution_results"] if item.get("rollback")]
+    assert len(rollback_entries) == 1
+    assert rollback_entries[0]["result"]["status"] == "qqq_retained_on_rollback"
+    assert rollback_entries[0]["strategy"] == "qqq_usdt_aggressive"

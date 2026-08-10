@@ -4119,6 +4119,116 @@ class OkxExecutionEngine:
             "candidate_timestamp": candidate_timestamp,
         }
 
+    def pre_switch_open_confirm(self) -> dict[str, Any]:
+        """Read-only confirmation that the next evaluate_latest would place an open order.
+
+        The router runs this BEFORE flattening the incumbent for a BTC switch so a
+        takeover cannot leave the account flat: if any gate that evaluate_latest would
+        apply (arbitration, score/structure gates, telegram pause, shadow-gate pause,
+        sizing, high-leverage guard, dynamic high-leverage) rejects the open, we report
+        allow=False and the router holds the current strategy instead of flattening it.
+
+        This method never places orders and never persists state. It mirrors the exact
+        rejection surface of execute_action for OPEN actions, minus side effects.
+        """
+        engine, start_idx = self.load_engine()
+        latest_closed_idx = self._latest_closed_index(engine)
+        if latest_closed_idx is None:
+            return {"allow": False, "reason": "waiting_for_closed_candle"}
+        if not self.store.get_value("last_processed_candle_time"):
+            return {"allow": False, "reason": "not_initialized"}
+        if latest_closed_idx < start_idx:
+            return {"allow": False, "reason": "insufficient_data"}
+        actions = engine.evaluate_range(start_idx, latest_closed_idx + 1)
+        arbitration = None
+        if self._live_candidate_arbitration_enabled():
+            actions, arbitration = self._apply_live_candidate_arbitration(engine, actions, latest_closed_idx)
+        open_actions = [action for action in actions if action.type in {ActionType.OPEN_LONG, ActionType.OPEN_SHORT}]
+        if not open_actions:
+            return {
+                "allow": False,
+                "reason": "no_open_action",
+                "arbitration": arbitration,
+                "latest_closed_idx": latest_closed_idx,
+            }
+        action = open_actions[-1]
+        event_type = self._open_action_event_type(action)
+        if self._telegram_open_paused():
+            return {"allow": False, "reason": "telegram_open_paused"}
+        if self._shadow_gate_enabled():
+            state = self._load_shadow_gate_state(engine)
+            pause_until_ts = float(state.get("pause_until_ts", 0.0) or 0.0)
+            action_ts = self._action_timestamp(action).timestamp()
+            if action_ts < pause_until_ts:
+                return {
+                    "allow": False,
+                    "reason": "shadow_gate_paused",
+                    "pause_until": self._shadow_format_ts(pause_until_ts),
+                    "candidate_timestamp": action.timestamp,
+                }
+        sizing = self._resolve_order_sizing(action, engine)
+        if sizing.get("status") != "ok":
+            return {
+                "allow": False,
+                "reason": str(sizing.get("reason") or "sizing_failed"),
+                "sizing": sizing,
+            }
+        if self._high_leverage_guard_enabled():
+            diagnostics = self._high_leverage_open_diagnostics(action, sizing)
+            failures = self._high_leverage_guard_failures(diagnostics)
+            if failures:
+                return {
+                    "allow": False,
+                    "reason": "high_leverage_guard_" + failures[0],
+                    "failures": failures,
+                    "diagnostics": diagnostics,
+                }
+        if self._dynamic_high_leverage_enabled():
+            dyn_state = self._load_dynamic_high_leverage_state(engine)
+            dyn_diagnostics = self._dynamic_action_diagnostics(action, sizing, engine)
+            risk_mode, _mode_reasons, mode_stats = self._dynamic_next_mode(dyn_state, dyn_diagnostics)
+            effective_leverage, _leverage_reasons = self._dynamic_select_effective_leverage(
+                dyn_state,
+                risk_mode,
+                dyn_diagnostics,
+                mode_stats,
+            )
+            max_stop_distance = (
+                float(self.config.dynamic_defense_max_stop_distance_pct)
+                if risk_mode == "defense"
+                else (
+                    float(self.config.dynamic_high_growth_max_stop_distance_pct)
+                    if dyn_diagnostics["is_high_growth"]
+                    else float(self.config.dynamic_max_stop_distance_pct)
+                )
+            )
+            if dyn_diagnostics["stop_distance_pct"] > max_stop_distance:
+                return {
+                    "allow": False,
+                    "reason": "dynamic_high_leverage_stop_distance_too_wide",
+                    "diagnostics": dyn_diagnostics,
+                    "risk_mode": risk_mode,
+                }
+            if float(dyn_diagnostics["available_usdt"]) <= 0 or effective_leverage <= 0:
+                return {
+                    "allow": False,
+                    "reason": "dynamic_high_leverage_invalid_available_or_leverage",
+                    "diagnostics": dyn_diagnostics,
+                    "risk_mode": risk_mode,
+                }
+        return {
+            "allow": True,
+            "reason": "ok",
+            "event_type": event_type,
+            "direction": action.direction,
+            "entry_price": action.entry_price,
+            "stop_price": action.stop_price,
+            "timestamp": action.timestamp,
+            "entry_idx": action.metadata.get("index") if isinstance(action.metadata, dict) else None,
+            "sizing": sizing,
+            "arbitration": arbitration,
+        }
+
     def _high_leverage_guard_enabled(self) -> bool:
         return (
             bool(self.config.enable_high_leverage_guard)
