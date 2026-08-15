@@ -26,6 +26,7 @@
     "offense_leverage": 11.2,
     "base_leverage": 7.5,
     "defense_leverage": 3.8,
+    "ramp_confirm_pct": 0.5,
     "exchange_leverage_max": 20.0,
     "high_leverage_min_liquidation_buffer_pct": 1.2,
     "high_leverage_max_stop_distance_pct": 2.0,
@@ -39,5 +40,5 @@
     "closed_bar_grace_seconds": 30
   },
   "frozen_label": "googl_usdt_conviction_two_pass_ma60_trail10_offense11_base7_defense4_20260816",
-  "notes": "Research frozen spec v0.3（2026-08-16 真实 4h 执行数据定档）。两段式：pre-conviction 段 GOOGL 收盘>ma(60) 入场 + 10% trailing hard exit + 无 SPY regime + 无 max_hold（慢 MA 强复利资产捕获上行 + 避开深跌；回测 2007-2026：342.6%→1951.0%，maxDD 33.4%→36.9%）；conviction 段（伯克希尔 13F 首次披露 ALPHABET 起）close>ma(20) 快速入场 + regime 放宽 + trailing/max_hold 关闭。杠杆档（0.75x 乘数，真实数据最优）：offense 11.2x（信念在市）/ base 7.5x（非信念在市）/ defense 3.8x / flat。真实数据（价值投资project/data/googl_minute.csv → 4h，2024-01→2026-08）4h 执行回测：原 15x/10x 被严格支配（+397%/maxDD 90% vs 0.75x 档 +535%/maxDD 79%）；0.75x 档含跳空捕获、funding 0.005%/8h 后 +390%。每次 4% 止损 × 11.2x ≈ 45% 权益回撤，需强回撤承受力。OKX GOOGL-USDT-SWAP 2026-03-04 上线，4h 执行层用股票分钟数据代理。"
+  "notes": "Research frozen spec v0.3.1（2026-08-16 真实 4h 执行数据定档，含杠杆爬坡）。两段式：pre-conviction 段 GOOGL 收盘>ma(60) 入场 + 10% trailing hard exit + 无 SPY regime + 无 max_hold（慢 MA 强复利资产捕获上行 + 避开深跌；回测 2007-2026：342.6%→1951.0%，maxDD 33.4%→36.9%）；conviction 段（伯克希尔 13F 首次披露 ALPHABET 起）close>ma(20) 快速入场 + regime 放宽 + trailing/max_hold 关闭。杠杆档（0.75x 乘数，真实数据最优）：offense 11.2x（信念在市）/ base 7.5x（非信念在市）/ defense 3.8x / flat。杠杆爬坡 ramp_confirm_pct=0.5%：conviction 入场先 base 7.5x，上一根已收盘 close 相对入场价 ≥ +0.5% 才升满 11.2x（无前视）。真实数据（价值投资project/data/googl_minute.csv → 4h，2024-01→2026-08）4h 执行回测：原 15x/10x 被严格支配（+397%/maxDD 90% vs 0.75x 档 +535%/maxDD 79%）；加爬坡后 0.75x 档 +630%/maxDD 69%（stop=4 定档，成本/门稳健；stop 2% 或 5-6% 时优势收窄/逆转）。每次 4% 止损 × 11.2x ≈ 45% 权益回撤，需强回撤承受力。OKX GOOGL-USDT-SWAP 2026-03-04 上线，4h 执行层用股票分钟数据代理。"
 }

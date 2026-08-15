@@ -265,3 +265,127 @@ def test_run_googl_4h_replay_gap_through_stop(tmp_path: Path) -> None:
     r_off = run_googl_4h_replay(merged, None, capture_open_gaps=False, **kwargs)
     stop_off = [t for t in r_off["trades"] if t["exit_reason"] == "trailing_stop"]
     assert stop_off and stop_off[0]["trade_return_pct"] > stop_on[0]["trade_return_pct"]
+
+
+# ---------------------------------------------------------------------------
+# 杠杆爬坡（ramp_confirm_pct）回归测试。
+#
+# 无前视契约（bar-open 决策）：
+#   1) 入场 bar 自身永远以 base 杠杆计盈亏（确认只能在收盘后才可知）；
+#   2) 持仓 bar 用上一根已收盘 bar 的 close（prev_close）做盈利确认 ——
+#      本 bar 自己的 close 即使越过阈值，也不为本 bar 自身升杠杆；
+#   3) 确认成立后，从下一根 bar 起升到完整杠杆；
+#   4) 始终未确认（入场即跌）→ 全程 base 杠杆，亏损被抑制。
+# 四个测试各锁一条契约。杠杆档 offense=10 / base=5，taker_fee=0.0005。
+# 期望值手算：trade_return_pct = Π(1 + lev_i × bar_ret_i) × (1 − exit_fee) − 1
+# （入场 fee 在百分比中约掉）。
+# ---------------------------------------------------------------------------
+
+_BARS_START = pd.Timestamp("2026-01-01", tz="UTC")
+
+
+def _ohlc_bars(rows: list[tuple[float, float, float, float]], n_bars: int | None = None) -> pd.DataFrame:
+    """把 (open, high, low, close) 列表铺成 4h bars；不足部分用最后一根平铺。"""
+    if n_bars is None:
+        n_bars = len(rows)
+    out = []
+    for i in range(n_bars):
+        o, h, l, c = rows[min(i, len(rows) - 1)]
+        out.append({"date": _BARS_START + pd.Timedelta(hours=4 * i), "open": o, "high": h, "low": l, "close": c})
+    return pd.DataFrame(out)
+
+
+def _one_day_signal(tmp_path: Path) -> Path:
+    """day0 GOOGL（offense），day1 起 FLAT → 单笔持仓在 day1 开盘平仓。"""
+    signal = pd.DataFrame(
+        {
+            "date": pd.date_range(_BARS_START, periods=3, freq="D"),
+            "position": ["GOOGL", "FLAT", "FLAT"],
+            "leverage_tier": ["offense", "flat", "flat"],
+            "target_leverage": [10.0, 0.0, 0.0],
+        }
+    )
+    path = tmp_path / "googl_daily_signal.csv"
+    signal.to_csv(path, index=False)
+    return path
+
+
+_RAMP_TIERS = {"offense": 10.0, "base": 5.0, "defense": 2.0, "flat": 0.0}
+
+
+def test_ramp_entry_bar_at_base_leverage(tmp_path: Path) -> None:
+    """入场 bar 暴涨 10% 且越过确认阈值，但 P&L 必须以 base（5x）计 —— 确认只在收盘后才可知。"""
+    bars = _ohlc_bars([(100, 112, 99, 110)] + [(110, 111, 109, 110)] * 5, n_bars=7)
+    merged = attach_googl_daily_state(bars, pd.read_csv(_one_day_signal(tmp_path)))
+    result = run_googl_4h_replay(
+        merged, None,
+        leverage_tiers=_RAMP_TIERS,
+        ramp_confirm_pct=1.0, stop_loss_pct=4.0,
+        taker_fee_rate=0.0005, slippage_bps=0.0, initial_capital=1000.0,
+    )
+    assert result["summary"]["trades"] == 1
+    ret = result["trades"][0]["trade_return_pct"]
+    # base 全程：1.50 × 0.995 − 1 ≈ +49.25%；若入场 bar 自升 10x 则 ≈ +99%
+    assert ret == pytest.approx(49.25, abs=0.6), f"入场 bar 应 base 计盈亏，实际 {ret:.2f}%"
+
+
+def test_ramp_confirmation_bar_does_not_self_ramp(tmp_path: Path) -> None:
+    """持仓 bar 的 close 越过阈值（99→101.5），但该 bar 自身仍以 base 计 —— 用 prev_close 确认。"""
+    bars = _ohlc_bars(
+        [(100, 100, 98, 99), (99, 102, 98.5, 101.5)] + [(101.5, 102, 101, 101.5)] * 5,
+        n_bars=7,
+    )
+    merged = attach_googl_daily_state(bars, pd.read_csv(_one_day_signal(tmp_path)))
+    result = run_googl_4h_replay(
+        merged, None,
+        leverage_tiers=_RAMP_TIERS,
+        ramp_confirm_pct=0.5, stop_loss_pct=4.0,
+        taker_fee_rate=0.0005, slippage_bps=0.0, initial_capital=1000.0,
+    )
+    assert result["summary"]["trades"] == 1
+    ret = result["trades"][0]["trade_return_pct"]
+    # base 全程：0.95 × 1.12626 × 0.995 − 1 ≈ +6.46%；若确认 bar 自升 10x 则 ≈ +18.4%
+    assert ret == pytest.approx(6.46, abs=0.6), f"确认 bar 应 base 计盈亏，实际 {ret:.2f}%"
+
+
+def test_ramp_activates_on_next_bar(tmp_path: Path) -> None:
+    """prev_close 确认（101.5 ≥ 100×1.005）后，下一根 bar 升到完整杠杆（10x）捕捉大阳线。"""
+    bars = _ohlc_bars(
+        [
+            (100, 100, 98, 99),           # 入场，未确认
+            (99, 102, 98.5, 101.5),       # close 越过阈值，但自身以 base 计
+            (101.5, 111, 101, 110),       # prev_close 确认 → 10x 捕捉 +8.4%
+        ]
+        + [(110, 111, 109, 110)] * 4,
+        n_bars=7,
+    )
+    merged = attach_googl_daily_state(bars, pd.read_csv(_one_day_signal(tmp_path)))
+    result = run_googl_4h_replay(
+        merged, None,
+        leverage_tiers=_RAMP_TIERS,
+        ramp_confirm_pct=0.5, stop_loss_pct=4.0,
+        taker_fee_rate=0.0005, slippage_bps=0.0, initial_capital=1000.0,
+    )
+    ret = result["trades"][0]["trade_return_pct"]
+    # 0.95 × 1.12626 × 1.83744 × 0.995 − 1 ≈ +95.6%
+    assert ret == pytest.approx(95.6, abs=1.2), f"确认后应升满杠杆捕捉收益，实际 {ret:.2f}%"
+
+
+def test_ramp_immediate_drop_stays_base(tmp_path: Path) -> None:
+    """入场即跌、从未确认 → 全程 base（5x），止损亏损被抑制（而非 10x 放大）。"""
+    bars = _ohlc_bars(
+        [(100, 100, 98, 99), (99, 99, 95.5, 96)] + [(96, 96.5, 95, 96)] * 5,
+        n_bars=7,
+    )
+    merged = attach_googl_daily_state(bars, pd.read_csv(_one_day_signal(tmp_path)))
+    result = run_googl_4h_replay(
+        merged, None,
+        leverage_tiers=_RAMP_TIERS,
+        ramp_confirm_pct=0.5, stop_loss_pct=4.0,
+        taker_fee_rate=0.0005, slippage_bps=0.0, initial_capital=1000.0,
+    )
+    assert result["summary"]["trades"] == 1
+    assert result["trades"][0]["exit_reason"] == "trailing_stop"
+    ret = result["trades"][0]["trade_return_pct"]
+    # base 全程：0.95 × 0.84849 × 0.9975 − 1 ≈ −19.6%；10x 则 ≈ −37.4%
+    assert ret == pytest.approx(-19.6, abs=0.6), f"未确认亏损应被 base 杠杆抑制，实际 {ret:.2f}%"

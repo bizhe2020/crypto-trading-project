@@ -154,6 +154,8 @@ def run_googl_4h_replay(
     reentry_clear_bars: int = 0,
     include_funding: bool = True,
     capture_open_gaps: bool = True,
+    entry_price_col: str | None = None,
+    ramp_confirm_pct: float = 0.0,
 ) -> dict[str, Any]:
     """4h 执行层回测主函数。
 
@@ -166,6 +168,19 @@ def run_googl_4h_replay(
     跳空击穿止损时按开盘价成交（比止损价更差）；信号翻 FLAT 也在本 bar 开盘价
     平仓。这是对单票高倍最诚实的下界。QQQ 框架是 24/7 连续合约，跳空可忽略，
     保持原 close/open 约定（capture_open_gaps 对 QQQ 不适用）。
+
+    entry_price_col：可选的入场价列名（如 regular_open，常规交易时段开盘价）。
+    默认 None = 用 4h bar 开盘价入场。GOOGL 4h bar 的 00:00/08:00/12:00 UTC
+    开盘对应 8pm/4am/8am ET 盘前/盘后，成交稀薄；regular_open（9:30am ET）
+    是流动性更真实的入场价。设置后入场用该列值（仍按 bar 的 low 检查止损）。
+
+    ramp_confirm_pct：杠杆爬坡确认阈值（%）。>0 时，高于 base 档的入场
+    （如 conviction 的 offense 11.2x）先以 base 档杠杆入场，直到"已收盘"的
+    上一根 bar close（prev_close）相对入场价上涨 ≥ 该百分比，才在下一根 bar
+    起升到完整档杠杆。无前视：入场 bar 自身与越过阈值的确认 bar 都以 base 计
+    盈亏（确认只在收盘后才可知）。目的：削减"新 conviction 入场即被 4% 止损"
+    的尾部亏损（-42%/-39% 案例），同时保留走出来的趋势单的完整 11.2x 上行
+    （+914% 案例）。默认 0 = 无爬坡，保持原行为。
     """
     merged = bars.copy()
     if funding is not None and include_funding:
@@ -190,6 +205,8 @@ def run_googl_4h_replay(
     stop_price = 0.0
     entry_price = 0.0
     entry_leverage = 0.0
+    ramp_full_lev = 0.0  # 爬坡目标杠杆（>0 表示本笔需爬坡）
+    ramped = False       # 本笔是否已升到完整杠杆
     gate_cooldown_left = 0
     stopped_after_stop = False
     clear_streak = 0
@@ -273,20 +290,31 @@ def run_googl_4h_replay(
                 capital *= 1.0 - fee_cost * lev
                 holding = True
                 entered_today = True
-                entry_price = float(row.open)
+                entry_price = float(getattr(row, entry_price_col, None) or row.open) if entry_price_col else float(row.open)
                 entry_leverage = lev
+                ramp_full_lev = 0.0
+                ramped = False
+                base_lev = float(leverage_tiers.get("base", 0.0))
+                if float(ramp_confirm_pct) > 0 and lev > base_lev > 0:
+                    # 高于 base 的入场先降 base 起步，盈利确认后升满
+                    ramp_full_lev = lev
+                    entry_leverage = base_lev
                 stop_price = entry_price * (1.0 - float(stop_loss_pct) / 100.0)
                 current_trade = {
                     "entry_date": str(pd.Timestamp(row.date)),
                     "entry_capital": capital,
                     "leverage": lev,
+                    "ramped": False,
                 }
 
         # --- 持仓中的 4h 路径 ---
         if holding:
             lev = entry_leverage
-            # 收益基准：持仓跨过 bar 边界时用 prev_close（含跳空），刚入场用本 bar open
+            # 收益基准：持仓跨过 bar 边界时用 prev_close（含跳空）；
+            # 刚入场（非 bar-open 价格，如 regular_open）用 entry_price；否则本 bar open
             base_ref = open_price
+            if not was_holding and entry_price > 0 and (entry_price_col or entry_price != open_price):
+                base_ref = entry_price
             if capture_open_gaps and was_holding and prev_close and prev_close > 0:
                 base_ref = prev_close
             if (
@@ -339,6 +367,22 @@ def run_googl_4h_replay(
                 stop_price = 0.0
                 entry_price = 0.0
             else:
+                # 杠杆爬坡：盈利确认后才升满杠杆。
+                # 无前视语义：在 bar i 开盘决策时，最新已完成 bar 是 i-1，
+                # 故用 prev_close（上一根 close）做确认，且只在本 bar 持有中（was_holding）
+                # 才生效 —— 入场 bar 自身永远以 base 杠杆计盈亏（确认只在收盘后可知）。
+                if (
+                    ramp_full_lev > 0 and not ramped
+                    and was_holding
+                    and entry_price > 0
+                    and prev_close
+                    and prev_close >= entry_price * (1.0 + float(ramp_confirm_pct) / 100.0)
+                ):
+                    entry_leverage = ramp_full_lev
+                    ramped = True
+                    if current_trade is not None:
+                        current_trade["ramped"] = True
+                lev = entry_leverage
                 bar_ret = close_price / base_ref - 1.0 if base_ref > 0 else 0.0
                 capital *= 1.0 + lev * bar_ret
                 if funding_available:
@@ -463,6 +507,8 @@ def main() -> None:
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--leverage", type=float, default=None, help="覆盖全部杠杆档（单档）")
     parser.add_argument("--stop-loss-pct", type=float, default=None)
+    parser.add_argument("--ramp-confirm-pct", type=float, default=None,
+                        help="杠杆爬坡确认阈值（%），覆盖 config.ramp_confirm_pct")
     parser.add_argument("--sweep", action="store_true", help="杠杆结构扫描")
     parser.add_argument("--no-funding", action="store_true", help="忽略 funding 成本")
     args = parser.parse_args()
@@ -492,9 +538,11 @@ def main() -> None:
             "defense": float(config.get("defense_leverage", 5.0)),
             "flat": 0.0,
         }
+    ramp_pct = float(args.ramp_confirm_pct if args.ramp_confirm_pct is not None else config.get("ramp_confirm_pct", 0.0))
     result = run_googl_4h_replay(
         merged, funding,
         leverage_tiers=tiers,
+        ramp_confirm_pct=ramp_pct,
         stop_loss_pct=float(args.stop_loss_pct if args.stop_loss_pct is not None else config.get("stop_loss_pct", 4.0)),
         taker_fee_rate=float(config.get("taker_fee_rate", 0.0005)),
         slippage_bps=float(config.get("slippage_bps", 5.0)),
@@ -510,6 +558,7 @@ def main() -> None:
             "signal_source": str(Path(args.signal)),
             "frozen_label": config.get("frozen_label"),
             "leverage_tiers": tiers,
+            "ramp_confirm_pct": ramp_pct,
             "stop_loss_pct": float(args.stop_loss_pct if args.stop_loss_pct is not None else config.get("stop_loss_pct", 4.0)),
             "taker_fee_rate": float(config.get("taker_fee_rate", 0.0005)),
             "slippage_bps": float(config.get("slippage_bps", 5.0)),

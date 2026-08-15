@@ -12,6 +12,7 @@
   "offense_leverage": 11.2,
   "defense_leverage": 3.8,
   "stop_loss_pct": 4.0,
+  "ramp_confirm_pct": 0.5,
   "shadow_gate_replay_profile": {
     "status": "runtime_enabled",
     "runtime_enabled": true,
@@ -40,5 +41,5 @@
   "macro_proxy_overlay_path": "data/public/macro/fred_macro-1d.feather",
   "initial_capital": 1000.0,
   "frozen_label": "googl_usdt_conviction_two_pass_ma60_trail10_offense11_base7_defense4_20260816",
-  "notes": "Runtime variant of the GOOGL conviction two-pass design (v0.3, real-data 4h 定档 2026-08-16). Signal from scripts/scan_googl_daily_signal.py (var/runtime/googl/googl_daily_signal.csv): position=GOOGL/FLAT + leverage_tier=offense/base/flat; target_leverage now 11.2/7.5. Pre-conviction: GOOGL close>ma60 + 10% trailing, no SPY regime, no max_hold. Conviction: close>ma20 fast re-entry. Leverage tiers (0.75x multiplier, real-data optimum): conviction in-market -> offense 11.2x, non-conviction in-market -> base 7.5x, defense 3.8x reserved. Real-data 4h execution backtest (googl_minute.csv->4h, 2024-01->2026-08, capture_open_gaps): 15x/10x strictly dominated (+397%/maxDD 90% vs 11.2x/7.5x +535%/maxDD 79%); at funding 0.005%/8h ~+390%. Every 4% stop at 11.2x = ~45% equity hit. exchange_leverage=12 supports 11.2x offense. OKX GOOGL 4h data file optional; adapter falls back to daily-resolution bars when absent."
+  "notes": "Runtime variant of the GOOGL conviction two-pass design (v0.3, real-data 4h 定档 2026-08-16). Signal from scripts/scan_googl_daily_signal.py (var/runtime/googl/googl_daily_signal.csv): position=GOOGL/FLAT + leverage_tier=offense/base/flat; target_leverage now 11.2/7.5. Pre-conviction: GOOGL close>ma60 + 10% trailing, no SPY regime, no max_hold. Conviction: close>ma20 fast re-entry. Leverage tiers (0.75x multiplier, real-data optimum): conviction in-market -> offense 11.2x, non-conviction in-market -> base 7.5x, defense 3.8x reserved. ramp_confirm_pct=0.5 杠杆爬坡（真实数据 4h 回测 2026-08-16 定档）：conviction 入场先以 base 7.5x 起步，直到上一根已收盘 close 相对入场价 ≥ +0.5% 才升满 11.2x（无前视：入场 bar 与确认 bar 均按 base 计盈亏）。真实回测 +535%/maxDD 79% -> +630%/maxDD 69%（stop=4, 成本/门设置均稳健；stop 过宽或过窄时收益优势收窄或逆转，定档 stop=4）。Real-data 4h execution backtest (googl_minute.csv->4h, 2024-01->2026-08, capture_open_gaps): 15x/10x strictly dominated (+397%/maxDD 90% vs 11.2x/7.5x +535%/maxDD 79%); at funding 0.005%/8h ~+390%. Every 4% stop at 11.2x = ~45% equity hit. exchange_leverage=12 supports 11.2x offense. OKX GOOGL 4h data file optional; adapter falls back to daily-resolution bars when absent."
 }
