@@ -60,8 +60,10 @@ DEFAULT_SPY_REGIME_WINDOW = 200
 ALPHABET_KEYWORDS = ("ALPHABET", "GOOGLE")
 
 # 杠杆档位（执行层使用，信号层只产出 desired position）
-LEVERAGE_OFFENSE = 15.0
-LEVERAGE_BASE = 10.0
+# 2026-08-16 真实 4h 执行回测定档（0.75x 乘数）：offense 11.2x / base 7.5x / defense 3.8x。
+# 原 15x/10x 在真实数据上被严格支配（收益更低 +397% vs +535%、maxDD 更高 90% vs 79%）。
+LEVERAGE_OFFENSE = 11.2
+LEVERAGE_BASE = 7.5
 
 
 def load_value_prices(csv_path: Path) -> pd.DataFrame:

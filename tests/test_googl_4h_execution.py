@@ -216,3 +216,52 @@ def test_run_googl_4h_replay_no_overlap(tmp_path: Path) -> None:
     )
     assert result["summary"]["invested_bars"] == 0
     assert result["summary"]["trades"] == 0
+
+
+def test_run_googl_4h_replay_gap_through_stop(tmp_path: Path) -> None:
+    """隔夜跳空击穿止损 → 在开盘价成交（真实亏损），而非止损价（旧模型虚假盈利）。"""
+    start = pd.Timestamp("2026-01-01", tz="UTC")
+    rows = []
+    price = 100.0
+    for i in range(6):
+        ts = start + pd.Timedelta(hours=4 * i)
+        if i < 3:
+            o = price
+            c = o * 1.01
+            hi, lo = c, o
+        elif i == 3:
+            o = price * 0.90  # 隔夜跳空 -10%，击穿 4% 止损
+            c = o * 0.995
+            hi, lo = o * 1.001, o * 0.99
+        else:
+            o = price
+            c = o * 0.99
+            hi, lo = o, c
+        rows.append({"date": ts, "open": o, "high": hi, "low": lo, "close": c})
+        price = c
+    bars = pd.DataFrame(rows)
+    signal = pd.DataFrame(
+        {
+            "date": pd.date_range(start, periods=6, freq="D"),
+            "position": ["GOOGL"] * 6,
+            "leverage_tier": ["base"] * 6,
+            "target_leverage": [3.0] * 6,
+        }
+    )
+    merged = attach_googl_daily_state(bars, signal)
+    kwargs = {
+        "leverage_tiers": {"offense": 3.0, "base": 3.0, "defense": 2.0, "flat": 0.0},
+        "stop_loss_pct": 4.0,
+        "taker_fee_rate": 0.0,
+        "slippage_bps": 0.0,
+        "initial_capital": 1000.0,
+    }
+    # 跳空捕获开启（默认）：gap-through 在开盘价成交 → 亏损
+    r_on = run_googl_4h_replay(merged, None, capture_open_gaps=True, **kwargs)
+    stop_on = [t for t in r_on["trades"] if t["exit_reason"] == "trailing_stop"]
+    assert len(stop_on) == 1
+    assert stop_on[0]["trade_return_pct"] < 0.0, "跳空击穿应在开盘价成交，产生亏损"
+    # 跳空捕获关闭：旧模型以止损价成交（开盘已跳空低于止损 → 虚假盈利）
+    r_off = run_googl_4h_replay(merged, None, capture_open_gaps=False, **kwargs)
+    stop_off = [t for t in r_off["trades"] if t["exit_reason"] == "trailing_stop"]
+    assert stop_off and stop_off[0]["trade_return_pct"] > stop_on[0]["trade_return_pct"]

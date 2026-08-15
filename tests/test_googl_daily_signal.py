@@ -103,14 +103,14 @@ def test_run_googl_signal_two_pass(tmp_path: Path) -> None:
     assert payload["conviction_start"] is not None
     conv = path[path["berkshire_conviction"].astype(bool)]
     assert not conv.empty
-    # 在市且 conviction 时 target_leverage = 15（offense）
+    # 在市且 conviction 时 target_leverage = 11.2（offense，v0.3 真实数据定档）
     offense = path[path["leverage_tier"].eq("offense")]
     if not offense.empty:
-        assert offense["target_leverage"].eq(15.0).all()
-    # base 档 10x
+        assert offense["target_leverage"].eq(11.2).all()
+    # base 档 7.5x
     base = path[path["leverage_tier"].eq("base")]
     if not base.empty:
-        assert base["target_leverage"].eq(10.0).all()
+        assert base["target_leverage"].eq(7.5).all()
     # capital 单调非负
     assert (path["capital"] > 0).all()
 
@@ -137,9 +137,9 @@ def test_adapter_produces_candidate(tmp_path: Path) -> None:
         "mode": "paper",
         "signal_source": str(signal_csv),
         "execution_symbol": "GOOGL/USDT:USDT",
-        "base_leverage": 10.0,
-        "offense_leverage": 15.0,
-        "defense_leverage": 5.0,
+        "base_leverage": 7.5,
+        "offense_leverage": 11.2,
+        "defense_leverage": 3.8,
         "stop_loss_pct": 4.0,
         "macro_proxy_overlay_enabled": False,
         "risk_overlay_enabled": False,
@@ -160,7 +160,7 @@ def test_adapter_produces_candidate(tmp_path: Path) -> None:
     assert "leverage_tier" in candidate.metadata
     if candidate.active:
         assert candidate.direction == "BULL"
-        assert candidate.leverage in (10.0, 15.0)
+        assert candidate.leverage in (7.5, 11.2)
 
 
 def test_adapter_missing_signal(tmp_path: Path) -> None:

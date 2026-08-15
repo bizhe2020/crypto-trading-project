@@ -153,12 +153,19 @@ def run_googl_4h_replay(
     reentry_rule: str = "clear",
     reentry_clear_bars: int = 0,
     include_funding: bool = True,
+    capture_open_gaps: bool = True,
 ) -> dict[str, Any]:
     """4h 执行层回测主函数。
 
     equity_dd_stop_pct / equity_dd_cooldown_bars 对应 shadow gate：
     权益自峰值回撤 ≥ stop → 冷却 cooldown 根 4h bar 禁入场。
     reentry_rule=="clear" 时，stop 离场后需 reentry_clear_bars 根连续 allow 才重入。
+
+    capture_open_gaps=True（默认）：GOOGL 4h 数据来自股票分钟重采样，隔夜/周末
+    跳空是真实风险（财报 ±7-12%）。持仓 bar 用 close→close 收益（含跳空）；
+    跳空击穿止损时按开盘价成交（比止损价更差）；信号翻 FLAT 也在本 bar 开盘价
+    平仓。这是对单票高倍最诚实的下界。QQQ 框架是 24/7 连续合约，跳空可忽略，
+    保持原 close/open 约定（capture_open_gaps 对 QQQ 不适用）。
     """
     merged = bars.copy()
     if funding is not None and include_funding:
@@ -191,11 +198,16 @@ def run_googl_4h_replay(
     trades: list[dict[str, Any]] = []
     current_trade: dict[str, Any] | None = None
     prev_allow = False
+    prev_close: float | None = None
 
     per_side_cost = float(taker_fee_rate) + float(slippage_bps) / 10000.0
 
     for row in merged.itertuples(index=False):
         start_capital = capital
+        open_price = float(row.open)
+        close_price = float(row.close)
+        low_price = float(row.low)
+        was_holding = holding  # 本 bar 开始时是否已持仓（区分"刚入场"与"持仓中"）
         allow_now = bool(row.allow_long)
         entered_today = False
         exited_today = False
@@ -229,10 +241,13 @@ def run_googl_4h_replay(
                 }
             )
 
-        # --- 信号翻 FLAT → 平仓 ---
+        # --- 信号翻 FLAT → 平仓（在开盘价平仓，含隔夜/周末跳空） ---
         if holding and not allow_now:
+            lev_exit = float(current_trade["leverage"]) if current_trade else 0.0
+            if capture_open_gaps and was_holding and prev_close and prev_close > 0 and open_price > 0:
+                capital *= 1.0 + lev_exit * (open_price / prev_close - 1.0)
             fee_cost = per_side_cost
-            capital *= 1.0 - fee_cost * float(current_trade["leverage"]) if current_trade else 1.0
+            capital *= 1.0 - fee_cost * lev_exit
             holding = False
             exited_today = True
             if current_trade is not None:
@@ -269,16 +284,42 @@ def run_googl_4h_replay(
 
         # --- 持仓中的 4h 路径 ---
         if holding:
-            open_price = float(row.open)
-            high_price = float(row.high)
-            low_price = float(row.low)
-            close_price = float(row.close)
             lev = entry_leverage
-            if low_price <= stop_price:
+            # 收益基准：持仓跨过 bar 边界时用 prev_close（含跳空），刚入场用本 bar open
+            base_ref = open_price
+            if capture_open_gaps and was_holding and prev_close and prev_close > 0:
+                base_ref = prev_close
+            if (
+                capture_open_gaps and was_holding and prev_close and prev_close > 0
+                and open_price <= stop_price
+            ):
+                # 跳空击穿止损：条件单在开盘价成交（比止损价更差，单票财报跳空风险）
+                stop_hit = True
+                exit_price = open_price
+                bar_ret = exit_price / base_ref - 1.0 if base_ref > 0 else 0.0
+                capital *= 1.0 + lev * bar_ret
+                capital *= 1.0 - per_side_cost * lev
+                holding = False
+                exited_today = True
+                stopped_after_stop = True
+                if current_trade is not None:
+                    trades.append(
+                        {
+                            "entry_date": current_trade["entry_date"],
+                            "exit_date": str(pd.Timestamp(row.date)),
+                            "exit_reason": "trailing_stop",
+                            "leverage": lev,
+                            "trade_return_pct": round((capital / float(current_trade["entry_capital"]) - 1.0) * 100.0, 2),
+                        }
+                    )
+                current_trade = None
+                stop_price = 0.0
+                entry_price = 0.0
+            elif low_price <= stop_price:
                 # 4h trailing stop 触发（交易所条件单兜底）
                 stop_hit = True
                 exit_price = stop_price
-                bar_ret = exit_price / open_price - 1.0 if open_price > 0 else 0.0
+                bar_ret = exit_price / base_ref - 1.0 if base_ref > 0 else 0.0
                 capital *= 1.0 + lev * bar_ret
                 capital *= 1.0 - per_side_cost * lev
                 holding = False
@@ -298,7 +339,7 @@ def run_googl_4h_replay(
                 stop_price = 0.0
                 entry_price = 0.0
             else:
-                bar_ret = close_price / open_price - 1.0 if open_price > 0 else 0.0
+                bar_ret = close_price / base_ref - 1.0 if base_ref > 0 else 0.0
                 capital *= 1.0 + lev * bar_ret
                 if funding_available:
                     funding_settled = is_funding_settlement_bar(row.date, row.funding_event_time)
@@ -343,6 +384,7 @@ def run_googl_4h_replay(
                 "funding_cost": float(funding_cost),
             }
         )
+        prev_close = close_price
         prev_allow = allow_now
 
     path = pd.DataFrame(rows)
@@ -402,13 +444,13 @@ def sweep(merged_bars: pd.DataFrame, funding: pd.DataFrame | None, config: dict[
             reentry_clear_bars=2,
         )
         s = result["summary"]
-        rows.append((s["total_return_pct"], s["max_drawdown_pct"], mult, tiers))
+        rows.append((s["total_return_pct"], s["max_drawdown_pct"], s["trades"], s["win_rate_pct"], mult, tiers))
     rows.sort(key=lambda x: x[0], reverse=True)
     print(f"{'倍率':>5} {'base':>5} {'offense':>7} {'收益%':>12} {'maxDD%':>8} {'交易':>5} {'胜率%':>6}")
-    for ret, mdd, mult, tiers in rows:
+    for ret, mdd, trades, win, mult, tiers in rows:
         print(
             f"{mult:>5.2f} {tiers['base']:>5.1f} {tiers['offense']:>7.1f} "
-            f"{ret:>12.1f} {mdd:>8.1f}"
+            f"{ret:>12.1f} {mdd:>8.1f} {trades:>5} {win:>6.1f}"
         )
 
 

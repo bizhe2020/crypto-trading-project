@@ -7,10 +7,10 @@
   "closed_bar_grace_seconds": 30,
   "entry_overlay_timeframe": "1h",
   "leverage_profile_name": "conviction_tiered",
-  "exchange_leverage": 10.0,
-  "base_leverage": 10.0,
-  "offense_leverage": 15.0,
-  "defense_leverage": 5.0,
+  "exchange_leverage": 12.0,
+  "base_leverage": 7.5,
+  "offense_leverage": 11.2,
+  "defense_leverage": 3.8,
   "stop_loss_pct": 4.0,
   "shadow_gate_replay_profile": {
     "status": "runtime_enabled",
@@ -39,6 +39,6 @@
   "macro_proxy_overlay_fail_open": false,
   "macro_proxy_overlay_path": "data/public/macro/fred_macro-1d.feather",
   "initial_capital": 1000.0,
-  "frozen_label": "googl_usdt_conviction_two_pass_ma60_trail10_offense15_base10_defense5_20260815",
-  "notes": "Runtime variant of the GOOGL conviction two-pass design (v0.2 optimized). Signal comes from scripts/scan_googl_daily_signal.py output (var/runtime/googl/googl_daily_signal.csv): position=GOOGL/FLAT + leverage_tier=offense/base/flat. Pre-conviction segment: GOOGL close>ma60 + 10% trailing hard exit, no SPY regime, no max_hold (2007-2026 backtest 342.6%->1967.0%, maxDD 33.4%->36.9%). Conviction segment unchanged: close>ma20 fast re-entry. No GOOGL-specific LightGBM risk overlay yet (risk_overlay_enabled=false). Macro proxy overlay disabled for v1. Leverage tiers applied from the daily signal: conviction in-market -> offense 15x, non-conviction in-market -> base 10x. OKX GOOGL 4h data file optional (GOOGL-USDT-SWAP listed 2026-03-04); adapter falls back to daily-resolution bars when absent."
+  "frozen_label": "googl_usdt_conviction_two_pass_ma60_trail10_offense11_base7_defense4_20260816",
+  "notes": "Runtime variant of the GOOGL conviction two-pass design (v0.3, real-data 4h 定档 2026-08-16). Signal from scripts/scan_googl_daily_signal.py (var/runtime/googl/googl_daily_signal.csv): position=GOOGL/FLAT + leverage_tier=offense/base/flat; target_leverage now 11.2/7.5. Pre-conviction: GOOGL close>ma60 + 10% trailing, no SPY regime, no max_hold. Conviction: close>ma20 fast re-entry. Leverage tiers (0.75x multiplier, real-data optimum): conviction in-market -> offense 11.2x, non-conviction in-market -> base 7.5x, defense 3.8x reserved. Real-data 4h execution backtest (googl_minute.csv->4h, 2024-01->2026-08, capture_open_gaps): 15x/10x strictly dominated (+397%/maxDD 90% vs 11.2x/7.5x +535%/maxDD 79%); at funding 0.005%/8h ~+390%. Every 4% stop at 11.2x = ~45% equity hit. exchange_leverage=12 supports 11.2x offense. OKX GOOGL 4h data file optional; adapter falls back to daily-resolution bars when absent."
 }
