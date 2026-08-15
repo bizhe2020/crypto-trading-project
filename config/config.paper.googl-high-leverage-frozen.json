@@ -2,7 +2,7 @@
   "strategy_id": "googl_usdt_aggressive",
   "mode": "paper",
   "design": "conviction_two_pass",
-  "version": "0.3.0-frozen",
+  "version": "0.3.2-frozen",
   "description": "GOOGL 高倍合约策略 — 伯克希尔信念 + 两段式信号（research frozen spec, v0.3 real-data 4h 定档）",
   "data": {
     "prices_csv": "/Users/laoji/projects/价值投资project/data/prices.csv",
@@ -27,6 +27,7 @@
     "base_leverage": 7.5,
     "defense_leverage": 3.8,
     "ramp_confirm_pct": 0.5,
+    "ramp_pre_stop_pct": 2.0,
     "exchange_leverage_max": 20.0,
     "high_leverage_min_liquidation_buffer_pct": 1.2,
     "high_leverage_max_stop_distance_pct": 2.0,
@@ -40,5 +41,5 @@
     "closed_bar_grace_seconds": 30
   },
   "frozen_label": "googl_usdt_conviction_two_pass_ma60_trail10_offense11_base7_defense4_20260816",
-  "notes": "Research frozen spec v0.3.1（2026-08-16 真实 4h 执行数据定档，含杠杆爬坡）。两段式：pre-conviction 段 GOOGL 收盘>ma(60) 入场 + 10% trailing hard exit + 无 SPY regime + 无 max_hold（慢 MA 强复利资产捕获上行 + 避开深跌；回测 2007-2026：342.6%→1951.0%，maxDD 33.4%→36.9%）；conviction 段（伯克希尔 13F 首次披露 ALPHABET 起）close>ma(20) 快速入场 + regime 放宽 + trailing/max_hold 关闭。杠杆档（0.75x 乘数，真实数据最优）：offense 11.2x（信念在市）/ base 7.5x（非信念在市）/ defense 3.8x / flat。杠杆爬坡 ramp_confirm_pct=0.5%：conviction 入场先 base 7.5x，上一根已收盘 close 相对入场价 ≥ +0.5% 才升满 11.2x（无前视）。真实数据（价值投资project/data/googl_minute.csv → 4h，2024-01→2026-08）4h 执行回测：原 15x/10x 被严格支配（+397%/maxDD 90% vs 0.75x 档 +535%/maxDD 79%）；加爬坡后 0.75x 档 +630%/maxDD 69%（stop=4 定档，成本/门稳健；stop 2% 或 5-6% 时优势收窄/逆转）。每次 4% 止损 × 11.2x ≈ 45% 权益回撤，需强回撤承受力。OKX GOOGL-USDT-SWAP 2026-03-04 上线，4h 执行层用股票分钟数据代理。"
+  "notes": "Research frozen spec v0.3.2（2026-08-16 真实 4h 执行数据定档，含杠杆爬坡 + 爬坡前收紧止损）。两段式：pre-conviction 段 GOOGL 收盘>ma(60) 入场 + 10% trailing hard exit + 无 SPY regime + 无 max_hold（慢 MA 强复利资产捕获上行 + 避开深跌；回测 2007-2026：342.6%→1951.0%，maxDD 33.4%→36.9%）；conviction 段（伯克希尔 13F 首次披露 ALPHABET 起）close>ma(20) 快速入场 + regime 放宽 + trailing/max_hold 关闭。杠杆档（0.75x 乘数，真实数据最优）：offense 11.2x（信念在市）/ base 7.5x（非信念在市）/ defense 3.8x / flat。杠杆爬坡 ramp_confirm_pct=0.5%：conviction 入场先 base 7.5x，上一根已收盘 close 相对入场价 ≥ +0.5% 才升满 11.2x（无前视）。爬坡前收紧止损 ramp_pre_stop_pct=2.0%：确认前（base 档）用 2% 止损，确认后放宽回 4%（无前视，仅作用于爬坡档）；未确认即下跌的单更早离场，趋势单零影响。真实数据（价值投资project/data/googl_minute.csv → 4h，2024-01→2026-08）4h 执行回测：原 15x/10x 被严格支配（+397%/maxDD 90% vs 0.75x 档 +535%/maxDD 79%）；加爬坡后 +630%/maxDD 69%；加 pre_stop 2.0 后 +1249%/maxDD 62%（stop=4 定档，成本/门稳健，0.005%/8h funding 下 +961% vs 基线 +470%）。刃口：pre_stop=0.5% 杀赢单、1.0% 是非单调过拟合峰，定档 2.0% 偏保守。每次 4% 止损 × 11.2x ≈ 45% 权益回撤，需强回撤承受力。OKX GOOGL-USDT-SWAP 2026-03-04 上线，4h 执行层用股票分钟数据代理。"
 }

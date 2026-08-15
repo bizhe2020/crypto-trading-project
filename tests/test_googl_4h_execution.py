@@ -389,3 +389,73 @@ def test_ramp_immediate_drop_stays_base(tmp_path: Path) -> None:
     ret = result["trades"][0]["trade_return_pct"]
     # base 全程：0.95 × 0.84849 × 0.9975 − 1 ≈ −19.6%；10x 则 ≈ −37.4%
     assert ret == pytest.approx(-19.6, abs=0.6), f"未确认亏损应被 base 杠杆抑制，实际 {ret:.2f}%"
+
+
+def test_ramp_pre_stop_tightens_immediate_drop(tmp_path: Path) -> None:
+    """爬坡档确认前的收紧止损（ramp_pre_stop_pct=2.0）：入场即跌、从未确认的
+    conviction 单在 2% 处离场（~-10%），而非 4% 处（~-20%）。"""
+    bars = _ohlc_bars(
+        [(100, 100.5, 99.0, 99.5), (99.5, 99.5, 95.5, 96.0)] + [(96.0, 96.5, 95.0, 96.0)] * 5,
+        n_bars=7,
+    )
+    merged = attach_googl_daily_state(bars, pd.read_csv(_one_day_signal(tmp_path)))
+    kwargs = dict(
+        leverage_tiers=_RAMP_TIERS, ramp_confirm_pct=0.5, stop_loss_pct=4.0,
+        taker_fee_rate=0.0005, slippage_bps=0.0, initial_capital=1000.0,
+    )
+    r_tight = run_googl_4h_replay(merged, None, ramp_pre_stop_pct=2.0, **kwargs)
+    r_wide = run_googl_4h_replay(merged, None, ramp_pre_stop_pct=0.0, **kwargs)
+    assert r_tight["summary"]["trades"] == 1
+    assert r_tight["trades"][0]["exit_reason"] == "trailing_stop"
+    ret_tight = r_tight["trades"][0]["trade_return_pct"]
+    ret_wide = r_wide["trades"][0]["trade_return_pct"]
+    # 手算：pre_stop=2.0 → 0.975×0.92462×0.9975−1 ≈ −10.1%；无 pre_stop → ≈ −19.9%
+    assert ret_tight == pytest.approx(-10.1, abs=0.6), f"收紧止损应更早离场，实际 {ret_tight:.2f}%"
+    assert ret_wide == pytest.approx(-19.9, abs=0.6), f"无 pre_stop 应在 4% 止损离场，实际 {ret_wide:.2f}%"
+
+
+def test_ramp_pre_stop_does_not_touch_ramped_winner(tmp_path: Path) -> None:
+    """确认后走出来的趋势单：爬坡确认前从未回撤 2% → pre_stop 对结果零影响。"""
+    bars = _ohlc_bars(
+        [(100, 103, 99, 102), (102, 111, 106, 110)] + [(110, 111, 109, 110)] * 5,
+        n_bars=7,
+    )
+    merged = attach_googl_daily_state(bars, pd.read_csv(_one_day_signal(tmp_path)))
+    kwargs = dict(
+        leverage_tiers=_RAMP_TIERS, ramp_confirm_pct=0.5, stop_loss_pct=4.0,
+        taker_fee_rate=0.0005, slippage_bps=0.0, initial_capital=1000.0,
+    )
+    r_tight = run_googl_4h_replay(merged, None, ramp_pre_stop_pct=2.0, **kwargs)
+    r_wide = run_googl_4h_replay(merged, None, ramp_pre_stop_pct=0.0, **kwargs)
+    assert r_tight["summary"]["trades"] == 1
+    assert r_tight["trades"][0]["trade_return_pct"] == r_wide["trades"][0]["trade_return_pct"]
+    assert r_tight["trades"][0]["trade_return_pct"] > 0.0, "趋势单应保持盈利"
+
+
+def test_ramp_pre_stop_ignores_non_conviction_trades(tmp_path: Path) -> None:
+    """pre_stop 只作用于有爬坡档（conviction/offense）的交易；base 档交易保持 4% 止损。"""
+    bars = _ohlc_bars(
+        [(100, 100.5, 99.0, 99.5), (99.5, 99.5, 95.5, 96.0)] + [(96.0, 96.5, 95.0, 96.0)] * 5,
+        n_bars=7,
+    )
+    signal = pd.DataFrame(
+        {
+            "date": pd.date_range(_BARS_START, periods=3, freq="D"),
+            "position": ["GOOGL", "FLAT", "FLAT"],
+            "leverage_tier": ["base", "flat", "flat"],
+            "target_leverage": [5.0, 0.0, 0.0],
+        }
+    )
+    path = tmp_path / "base_tier_signal.csv"
+    signal.to_csv(path, index=False)
+    merged = attach_googl_daily_state(bars, pd.read_csv(path))
+    kwargs = dict(
+        leverage_tiers=_RAMP_TIERS, ramp_confirm_pct=0.5, stop_loss_pct=4.0,
+        taker_fee_rate=0.0005, slippage_bps=0.0, initial_capital=1000.0,
+    )
+    r_tight = run_googl_4h_replay(merged, None, ramp_pre_stop_pct=2.0, **kwargs)
+    r_wide = run_googl_4h_replay(merged, None, ramp_pre_stop_pct=0.0, **kwargs)
+    assert r_tight["summary"]["trades"] == 1
+    assert r_tight["trades"][0]["trade_return_pct"] == r_wide["trades"][0]["trade_return_pct"]
+    # base 档 4% 止损：0.975 × 0.82412 × 0.9975 − 1 ≈ −19.9%
+    assert r_tight["trades"][0]["trade_return_pct"] == pytest.approx(-19.9, abs=0.6)

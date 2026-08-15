@@ -156,6 +156,9 @@ def run_googl_4h_replay(
     capture_open_gaps: bool = True,
     entry_price_col: str | None = None,
     ramp_confirm_pct: float = 0.0,
+    ramp_stop_pct: float = 0.0,
+    be_lock_pct: float = 0.0,
+    ramp_pre_stop_pct: float = 0.0,
 ) -> dict[str, Any]:
     """4h 执行层回测主函数。
 
@@ -181,6 +184,24 @@ def run_googl_4h_replay(
     盈亏（确认只在收盘后才可知）。目的：削减"新 conviction 入场即被 4% 止损"
     的尾部亏损（-42%/-39% 案例），同时保留走出来的趋势单的完整 11.2x 上行
     （+914% 案例）。默认 0 = 无爬坡，保持原行为。
+
+    ramp_stop_pct：爬坡确认后的收紧止损（%）。>0 时，一旦爬坡升满杠杆，
+    该笔 trailing stop 从 stop_loss_pct 收紧到 ramp_stop_pct —— 对已确认盈利、
+    却把利润回吐成亏损的"先涨后跌"单保护；代价是峰值回撤超过该宽度的趋势单
+    （+914% 大牛单最大 4h-close 回撤 4.3%）可能提前离场。默认 0 = 爬坡后
+    止损宽度不变。
+
+    be_lock_pct：保本锁（%）。>0 时，一旦"已收盘"的 prev_close 相对入场价
+    上涨 ≥ 该百分比，把该笔止损底线上移到入场价 —— 先涨后跌的单在 ~保本处
+    离场而非回吐成大亏；大牛单（从未回落至入场价）完全不受影响。用 prev_close
+    判定（无前视，与爬坡同语义）。默认 0 = 不锁保本，保持原行为。
+
+    ramp_pre_stop_pct：爬坡确认前的收紧止损（%）。>0 时，有爬坡档（conviction）
+    的入场先用该宽度做 trailing stop，直到爬坡确认升满杠杆后回到 stop_loss_pct。
+    目的：把"新入场即暴跌、从未确认盈利"的尾部亏损（2025-11-17 -29%、
+    2026-03-18 -28% 在 4% 止损处离场）压到更小（2.5% × 7.5x ≈ -19%），
+    而确认后走出来的趋势单仍享 stop_loss_pct 的呼吸空间。仅影响有爬坡档的交易。
+    默认 0 = 爬坡确认前后止损宽度一致。
     """
     merged = bars.copy()
     if funding is not None and include_funding:
@@ -207,6 +228,7 @@ def run_googl_4h_replay(
     entry_leverage = 0.0
     ramp_full_lev = 0.0  # 爬坡目标杠杆（>0 表示本笔需爬坡）
     ramped = False       # 本笔是否已升到完整杠杆
+    be_locked = False    # 本笔是否已触发保本锁（止损底线上移到入场价）
     gate_cooldown_left = 0
     stopped_after_stop = False
     clear_streak = 0
@@ -294,12 +316,19 @@ def run_googl_4h_replay(
                 entry_leverage = lev
                 ramp_full_lev = 0.0
                 ramped = False
+                be_locked = False
                 base_lev = float(leverage_tiers.get("base", 0.0))
                 if float(ramp_confirm_pct) > 0 and lev > base_lev > 0:
                     # 高于 base 的入场先降 base 起步，盈利确认后升满
                     ramp_full_lev = lev
                     entry_leverage = base_lev
-                stop_price = entry_price * (1.0 - float(stop_loss_pct) / 100.0)
+                # 爬坡档确认前可用更紧止损（ramp_pre_stop_pct）；未设置则统一 stop_loss_pct
+                init_stop_pct = (
+                    float(ramp_pre_stop_pct)
+                    if (ramp_full_lev > 0 and float(ramp_pre_stop_pct) > 0)
+                    else float(stop_loss_pct)
+                )
+                stop_price = entry_price * (1.0 - init_stop_pct / 100.0)
                 current_trade = {
                     "entry_date": str(pd.Timestamp(row.date)),
                     "entry_capital": capital,
@@ -390,7 +419,21 @@ def run_googl_4h_replay(
                     if funding_settled:
                         funding_cost = float(row.funding_rate_value) * lev
                         capital *= 1.0 - funding_cost
-                stop_price = max(stop_price, close_price * (1.0 - float(stop_loss_pct) / 100.0))
+                # 止损宽度：爬坡档确认前用 ramp_pre_stop_pct（若设置）；确认后保持 stop_loss_pct
+                if ramped and float(ramp_stop_pct) > 0:
+                    # 爬坡确认后收紧 trailing stop（保护已确认盈利；可选研究参数，默认 0 关闭）
+                    stop_price = max(stop_price, close_price * (1.0 - float(ramp_stop_pct) / 100.0))
+                elif ramp_full_lev > 0 and not ramped and float(ramp_pre_stop_pct) > 0:
+                    stop_price = max(stop_price, close_price * (1.0 - float(ramp_pre_stop_pct) / 100.0))
+                else:
+                    stop_price = max(stop_price, close_price * (1.0 - float(stop_loss_pct) / 100.0))
+                # 保本锁：prev_close 相对入场价上涨 ≥ be_lock_pct → 止损底线上移到入场价。
+                # 无前视：用 prev_close（bar 开盘时已知），且要求 was_holding（入场 bar 自身不锁）。
+                if float(be_lock_pct) > 0 and not be_locked and was_holding and entry_price > 0 \
+                        and prev_close and prev_close >= entry_price * (1.0 + float(be_lock_pct) / 100.0):
+                    be_locked = True
+                if be_locked:
+                    stop_price = max(stop_price, entry_price)
 
         # --- shadow gate：权益回撤 → 冷却 ---
         equity_peak = max(equity_peak, capital)
@@ -509,6 +552,8 @@ def main() -> None:
     parser.add_argument("--stop-loss-pct", type=float, default=None)
     parser.add_argument("--ramp-confirm-pct", type=float, default=None,
                         help="杠杆爬坡确认阈值（%），覆盖 config.ramp_confirm_pct")
+    parser.add_argument("--ramp-pre-stop-pct", type=float, default=None,
+                        help="爬坡确认前收紧止损（%），覆盖 config.ramp_pre_stop_pct")
     parser.add_argument("--sweep", action="store_true", help="杠杆结构扫描")
     parser.add_argument("--no-funding", action="store_true", help="忽略 funding 成本")
     args = parser.parse_args()
@@ -539,10 +584,12 @@ def main() -> None:
             "flat": 0.0,
         }
     ramp_pct = float(args.ramp_confirm_pct if args.ramp_confirm_pct is not None else config.get("ramp_confirm_pct", 0.0))
+    ramp_pre_stop_pct = float(args.ramp_pre_stop_pct if args.ramp_pre_stop_pct is not None else config.get("ramp_pre_stop_pct", 0.0))
     result = run_googl_4h_replay(
         merged, funding,
         leverage_tiers=tiers,
         ramp_confirm_pct=ramp_pct,
+        ramp_pre_stop_pct=ramp_pre_stop_pct,
         stop_loss_pct=float(args.stop_loss_pct if args.stop_loss_pct is not None else config.get("stop_loss_pct", 4.0)),
         taker_fee_rate=float(config.get("taker_fee_rate", 0.0005)),
         slippage_bps=float(config.get("slippage_bps", 5.0)),
@@ -559,6 +606,7 @@ def main() -> None:
             "frozen_label": config.get("frozen_label"),
             "leverage_tiers": tiers,
             "ramp_confirm_pct": ramp_pct,
+            "ramp_pre_stop_pct": ramp_pre_stop_pct,
             "stop_loss_pct": float(args.stop_loss_pct if args.stop_loss_pct is not None else config.get("stop_loss_pct", 4.0)),
             "taker_fee_rate": float(config.get("taker_fee_rate", 0.0005)),
             "slippage_bps": float(config.get("slippage_bps", 5.0)),
