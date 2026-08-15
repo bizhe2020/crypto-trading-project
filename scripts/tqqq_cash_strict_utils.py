@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -250,6 +251,59 @@ def drawdown_overlay_trigger(
     return candidate_step_idx >= 0, allocation
 
 
+def _parse_reset_threshold(raw: str) -> float:
+    text = str(raw).strip().lower().replace("pct", "").replace("%", "")
+    if text.startswith("m") and len(text) > 1:
+        text = "-" + text[1:]
+    text = text.replace("p", ".")
+    return float(text)
+
+
+def build_hard_exit_reset_mask(frame: pd.DataFrame, signal_name: str, allow_mask: pd.Series) -> pd.Series:
+    name = str(signal_name or "main_desired").strip()
+    if name in {"", "main", "main_desired", "desired_today", "signal_reset"}:
+        return ((frame["entry_signal"].astype(int) > 0) & allow_mask.reset_index(drop=True)).fillna(False)
+
+    close_match = re.fullmatch(r"(qqq|ixic|tqqq)_close_gt_ma(\d+)", name)
+    if close_match:
+        source, window_text = close_match.groups()
+        column = f"{source}_close"
+        if column not in frame.columns:
+            raise ValueError(f"Unsupported hard-exit reset signal source: {source}")
+        window = int(window_text)
+        return (frame[column].astype(float) > frame[column].astype(float).rolling(window).mean()).fillna(False)
+
+    mom_match = re.fullmatch(r"(qqq|ixic|tqqq)_mom(\d+)_ge_(-?m?\d+(?:[p.]\d+)?)(?:pct|%)?", name)
+    if mom_match:
+        source, window_text, threshold_text = mom_match.groups()
+        column = f"{source}_close"
+        if column not in frame.columns:
+            raise ValueError(f"Unsupported hard-exit reset signal source: {source}")
+        window = int(window_text)
+        threshold_pct = _parse_reset_threshold(threshold_text)
+        momentum_pct = (frame[column].astype(float) / frame[column].astype(float).shift(window) - 1.0) * 100.0
+        return (momentum_pct >= threshold_pct).fillna(False)
+
+    ma_match = re.fullmatch(r"qqq_ma(\d+)_gt_ma(\d+)", name)
+    if ma_match:
+        fast_text, slow_text = ma_match.groups()
+        fast = int(fast_text)
+        slow = int(slow_text)
+        if fast >= slow:
+            raise ValueError(f"Invalid hard-exit reset MA pair: {name}")
+        close = frame["qqq_close"].astype(float)
+        return (close.rolling(fast).mean() > close.rolling(slow).mean()).fillna(False)
+
+    both_match = re.fullmatch(r"qqq_ixic_close_gt_ma(\d+)", name)
+    if both_match:
+        window = int(both_match.group(1))
+        qqq = frame["qqq_close"].astype(float)
+        ixic = frame["ixic_close"].astype(float)
+        return ((qqq > qqq.rolling(window).mean()) & (ixic > ixic.rolling(window).mean())).fillna(False)
+
+    raise ValueError(f"Unsupported hard-exit reset signal: {signal_name}")
+
+
 def strict_overlay_trade_stats(path: pd.DataFrame) -> dict[str, Any]:
     if path.empty:
         return {
@@ -345,6 +399,8 @@ def run_strict_candidate(
     de_risk_signal_name: str = "off",
     recovery_reentry_rule: str = "off",
     recovery_reentry_cooldown_days: int = 0,
+    hard_exit_reset_signal: str = "main_desired",
+    hard_exit_reset_reentry_delay_bars: int = 0,
     drawdown_ladder_enabled: bool = False,
     drawdown_ladder_source: str = "tqqq",
     drawdown_ladder_threshold_pct: float = 0.0,
@@ -355,10 +411,14 @@ def run_strict_candidate(
     drawdown_ladder_max_hold_days: int = 15,
 ) -> dict[str, Any]:
     allow_mask = build_allow_mask(frame, regime_filter)
+    hard_reset_mask = build_hard_exit_reset_mask(frame, hard_exit_reset_signal, allow_mask).reset_index(drop=True)
     capital = float(initial_capital)
     holding = False
     pending_exit = False
     exit_override = False
+    exit_reset_delay_left = 0
+    exit_reset_count = 0
+    exit_blocked_days = 0
     hold_days = 0
     rolling_peak = 0.0
     previous_close = 0.0
@@ -403,11 +463,17 @@ def run_strict_candidate(
         if idx > 0:
             base_desired_today = bool(int(frame.iloc[idx - 1]["entry_signal"]) > 0 and bool(allow_mask.iloc[idx - 1]))
             desired_today = base_desired_today or recovery_trigger or ladder_trigger or (overlay_mode and bool(int(frame.iloc[idx - 1]["entry_signal"]) > 0))
+            hard_reset_active_today = bool(hard_reset_mask.iloc[idx - 1])
         else:
             base_desired_today = False
+            hard_reset_active_today = False
 
-        if exit_override and not desired_today:
+        if exit_override and not hard_reset_active_today:
             exit_override = False
+            exit_reset_delay_left = max(int(hard_exit_reset_reentry_delay_bars), 0)
+            exit_reset_count += 1
+        elif exit_override and desired_today:
+            exit_blocked_days += 1
 
         if holding and previous_close > 0:
             capital *= float(row["tqqq_open"]) / previous_close
@@ -433,7 +499,8 @@ def run_strict_candidate(
             overlay_entry_close = 0.0
             overlay_exit_reason = ""
 
-        if (not holding) and desired_today and not exit_override:
+        can_enter_today = desired_today and not exit_override and exit_reset_delay_left <= 0
+        if (not holding) and can_enter_today:
             action_cost += float(switch_cost_bps) / 10000.0
             capital *= 1.0 - float(switch_cost_bps) / 10000.0
             holding = True
@@ -458,8 +525,11 @@ def run_strict_candidate(
                 overlay_allocation = 1.0
                 overlay_days = 0
                 overlay_entry_close = 0.0
-        elif (not holding) and recovery_cooldown_left > 0:
-            recovery_cooldown_left -= 1
+        elif not holding:
+            if recovery_cooldown_left > 0:
+                recovery_cooldown_left -= 1
+            if exit_reset_delay_left > 0:
+                exit_reset_delay_left -= 1
 
         trailing_exit = False
         time_exit = False
@@ -527,6 +597,9 @@ def run_strict_candidate(
                 "overlay_allocation": float(overlay_allocation),
                 "overlay_days": int(overlay_days),
                 "overlay_exit_reason": overlay_exit_reason,
+                "hard_exit_reset_active": bool(hard_reset_active_today),
+                "hard_exit_locked": bool(exit_override),
+                "hard_exit_reset_delay_left": int(exit_reset_delay_left),
                 "leverage": float(leverage),
                 "action_cost": float(action_cost),
             }
@@ -569,6 +642,11 @@ def run_strict_candidate(
             "avg_trade_return_pct": float(trade_stats["avg_trade_return_pct"]),
             "median_trade_return_pct": float(trade_stats["median_trade_return_pct"]),
             "overlay_entries": int(trade_stats["overlay_entries"]),
+            "hard_exit_reset_signal": str(hard_exit_reset_signal),
+            "hard_exit_reset_reentry_delay_bars": int(hard_exit_reset_reentry_delay_bars),
+            "hard_exit_reset_count": int(exit_reset_count),
+            "hard_exit_blocked_days": int(exit_blocked_days),
+            "hard_exit_locked": bool(exit_override),
         },
         "path": path,
     }

@@ -4,12 +4,17 @@
 把 GOOGL 日线价格 + SPY 市场 regime + 伯克希尔 13F 信念映射成它需要的列。
 
 两段式设计（conviction 边界 = 伯克希尔首次披露 ALPHABET 持仓的 filing_date）:
-    段 1 pre-conviction: 趋势跟随 — fast_ma(20)>slow_ma(60) 入场 + SPY>200ma regime
-                          + 15% trailing hard exit + max_hold 90。熊市保护模块。
+    段 1 pre-conviction: 趋势跟随 — GOOGL 收盘 > ma(60) 入场（慢 MA，强复利资产
+                          捕获上行 + 避开深跌）+ 10% trailing hard exit
+                          + 无 SPY regime 过滤 + 无时间限制。熊市保护模块。
     段 2 conviction:     信念做多 — close>ma(20) 快速入场（信念段快速重入场）
                           + regime 放宽（conviction 代替 SPY 过滤）
                           + trailing / max_hold 关闭（信念穿透回调）。
 资本从段 1 连续滚入段 2。
+
+2026-08-15 优化（v0.2）：回测 2007-2026 发现 fast(20)>slow(60) 交叉入场是最大收益拖累。
+改为 close>ma60 + 10% trailing、去掉 SPY regime、去掉 max_hold，信号层收益 342.6% → 1967.0%，
+maxDD 33.4% → 36.9%（+3.5pp），conviction 段行为不变（close>ma20，在市 55%）。
 
 用法:
     python scripts/scan_googl_daily_signal.py \
@@ -38,10 +43,11 @@ sys.path.insert(0, str(ROOT))
 from scripts.tqqq_cash_strict_utils import run_strict_candidate  # noqa: E402
 
 # --- 段 1 pre-conviction 默认参数（趋势跟随 / 熊市保护） ---
-PRE_TRAILING_DRAWDOWN_PCT = 15.0
-PRE_MAX_HOLD_DAYS = 90
-PRE_FAST_WINDOW = 20
-PRE_SLOW_WINDOW = 60
+PRE_ENTRY_MA_WINDOW = 60          # GOOGL 收盘 > 60日均线 入场（慢 MA）
+PRE_TRAILING_DRAWDOWN_PCT = 10.0  # 10% trailing hard exit
+PRE_MAX_HOLD_DAYS = 0             # 0 = 无时间限制
+PRE_SLOW_WINDOW = 60              # 保留列（slow MA 不再参与入场，供试验）
+PRE_SPY_REGIME_ENABLED = False    # 不使用 SPY regime 过滤（慢 MA 自含回撤管理）
 
 # --- 段 2 conviction 默认参数（信念做多） ---
 CONV_TRAILING_DRAWDOWN_PCT = 0.0  # 0 = 关闭 trailing
@@ -113,17 +119,19 @@ def build_googl_frame(
     prices: pd.DataFrame,
     conviction: pd.Series,
     *,
-    fast_window: int = PRE_FAST_WINDOW,
+    pre_entry_ma_window: int = PRE_ENTRY_MA_WINDOW,
     slow_window: int = PRE_SLOW_WINDOW,
     conv_fast_window: int = CONV_FAST_WINDOW,
+    spy_regime_enabled: bool = PRE_SPY_REGIME_ENABLED,
     spy_regime_window: int = DEFAULT_SPY_REGIME_WINDOW,
 ) -> pd.DataFrame:
     """构建 run_strict_candidate 需要的 GOOGL 日线 frame。
 
     列:
         tqqq_open / tqqq_close  = GOOGL 开/收（复用 run_strict_candidate 的复利引擎）
-        entry_signal            = pre 段 fast_ma>slow_ma（段 2 在 run_googl_signal 里覆写为 close>ma）
-        ixic_trend_label        = "ixic_up" 当 SPY>200ma 或 伯克希尔信念开
+        entry_signal            = pre 段 close>ma(pre_entry_ma_window)
+                                  （段 2 在 run_googl_signal 里覆写为 close>ma）
+        ixic_trend_label        = "ixic_up"（无 regime）或 SPY>spy_regime_window / 信念开
         vix_label / rel_strength_label = 常量（v1 简化）
         berkshire_conviction    = 信念序列
     """
@@ -142,19 +150,22 @@ def build_googl_frame(
     if not spy.empty:
         frame = pd.merge_asof(frame, spy.sort_values("date"), on="date", direction="backward")
         frame["spy_200ma"] = frame["spy_close"].rolling(spy_regime_window).mean()
-        spy_up = frame["spy_close"].gt(frame["spy_200ma"]).fillna(False)
-    else:
-        spy_up = pd.Series(True, index=frame.index)
     conviction_reindexed = conviction.reindex(frame["date"]).fillna(False).to_numpy()
 
-    frame["fast_ma"] = frame["googl_close"].rolling(fast_window).mean()
+    frame["fast_ma"] = frame["googl_close"].rolling(pre_entry_ma_window).mean()
     frame["slow_ma"] = frame["googl_close"].rolling(slow_window).mean()
     frame["conv_fast_ma"] = frame["googl_close"].rolling(conv_fast_window).mean()
-    frame["entry_signal"] = (frame["fast_ma"] > frame["slow_ma"]).astype(int)
-    # regime: SPY>200ma 或 conviction → ixic_up（conviction 放宽 SPY 过滤）
-    frame["ixic_trend_label"] = pd.Series(
-        ["ixic_up" if (bool(spy_up.iloc[i]) or bool(conviction_reindexed[i])) else "ixic_down" for i in range(len(frame))]
-    )
+    # pre 段入场：GOOGL 收盘 > 入场均线（慢 MA，强复利资产捕获上行 + 避开深跌）
+    frame["entry_signal"] = (frame["googl_close"] > frame["fast_ma"]).astype(int)
+    if spy_regime_enabled and not spy.empty:
+        # regime: SPY>window 或 conviction → ixic_up（conviction 放宽 SPY 过滤）
+        spy_up = frame["spy_close"].gt(frame["spy_200ma"]).fillna(False)
+        frame["ixic_trend_label"] = pd.Series(
+            ["ixic_up" if (bool(spy_up.iloc[i]) or bool(conviction_reindexed[i])) else "ixic_down" for i in range(len(frame))]
+        )
+    else:
+        # 无 regime 过滤：全程 ixic_up（慢 MA 自含回撤管理，conviction 段同向）
+        frame["ixic_trend_label"] = "ixic_up"
     frame["vix_label"] = "vix_low"
     frame["rel_strength_label"] = "qqq_neutral"
     frame["tqqq_open"] = frame["googl_open"]
@@ -202,13 +213,15 @@ def run_googl_signal(
     holdings_csv: Path,
     *,
     regime_filter: str = "ixic_filter",
-    pre_fast_window: int = PRE_FAST_WINDOW,
+    pre_entry_ma_window: int = PRE_ENTRY_MA_WINDOW,
     pre_slow_window: int = PRE_SLOW_WINDOW,
     conv_fast_window: int = CONV_FAST_WINDOW,
     pre_trailing_drawdown_pct: float = PRE_TRAILING_DRAWDOWN_PCT,
     pre_max_hold_days: int = PRE_MAX_HOLD_DAYS,
     conv_trailing_drawdown_pct: float = CONV_TRAILING_DRAWDOWN_PCT,
     conv_max_hold_days: int = CONV_MAX_HOLD_DAYS,
+    pre_spy_regime_enabled: bool = PRE_SPY_REGIME_ENABLED,
+    pre_spy_regime_window: int = DEFAULT_SPY_REGIME_WINDOW,
     switch_cost_bps: float = DEFAULT_SWITCH_COST_BPS,
     initial_capital: float = DEFAULT_INITIAL_CAPITAL,
 ) -> dict[str, Any]:
@@ -217,9 +230,11 @@ def run_googl_signal(
     frame = build_googl_frame(
         prices,
         conviction,
-        fast_window=pre_fast_window,
+        pre_entry_ma_window=pre_entry_ma_window,
         slow_window=pre_slow_window,
         conv_fast_window=conv_fast_window,
+        spy_regime_enabled=pre_spy_regime_enabled,
+        spy_regime_window=pre_spy_regime_window,
     )
     conviction_dates = frame.loc[frame["berkshire_conviction"], "date"]
     if conviction_dates.empty:

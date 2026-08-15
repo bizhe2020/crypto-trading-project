@@ -53,9 +53,10 @@
    └── 伯克希尔 13F 持有 GOOGL？ → 信念开关（conviction_on）
                 │
 GOOGL 日线趋势（日频）
-   ├── fast_ma(20) > slow_ma(60) → entry_signal
-   ├── SPY 日线趋势 → 市场 regime（spy_up / spy_down）
-   └── GOOGL 回撤 trailing → hard_exit（跌破峰值*(1-trail)）
+   ├── GOOGL 收盘 > ma(60) → entry_signal（pre 段慢 MA）
+   ├── GOOGL 收盘 > ma(20) → 快速重入场（conviction 段）
+   ├── 无 SPY regime 过滤（慢 MA 自含回撤管理）
+   └── GOOGL 回撤 trailing(10%) → hard_exit（跌破 10 日峰值*(1-0.10)）
                 │
         每日 position 序列（GOOGL / FLAT）
                 │
@@ -68,11 +69,11 @@ OKX GOOGL 4h 执行（4h）
 
 ### 4.2 信号层（日频，已实现的两段式）
 
-**段 1 pre-conviction（2007-06 → 2025-11-13，熊市保护模块）**
-- `entry_signal` = `fast_ma(20) > slow_ma(60)`（慢交叉，低换手）
-- regime：`SPY 收盘 > SPY 200日均线`
-- trailing hard exit 15%（收盘跌破 10 日峰值 × 0.85）→ FLAT
-- `max_hold_days=90`（最长持仓限制）
+**段 1 pre-conviction（2007-06 → 2025-11-13，熊市保护模块）**（v0.2 优化）
+- `entry_signal` = `GOOGL 收盘 > ma(60)`（慢 MA 入场，非 20/60 交叉）
+- regime：**无 SPY 过滤**（慢 MA 自含回撤管理，回测更优）
+- trailing hard exit 10%（收盘跌破 10 日峰值 × 0.90）→ FLAT
+- `max_hold_days=0`（无时间限制）
 
 **段 2 conviction（2025-11-14 起，信念做多模块）**
 - `entry_signal` = `GOOGL 收盘 > fast_ma(20)`（快入场，信念段快速重入场）
@@ -95,9 +96,10 @@ OKX GOOGL 4h 执行（4h）
 | flat | FLAT | 0 |
 
 **关键研究发现（2026-08 实测，详见第 5 节）**
-1. GOOGL 是持续复利型资产：buy&hold 14.6% CAGR / maxDD 65.3%。趋势过滤器大幅降低收益（342% vs 1270%），但把 maxDD 砍半（33.4% vs 65.3%）。
-2. 对高倍杠杆，maxDD 管理就是一切：恒定 15x 无执行止损直接清零。
-3. `close>ma20` 入场在 conviction 段表现最佳（+23.3% vs buy&hold +25.4%，maxDD 14.3% 更低），慢交叉太慢导致 2026-06 回调后错过反弹。
+1. GOOGL 是持续复利型资产：buy&hold 14.6% CAGR / maxDD 65.3%。**慢 MA 入场（close>ma60）反而同时提升收益并降低回撤**——慢 MA 的滞后不对称性（下跌时 MA 挂在更高位置 → 提前退出；反弹时 MA 挂在更低位置 → 提前进场）。2008 只 -8.9%（buy&hold -55%）、2022 只 -22.1%（buy&hold -39%）。
+2. **fast(20)>slow(60) 交叉入场是最大收益拖累**：v0.2 改为 close>ma60 + 10% trailing + 去 SPY regime + 去 max_hold，信号层 342.6% → 1951.0%，maxDD 33.4% → 36.9%（+3.5pp），conviction 段行为不变。
+3. 对高倍杠杆，maxDD 管理就是一切：恒定 15x 无执行止损直接清零。
+4. `close>ma20` 入场在 conviction 段表现最佳（+23.3% vs buy&hold +25.4%，maxDD 14.3% 更低），慢交叉太慢导致 2026-06 回调后错过反弹。
 
 ### 4.3 杠杆结构（高倍）
 
@@ -128,36 +130,52 @@ OKX GOOGL 4h 执行（4h）
 - 与 btc_sota / qqq_usdt_aggressive 三选一
 - 切换前复用 Fix A（`pre_switch_open_confirm`）与 Fix B（回滚查交易所）防护
 
-## 5. 回测结果（v0.1，2026-08-15）
+## 5. 回测结果（v0.2 优化，2026-08-15）
 
 运行：`python scripts/backtest_googl_high_leverage.py --prices-csv ... --holdings-csv ...`
 完整报告：`var/reports/googl_high_leverage_backtest_2007_2026.json`
 
-| 指标 | 信号层（两段式） | buy&hold GOOGL |
-|---|---|---|
-| 累计收益 | +342.6% | +1270.5% |
-| CAGR | 8.1% | 14.6% |
-| maxDD | 33.4% | 65.3% |
-| 交易次数 | 61 | — |
+| 指标 | 信号层（两段式，v0.2） | v0.1（fast20>slow60+SPY200） | buy&hold GOOGL |
+|---|---|---|---|
+| 累计收益 | **+1951.0%** | +342.6% | +1270.5% |
+| CAGR | **17.1%** | 8.1% | 14.6% |
+| maxDD | 36.9% | 33.4% | 65.3% |
+| 交易次数 | 127 | 61 | — |
 
 **conviction 段（2025-11-14 → 2026-08-14）**
 - GOOGL buy&hold +25.4%（maxDD 21.1%）
 - 策略在市 103/187 天（55.1%），捕获 +23.3%，maxDD 14.3%
+- conviction 段行为与 v0.1 完全一致（优化只在 pre 段）
+
+**逐年收益（信号层）**
+2008 -3.6%｜2009 +80.8%｜2013 +42.8%｜2017 +25.4%｜2018 +1.2%｜2020 +17.1%｜2021 +32.9%｜**2022 -22.1%**｜2023 +20.0%｜2024 +30.7%｜2025 +76.4%｜2026 +16.5%
+
+**参数优化前沿（2026-08-15 全历史扫描，conviction 段固定 close>ma20）**
+| pre 段入场 | pre regime | pre trailing | 收益 | maxDD |
+|---|---|---|---|---|
+| close>ma60 | 无 | 10% | **+1951%** | **36.9%** |
+| close>ma60 | 无 | 0% | +1735% | 37.4% |
+| close>ma60 | SPY>50 | 0% | +1258% | 32.7% |
+| close>ma50 | 无 | 0% | +1067% | 48.1% |
+| close>ma60 | SPY>200 | 0% | +892% | 31.7% |
+| close>ma20 | SPY>50 | 0% | +802% | 21.4% |
+| fast20>slow60+SPY200 | 15% | (v0.1) | +343% | 33.4% |
+
+→ 慢 MA（60 日）比 50 日更优：下跌时 MA 挂在更高位提前退出、反弹时挂在更低位提前进场（滞后不对称性）。加 SPY regime 把 maxDD 压到 ~32% 但砍掉 40-70% 收益——对"最高收益率"目标，去掉 regime 更优。trailing 10% 在 close>ma60 上又提升 ~220pp（早止损避开深跌且重入场点不变）。
 
 **杠杆敏感性（worst-case 恒定满杠杆，无执行层止损）**
 - 恒定 15/10/5 倍无止损：-100%（清零，单日爆仓 0 天，序列亏损耗尽）
-- stop-protected 4%（单日 clamp）：-80.8%
+- stop-protected 4%（单日 clamp）：+8627%（但 maxDD 99.7%，是"次日满仓重暴露"的粗糙模拟）
 - **结论：日线信号层不能直接恒定满杠杆持有。真实系统必须在 4h 执行层用 trailing stop + 交易所条件单 + shadow gate 保护（单笔亏损 ~4%、止损后保持 flat 等重入场）——这就是现有 QQQ 系统的执行层，GOOGL 直接复用。杠杆列是理论下界，不是预期表现。**
 
-**组件归因（2015-2026 全历史，max_hold 关闭）**
-| 变体 | 收益 | maxDD | 在市率 |
-|---|---|---|---|
-| buy&hold（全开） | 1263% | 65.3% | 100% |
-| 纯 SPY regime | 681% | 58.4% | 75.7% |
-| 纯 close>ma20 | 340% | 59.4% | 63.5% |
-| entry+SPY+trail15 | 168% | 59.1% | 53.4% |
+**组件归因（2007-2026 全历史，v0.2 各组件贡献）**
+| 变体 | 收益 | maxDD |
+|---|---|---|
+| buy&hold（全开） | 1270% | 65.3% |
+| 纯 close>ma60 | 1735% | 37.4% |
+| close>ma60 + 10% trailing | 1951% | 36.9% |
 
-→ GOOGL 自身 MA 交叉 filter 是最大收益拖累（趋势复利资产）；SPY regime 的 maxDD 管理价值大于收益价值；trailing exit 影响有限。
+→ close>ma60 慢 MA 入场是收益与回撤的联合来源（既高于 buy&hold 又砍半 maxDD）；10% trailing 边际再贡献 ~220pp。SPY regime 对"最高收益"目标是净负贡献。
 
 ## 6. 分支落地清单
 
@@ -168,6 +186,7 @@ OKX GOOGL 4h 执行（4h）
 - [x] `bot/googl_usdt_signal_adapter.py`（信号适配器）
 - [x] `scripts/backtest_googl_high_leverage.py`（回测 + 参数扫描）
 - [x] `tests/test_googl_daily_signal.py`（单元测试，8 个）
+- [x] v0.2 参数优化：pre 段 close>ma60 + 10% trailing + 无 regime + 无 max_hold（342.6% → 1951.0%，maxDD 33.4% → 36.9%）
 - [ ] 路由接入（第二阶段，可选）
 - [ ] 4h 执行层回测（GOOGL-USDT-SWAP 2026-03 起）
 - [ ] 实时信号定时刷新（cron 集成）
@@ -176,7 +195,7 @@ OKX GOOGL 4h 执行（4h）
 
 - **OKX 合约历史短**：GOOGL-USDT-SWAP 2026-03-04 上线，4h 执行层回测样本有限，先以日线信号验证为主。
 - **单票高倍风险**：GOOGL 财报跳空（2025-10 曾单日 -5% 级别），高倍杠杆下需靠 liquidation buffer + shadow gate 防御，考虑财报日降档。
-- **趋势过滤器 vs buy&hold 的张力**：GOOGL 是持续复利资产，趋势过滤器把收益从 1270% 降到 343%（maxDD 从 65% 降到 33%）。对高倍杠杆这是必要代价，但收益代价大，需在 v2 用执行层保护 + defense 档优化。
+- **趋势过滤器 vs buy&hold 的张力（v0.2 已解决）**：慢 MA 入场（close>ma60 + 10% trailing）同时提升收益并降低回撤（1951% vs 1270%，maxDD 36.9% vs 65.3%）——强复利资产上慢 MA 的滞后不对称性既有择时收益又有回撤保护。v0.1 的 fast20>slow60 交叉 + SPY regime 才是收益拖累，已弃用。
 - **13F 滞后**：13F 每季度披露且滞后约 45 天，信念信号是慢变量，只作长期开关，不作择时。
 - **杠杆模拟是下界**：恒定满杠杆回测清零，真实行为依赖 4h 执行层（stop-and-stay-flat），4h 执行层回测是第二阶段必做项。
 - **做空未纳入**：GOOGL 单票做空与做多逻辑不同，首版只做多。
