@@ -220,6 +220,34 @@ OKX GOOGL 4h 执行（4h）
 
 **归因**：高杠杆收益来自牛市单边段（2026-04/05）；回撤来自财报跳空止损（2025-11-17 首笔 conviction 交易 -42%、2026-03-18 -39%）——单票高倍的本质是"用 maxDD 换 CAGR"，0.75x 是 2024-2026 这个窗口的收益/回撤拐点。
 
+### 5.3 比特币聪明钱（SMC）迁移研究（2026-08-16，结论：不迁移）
+
+**问题**：能否把 BTC 的 SMC/ICT 策略（流动性扫掠 → MSS → FVG/OTE 回踩，15m+4h，`research_smc_standalone_v1.py`）直接用于 GOOGL 提升收益？
+
+**数据**：`scripts/build_googl_4h_from_minute.py --tf 15m` 生成 GOOGL 15m bars（41,081 根，2024-01→2026-08，含盘前/盘后，`data/okx/futures/GOOGL_USDT_USDT-15m-futures.feather`）。
+
+**结果 1 — 独立 SMC 策略在 GOOGL 上亏损，各配置皆然**（同窗口 2024-01→2026-08 与 BTC 对照，默认参数 require-confirmed-retest + fvg-touch + htf-bias-align）：
+
+| 配置 | BTC BULL | GOOGL BULL | GOOGL 全部 |
+|---|---|---|---|
+| 默认（target 2R） | 64 笔 / 46.9% 胜 / +28.7% | 33 笔 / 24.2% / -8.9% | 49 笔 / 24.5% / -12.6% |
+| NY 时段 only | — | 9 笔 / 11.1% / -5.9% | 12 笔 / 16.7% / -5.9% |
+| 取消 bias 对齐 | — | 103 笔 / 27.2% / -18.1% | 196 笔 / 27.6% / -30.1% |
+
+target RR 1/1.5/3R 扫过：胜率 43%/31%/11%，盈亏平衡需 50%/40%/25%——**系统性低于盈亏平衡 ~9pp**，非校准问题。前向收益检验：BULL 设定入场后有微小正向漂移（+0.15pp，4-24 bar），但 2R/-1R 结构要求 33% 胜率而只有 24%——微小漂移被止损成本吞噬。
+
+**结果 2 — SMC 高阶结构 bias 过滤器（"只顺 4h 结构做"）在 4h 执行层上摧毁收益**（`scripts/research_googl_htf_bias_filter.py`，含前视修正 asof_lag=2）：
+
+| 过滤 | 收益 | maxDD | 交易/胜率 |
+|---|---|---|---|
+| 基线 | +535% | 79.0% | 17/47% |
+| 仅 4h 结构 BULL 时交易 | **-98.8%** | 98.9% | 150/42% |
+| BULL 或 NONE（排除 BEAR） | -1.1% | 95.2% | 142/49% |
+
+> ⚠️ **前视泄漏陷阱**：最初 naive 版本（bias 用当前 bar，含 idx 处 swing）得到 +3009%/maxDD 71%，看似惊艳。但 `precompute_swings(n=2)` 的 swing 需 candle i+1 确认，bar-open 决策时可用信息只到 idx-1 close → 正确 as-of 是 `htf_structure_bias(..., idx-2)`。修正后边缘完全消失。**任何 4h/15m 结构信号若未严格消除 swing 确认滞后，都会虚报收益。**
+
+**结论**：BTC 聪明钱策略**不能**提升 GOOGL 收益。SMC 边缘是 24/7 加密微观结构现象（全局流动性扫掠），迁移到有交易时段跳空的美股不成立；把 4h 快速结构当执行层过滤器，只会把日线趋势策略磨成噪音交易（-98.8%）。GOOGL 的最优策略仍是 §5.2 的日线趋势 + 0.75x 杠杆配置。
+
 ## 6. 分支落地清单
 
 - [x] 新分支 `feature/googl-high-leverage-strategy`
@@ -234,6 +262,7 @@ OKX GOOGL 4h 执行（4h）
 - [x] `scripts/build_googl_4h_from_minute.py`（真实分钟数据 → 4h UTC bars 重采样）
 - [x] `tests/test_googl_4h_execution.py`（4h 执行层单元测试，8 个，含跳空击穿止损回归）
 - [x] v0.3 真实数据 4h 执行回测定档：15x/10x 被严格支配 → 0.75x 乘数（offense 11.2/base 7.5/defense 3.8），+535%/maxDD 79%（§5.2）
+- [x] SMC 迁移研究（§5.3，负结果）：15m GOOGL 独立 SMC 亏损、4h 结构 bias 过滤器摧毁收益；结论 BTC 聪明钱策略不迁移 GOOGL
 - [ ] 路由接入（第二阶段，可选）
 - [ ] 实盘前实测 GOOGL-USDT-SWAP 真实 funding 费率（高杠杆下资金费是最大未定量）
 - [ ] 实时信号定时刷新（cron 集成）
