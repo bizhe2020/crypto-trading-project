@@ -168,6 +168,23 @@ OKX GOOGL 4h 执行（4h）
 - stop-protected 4%（单日 clamp）：+8627%（但 maxDD 99.7%，是"次日满仓重暴露"的粗糙模拟）
 - **结论：日线信号层不能直接恒定满杠杆持有。真实系统必须在 4h 执行层用 trailing stop + 交易所条件单 + shadow gate 保护（单笔亏损 ~4%、止损后保持 flat 等重入场）——这就是现有 QQQ 系统的执行层，GOOGL 直接复用。杠杆列是理论下界，不是预期表现。**
 
+### 5.1 杠杆可行性前沿（2026-08-15）
+
+**日频逐笔模型（无日内保护）**：1x CAGR 18.4%（maxDD 33.8%）→ 2x 34.5%/58% → 3x 46.7%/75% → 5x 53.8%/92.5% → **10x -100%（清零）**。
+**结论：原配置 10x/15x 在日频信号上不可行，3-5x 是收益/回撤甜点。**
+
+**conviction 段单独看（2025-11-14 起，1x maxDD 仅 10.5%）**：
+| 杠杆 | 9个月收益 | 年化 | maxDD |
+|---|---|---|---|
+| 3x | +116% | 180% | 30.5% |
+| 5x | +198% | 332% | 48.6% |
+| 10x | +253% | 441% | 81.9% |
+| 15x | +49% | 71% | 96.4%（接近清零） |
+
+→ 信念让 conviction 段平滑（maxDD 10.5% vs 全历史 33.8%），支撑 3-5x 甚至 10x；但 15x 仍不可行。**杠杆动机在 conviction 段成立，前提是把 offense 从 15x 降到 5x 左右。**
+
+**4h 执行层回测**：`scripts/replay_googl_usdt_4h.py`（日线信号 + 4h trailing stop + fee/slippage×杠杆 + funding + shadow gate）让 10x 在 conviction 段不再清零（合成数据 +941%/maxDD 71%，真实数据待用户捞取）。日频模型看不到的日内止损正是 10x 存活的钥匙——但最终杠杆档位需真实 4h 数据验证。
+
 **组件归因（2007-2026 全历史，v0.2 各组件贡献）**
 | 变体 | 收益 | maxDD |
 |---|---|---|
@@ -187,8 +204,10 @@ OKX GOOGL 4h 执行（4h）
 - [x] `scripts/backtest_googl_high_leverage.py`（回测 + 参数扫描）
 - [x] `tests/test_googl_daily_signal.py`（单元测试，8 个）
 - [x] v0.2 参数优化：pre 段 close>ma60 + 10% trailing + 无 regime + 无 max_hold（342.6% → 1951.0%，maxDD 33.4% → 36.9%）
+- [x] `scripts/replay_googl_usdt_4h.py`（4h 执行层回测：日线信号 + 4h trailing stop + fee/slippage×杠杆 + funding + shadow gate，`--sweep` 杠杆扫描）
+- [x] `tests/test_googl_4h_execution.py`（4h 执行层单元测试，7 个）
 - [ ] 路由接入（第二阶段，可选）
-- [ ] 4h 执行层回测（GOOGL-USDT-SWAP 2026-03 起）
+- [ ] 4h 执行层回测真实数据验证（GOOGL-USDT-SWAP 更长历史，用户捞取中）
 - [ ] 实时信号定时刷新（cron 集成）
 
 ## 7. 风险与未决问题
@@ -199,4 +218,4 @@ OKX GOOGL 4h 执行（4h）
 - **13F 滞后**：13F 每季度披露且滞后约 45 天，信念信号是慢变量，只作长期开关，不作择时。
 - **杠杆模拟是下界**：恒定满杠杆回测清零，真实行为依赖 4h 执行层（stop-and-stay-flat），4h 执行层回测是第二阶段必做项。
 - **做空未纳入**：GOOGL 单票做空与做多逻辑不同，首版只做多。
-- **20x 上限**：合约支持 20x，但设计默认 offense 15x、base 10x，具体以回测清算风险为准。
+- **20x 上限 vs 可行性**：合约支持 20x，但回测（§5.1）表明日频信号上 10x 清零、15x 接近清零；conviction 段可行上限 ~10x、建议 offense 5x。**当前 config 的 15x/10x 档待 4h 真实数据验证后下调**，在 4h 执行层回测确认前不应按 15x 实盘。
