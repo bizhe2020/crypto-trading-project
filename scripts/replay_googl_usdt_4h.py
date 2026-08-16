@@ -501,6 +501,7 @@ def run_googl_4h_replay(
         },
         "trades": trades_df.to_dict("records"),
         "gate_events": gate_events,
+        "path": path,
     }
 
 

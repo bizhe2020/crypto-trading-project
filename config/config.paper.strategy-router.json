@@ -8,7 +8,7 @@
   "enable_qqq": true,
   "enable_googl": true,
   "btc_min_route_score": 35.0,
-  "qqq_min_route_score": 96.0,
+  "qqq_min_route_score": 98.0,
   "googl_min_route_score": 0.0,
   "switch_advantage": 6.0,
   "btc_takeover_advantage": 6.0,
