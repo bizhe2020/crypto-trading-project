@@ -119,6 +119,7 @@ fi
   bot/qqq_usdt_signal_adapter.py \
   bot/googl_usdt_signal_adapter.py \
   scripts/fetch_public_etf_history.py \
+  scripts/fetch_googl_daily_prices.py \
   scripts/refresh_qqq_risk_runtime_inputs.py \
   scripts/scan_qqq_usdt_4h_triggers.py \
   scripts/scan_googl_daily_signal.py

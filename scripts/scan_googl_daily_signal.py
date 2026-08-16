@@ -18,13 +18,16 @@ maxDD 33.4% → 36.9%（+3.5pp），conviction 段行为不变（close>ma20，�
 
 用法:
     python scripts/scan_googl_daily_signal.py \
-        --prices-csv /path/to/价值投资project/data/prices.csv \
-        --holdings-csv /path/to/价值投资project/data/berkshire_13f_holdings.csv \
+        --prices-csv /root/projects/value_data/prices.csv \
+        --holdings-csv /root/projects/value_data/berkshire_13f_holdings.csv \
         --out var/runtime/googl/googl_daily_signal.csv
 
-数据源:
-    prices.csv       ticker,date,open,close,basis（前复权）
+数据源（东京服务器自闭环，无本地依赖）:
+    prices.csv       ticker,date,open,close
+                     由 scripts/fetch_googl_daily_prices.py 从 Yahoo chart API
+                     每日拉取（与 QQQ 风险刷新同源）。
     holdings.csv     filing_date,report_date,issuer_name,shares,value_usd
+                     伯克希尔 13F 持仓，一次性历史事实，随部署固化在服务器。
 """
 
 from __future__ import annotations
