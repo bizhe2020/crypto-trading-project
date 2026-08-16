@@ -5,14 +5,20 @@
   "qqq_strategy_config": "config/config.paper.qqq-usdt-aggressive-runtime.json",
   "enable_btc": true,
   "enable_qqq": true,
+  "enable_googl": true,
   "btc_min_route_score": 35.0,
   "qqq_min_route_score": 96.0,
+  "googl_min_route_score": 0.0,
   "switch_advantage": 6.0,
   "btc_takeover_advantage": 6.0,
   "qqq_takeover_advantage": 6.0,
+  "googl_takeover_advantage": 6.0,
+  "googl_execution_enabled": false,
+  "googl_strategy_config": "config/config.paper.googl-high-leverage-runtime.json",
   "strategy_priority": [
     "btc_sota",
-    "qqq_usdt_aggressive"
+    "qqq_usdt_aggressive",
+    "googl_usdt_aggressive"
   ],
   "persist_state": true,
   "execution_enabled": true,

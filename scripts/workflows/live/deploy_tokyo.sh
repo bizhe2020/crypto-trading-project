@@ -97,6 +97,8 @@ cd '${TOKYO_PROJECT_DIR}'
 python3 -m json.tool config/config.paper.qqq-usdt-aggressive-frozen.json >/dev/null
 python3 -m json.tool config/config.paper.qqq-usdt-aggressive-runtime.json >/dev/null
 python3 -m json.tool config/config.live.strategy-router.template.json >/dev/null
+python3 -m json.tool config/config.paper.googl-high-leverage-runtime.json >/dev/null
+python3 -m json.tool config/config.paper.googl-high-leverage-frozen.json >/dev/null
 if [ '${SYNC_ROUTER_LIVE_CONFIG}' = '1' ]; then
   cp '${TOKYO_ROUTER_CONFIG_PATH}' '${BACKUP_DIR}/config.live.strategy-router.json.before'
   cp config/config.live.strategy-router.template.json '${TOKYO_ROUTER_CONFIG_PATH}'
@@ -115,9 +117,11 @@ fi
   bot/qqq_shadow_gate.py \
   bot/qqq_usdt_executor.py \
   bot/qqq_usdt_signal_adapter.py \
+  bot/googl_usdt_signal_adapter.py \
   scripts/fetch_public_etf_history.py \
   scripts/refresh_qqq_risk_runtime_inputs.py \
-  scripts/scan_qqq_usdt_4h_triggers.py
+  scripts/scan_qqq_usdt_4h_triggers.py \
+  scripts/scan_googl_daily_signal.py
 "
 
 if [[ "$RESTART_SERVICE" == "1" ]]; then

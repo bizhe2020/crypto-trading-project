@@ -441,6 +441,76 @@ def test_router_keeps_current_below_entry_threshold_when_no_challenger() -> None
     assert reason == "hold_current_no_challenger"
 
 
+def _googl_shadow_router(*, execution_enabled: bool) -> StrategyRouter:
+    return StrategyRouter(
+        StrategyRouterConfig(
+            mode="paper",
+            state_path="state/test_strategy_router.json",
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            enable_googl=True,
+            googl_execution_enabled=execution_enabled,
+            googl_min_route_score=0.0,
+            btc_min_route_score=35.0,
+            qqq_min_route_score=60.0,
+            switch_advantage=8.0,
+            persist_state=False,
+        )
+    )
+
+
+def test_googl_shadow_candidate_logged_but_not_selected() -> None:
+    """googl_execution_enabled=False：GOOGL 高分活跃候选仍进入 candidates 被记录，
+    但绝不被选中，QQQ/BTC 路由不受影响。"""
+    router = _googl_shadow_router(execution_enabled=False)
+    router.btc_adapter = _FakeAdapter(RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0))
+    router.qqq_adapter = _FakeAdapter(RoutedSignalCandidate("qqq_usdt_aggressive", "QQQ/USDT:USDT", True, 100.0))
+    router.googl_adapter = _FakeAdapter(
+        RoutedSignalCandidate("googl_usdt_aggressive", "GOOGL/USDT:USDT", True, 107.8)
+    )
+    payload = router.evaluate_latest(current_strategy_override=None)
+    assert payload["selected_strategy"] == "qqq_usdt_aggressive"
+    googl = next(c for c in payload["candidates"] if c["strategy_id"] == "googl_usdt_aggressive")
+    assert googl["active"] is True
+    assert googl["route_score"] == 107.8
+    assert googl["symbol"] == "GOOGL/USDT:USDT"
+
+
+def test_googl_shadow_cannot_takeover_current() -> None:
+    """影子 GOOGL 即使分数高于当前策略，也被排除在 challengers 外 → 当前策略原样保持。"""
+    router = _googl_shadow_router(execution_enabled=False)
+    router.btc_adapter = _FakeAdapter(RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0))
+    router.qqq_adapter = _FakeAdapter(RoutedSignalCandidate("qqq_usdt_aggressive", "QQQ/USDT:USDT", True, 100.0))
+    router.googl_adapter = _FakeAdapter(
+        RoutedSignalCandidate("googl_usdt_aggressive", "GOOGL/USDT:USDT", True, 107.8)
+    )
+    payload = router.evaluate_latest(current_strategy_override="qqq_usdt_aggressive")
+    assert payload["selected_strategy"] == "qqq_usdt_aggressive"
+    assert payload["decision_reason"] == "hold_current_no_challenger"
+    assert payload["selected_route_score"] == 100.0
+
+
+def test_googl_live_enabled_can_be_selected() -> None:
+    """googl_execution_enabled=True 时 GOOGL 恢复正常参与实盘路由选择。"""
+    router = _googl_shadow_router(execution_enabled=True)
+    router.btc_adapter = _FakeAdapter(RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0))
+    router.qqq_adapter = _FakeAdapter(RoutedSignalCandidate("qqq_usdt_aggressive", "QQQ/USDT:USDT", True, 100.0))
+    router.googl_adapter = _FakeAdapter(
+        RoutedSignalCandidate("googl_usdt_aggressive", "GOOGL/USDT:USDT", True, 107.8)
+    )
+    payload = router.evaluate_latest(current_strategy_override=None)
+    assert payload["selected_strategy"] == "googl_usdt_aggressive"
+    assert payload["decision_reason"] == "best_route_score"
+
+
+def test_live_router_template_googl_shadow_by_default() -> None:
+    """live 模板默认 enable_googl=true + googl_execution_enabled=false（影子模式）。"""
+    router = StrategyRouter.from_file(Path("config/config.live.strategy-router.template.json"))
+    assert router.config.enable_googl is True
+    assert router.config.googl_execution_enabled is False
+    assert router.config.googl_strategy_config.endswith("googl-high-leverage-runtime.json")
+
+
 def test_router_supports_asymmetric_takeover_advantage() -> None:
     router = StrategyRouter(
         StrategyRouterConfig(
