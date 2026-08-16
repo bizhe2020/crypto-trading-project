@@ -15,7 +15,7 @@ from bot.okx_client import OkxClient  # noqa: E402
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export OKX market metadata cache for offline router sizing.")
-    parser.add_argument("--symbols", nargs="+", default=["BTC/USDT:USDT", "QQQ/USDT:USDT"])
+    parser.add_argument("--symbols", nargs="+", default=["BTC/USDT:USDT", "QQQ/USDT:USDT", "GOOGL/USDT:USDT"])
     parser.add_argument("--output", default="var/okx/markets_cache.json")
     parser.add_argument("--proxy", default=None)
     args = parser.parse_args()
