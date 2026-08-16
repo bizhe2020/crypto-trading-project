@@ -89,6 +89,32 @@ class StrategyRouterConfig:
     qqq_profit_roll_cooldown_bars: int = 1
     qqq_profit_roll_skip_defense: bool = True
     qqq_profit_roll_min_notional_usdt: float | None = None
+    googl_state_db_path: str = "state/runtime_googl_usdt_router.db"
+    googl_margin_mode: str = "isolated"
+    googl_position_size_pct: float = 1.0
+    googl_sizing_basis: str = "available"
+    googl_sizing_cash_buffer_usdt: float = 0.0
+    googl_max_notional_usdt: float | None = None
+    googl_min_order_notional_usdt: float = 10.0
+    googl_min_rebalance_notional_usdt: float = 10.0
+    googl_min_rebalance_gap_ratio: float = 0.0
+    googl_rebalance_cooldown_seconds: float = 0.0
+    googl_rebalance_on_leverage_change: bool = True
+    googl_rebalance_on_notional_gap: bool = False
+    googl_max_close_order_contracts: float | None = None
+    googl_max_close_order_notional_usdt: float | None = None
+    googl_max_market_order_contracts: float | None = None
+    googl_market_order_chunk_delay_seconds: float = 0.0
+    googl_close_confirm_timeout_seconds: float = 15.0
+    googl_close_confirm_poll_seconds: float = 1.0
+    googl_close_chunk_delay_seconds: float = 0.2
+    googl_enable_exchange_stop: bool = False
+    googl_rebalance_risk_on_market_hours_only: bool = False
+    googl_market_hours_timezone: str = "America/New_York"
+    googl_market_hours_start: str = "09:30"
+    googl_market_hours_end: str = "16:00"
+    googl_market_calendar: str = "NYSE"
+    googl_switch_cooldown_seconds: float = 86400.0
     okx_markets_cache_path: str = "var/okx/markets_cache.json"
     telegram_enabled: bool = False
     telegram_token: str | None = None
@@ -112,6 +138,9 @@ class StrategyRouterConfig:
         if "qqq_rebalance_on_notional_gap" not in payload:
             basis = str(filtered.get("qqq_sizing_basis", cls.__dataclass_fields__["qqq_sizing_basis"].default) or "available").strip().lower()
             filtered["qqq_rebalance_on_notional_gap"] = basis in {"total_equity", "equity", "total"}
+        if "googl_rebalance_on_notional_gap" not in payload:
+            basis = str(filtered.get("googl_sizing_basis", cls.__dataclass_fields__["googl_sizing_basis"].default) or "available").strip().lower()
+            filtered["googl_rebalance_on_notional_gap"] = basis in {"total_equity", "equity", "total"}
         return cls(**filtered)
 
 
@@ -144,6 +173,7 @@ class StrategyRouter:
             "googl_strategy_config",
             "execution_credentials_config",
             "qqq_state_db_path",
+            "googl_state_db_path",
             "okx_markets_cache_path",
             "router_audit_log_path",
             "router_heartbeat_path",

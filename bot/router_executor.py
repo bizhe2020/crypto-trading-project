@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 
+from bot.googl_usdt_executor import GooglUsdtExecutionEngine
 from bot.okx_executor import OkxExecutionEngine
 from bot.qqq_usdt_executor import QqqUsdtExecutionEngine
 from bot.strategy_router import RoutedSignalCandidate, StrategyRouter
@@ -25,6 +26,7 @@ class StrategyRouterExecutionEngine:
         self.config = router.config
         self.btc_executor = OkxExecutionEngine.from_file(self.config.btc_strategy_config)
         self.qqq_executor = QqqUsdtExecutionEngine(self.config, self.config.qqq_strategy_config)
+        self.googl_executor = GooglUsdtExecutionEngine(self.config, self.config.googl_strategy_config)
         self.router.candidate_preprocessor = self._preprocess_route_candidates
         self.execution_state_path = self.router.state_path.with_suffix(self.router.state_path.suffix + ".execution")
         self.heartbeat_path = self._resolve_heartbeat_path()
@@ -40,6 +42,7 @@ class StrategyRouterExecutionEngine:
             "router_config": str(self.router.config_path),
             "btc": self.btc_executor.bootstrap(),
             "qqq": self.qqq_executor.bootstrap(),
+            "googl": self.googl_executor.bootstrap(),
         }
         if bool(self.config.telegram_notify_startup):
             self._send_telegram(self._format_startup_message(payload))
@@ -54,9 +57,13 @@ class StrategyRouterExecutionEngine:
         selected_candidate = route.get("selected_candidate") if isinstance(route.get("selected_candidate"), dict) else None
         qqq_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "qqq_usdt_aggressive" else None
         btc_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "btc_sota" else None
+        googl_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "googl_usdt_aggressive" else None
         external_qqq_flat_sync = self._sync_external_qqq_flat_after_route(position_sync, route)
         if external_qqq_flat_sync is not None:
             position_sync["qqq_external_flat_sync"] = external_qqq_flat_sync
+        external_googl_flat_sync = self._sync_external_googl_flat_after_route(position_sync, route)
+        if external_googl_flat_sync is not None:
+            position_sync["googl_external_flat_sync"] = external_googl_flat_sync
         execution_results: list[dict[str, Any]] = []
         risk_on_window = None
         if selected_strategy == "qqq_usdt_aggressive" and previous_executed != "qqq_usdt_aggressive":
@@ -87,6 +94,18 @@ class StrategyRouterExecutionEngine:
                         }
                     )
                     selected_strategy = previous_executed
+            if selected_strategy != "qqq_usdt_aggressive":
+                selected_candidate = self._candidate_payload_for_strategy(route, selected_strategy)
+                qqq_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "qqq_usdt_aggressive"
+                    else None
+                )
+                googl_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "googl_usdt_aggressive"
+                    else None
+                )
 
         if selected_strategy == "btc_sota" and previous_executed != "btc_sota":
             btc_shadow_gate = self._btc_pre_switch_status(btc_candidate)
@@ -109,6 +128,11 @@ class StrategyRouterExecutionEngine:
                     if selected_strategy == "qqq_usdt_aggressive"
                     else None
                 )
+                googl_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "googl_usdt_aggressive"
+                    else None
+                )
             elif not bool(btc_open_check.get("allow", True)):
                 execution_results.append(
                     {
@@ -127,11 +151,84 @@ class StrategyRouterExecutionEngine:
                     if selected_strategy == "qqq_usdt_aggressive"
                     else None
                 )
+                googl_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "googl_usdt_aggressive"
+                    else None
+                )
+
+        if selected_strategy == "googl_usdt_aggressive" and previous_executed != "googl_usdt_aggressive":
+            risk_on_window = self.googl_executor.risk_on_window_status()
+            if not bool(risk_on_window.get("open")):
+                execution_results.append(
+                    {
+                        "strategy": "googl_usdt_aggressive",
+                        "result": {
+                            "status": "skipped",
+                            "reason": "googl_risk_on_window_closed_before_switch",
+                            "market_window": risk_on_window,
+                        },
+                    }
+                )
+                selected_strategy = previous_executed
+            else:
+                shadow_gate = self.googl_executor.shadow_gate_pre_switch_status(googl_candidate)
+                if not bool(shadow_gate.get("allow", True)):
+                    execution_results.append(
+                        {
+                            "strategy": "googl_usdt_aggressive",
+                            "result": {
+                                "status": "skipped",
+                                "reason": "googl_shadow_gate_blocked_before_switch",
+                                "shadow_gate": shadow_gate,
+                            },
+                        }
+                    )
+                    selected_strategy = previous_executed
+            if selected_strategy != "googl_usdt_aggressive":
+                selected_candidate = self._candidate_payload_for_strategy(route, selected_strategy)
+                qqq_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "qqq_usdt_aggressive"
+                    else None
+                )
+                googl_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "googl_usdt_aggressive"
+                    else None
+                )
 
         rollback_context = None
         hold_incumbent = False
+        hold_incumbent_reason = "switch_rollback_cooldown_hold"
         if selected_strategy != previous_executed and previous_executed and bool(self.config.flatten_before_switch):
-            if self._switch_rollback_guard_active(previous_executed):
+            googl_cooldown_remaining = self._googl_switch_cooldown_remaining(previous_executed, selected_strategy)
+            if googl_cooldown_remaining is not None:
+                execution_results.append(
+                    {
+                        "strategy": selected_strategy,
+                        "result": {
+                            "status": "skipped",
+                            "reason": "googl_switch_cooldown",
+                            "cooldown_remaining_seconds": round(float(googl_cooldown_remaining), 1),
+                        },
+                    }
+                )
+                selected_strategy = previous_executed
+                selected_candidate = self._candidate_payload_for_strategy(route, selected_strategy)
+                qqq_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "qqq_usdt_aggressive"
+                    else None
+                )
+                googl_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "googl_usdt_aggressive"
+                    else None
+                )
+                hold_incumbent = True
+                hold_incumbent_reason = "googl_switch_cooldown_hold"
+            elif self._switch_rollback_guard_active(previous_executed):
                 execution_results.append(
                     {
                         "strategy": selected_strategy,
@@ -147,6 +244,11 @@ class StrategyRouterExecutionEngine:
                 qqq_candidate = (
                     self._candidate_from_payload(selected_candidate)
                     if selected_strategy == "qqq_usdt_aggressive"
+                    else None
+                )
+                googl_candidate = (
+                    self._candidate_from_payload(selected_candidate)
+                    if selected_strategy == "googl_usdt_aggressive"
                     else None
                 )
                 hold_incumbent = True
@@ -188,7 +290,7 @@ class StrategyRouterExecutionEngine:
                     "strategy": previous_executed,
                     "result": {
                         "status": "held",
-                        "reason": "switch_rollback_cooldown_hold",
+                        "reason": hold_incumbent_reason,
                     },
                 }
             )
@@ -248,12 +350,48 @@ class StrategyRouterExecutionEngine:
             elif bool(qqq_result.get("position_open")):
                 execution_results.append({"strategy": "qqq_usdt_aggressive", "result": qqq_result})
                 self._set_current_executed_strategy("qqq_usdt_aggressive")
+                if self._is_googl_switch(previous_executed, "qqq_usdt_aggressive"):
+                    self._record_googl_switch()
             else:
                 execution_results.append({"strategy": "qqq_usdt_aggressive", "result": qqq_result})
                 self._rollback_after_switch_failure(
                     previous_executed,
                     rollback_context,
                     reason="qqq_open_not_confirmed",
+                    execution_results=execution_results,
+                )
+        elif selected_strategy == "googl_usdt_aggressive":
+            candidate = googl_candidate or self._candidate_from_payload(selected_candidate)
+            googl_result = None
+            googl_error = None
+            try:
+                googl_result = self.googl_executor.evaluate_latest(candidate)
+            except Exception as exc:
+                googl_error = str(exc)
+            if googl_error is not None:
+                execution_results.append(
+                    {
+                        "strategy": "googl_usdt_aggressive",
+                        "result": {"status": "error", "reason": "googl_evaluate_latest_failed", "error": googl_error},
+                    }
+                )
+                self._rollback_after_switch_failure(
+                    previous_executed,
+                    rollback_context,
+                    reason="googl_evaluate_latest_failed",
+                    execution_results=execution_results,
+                )
+            elif bool(googl_result.get("position_open")):
+                execution_results.append({"strategy": "googl_usdt_aggressive", "result": googl_result})
+                self._set_current_executed_strategy("googl_usdt_aggressive")
+                if self._is_googl_switch(previous_executed, "googl_usdt_aggressive"):
+                    self._record_googl_switch()
+            else:
+                execution_results.append({"strategy": "googl_usdt_aggressive", "result": googl_result})
+                self._rollback_after_switch_failure(
+                    previous_executed,
+                    rollback_context,
+                    reason="googl_open_not_confirmed",
                     execution_results=execution_results,
                 )
         else:
@@ -288,11 +426,14 @@ class StrategyRouterExecutionEngine:
     def _preprocess_route_candidates(self, candidates: list[RoutedSignalCandidate]) -> list[RoutedSignalCandidate]:
         processed: list[RoutedSignalCandidate] = []
         for candidate in candidates:
-            if candidate.strategy_id != "qqq_usdt_aggressive":
+            if candidate.strategy_id not in ("qqq_usdt_aggressive", "googl_usdt_aggressive"):
                 processed.append(candidate)
                 continue
-            shadow_gate = self.qqq_executor.shadow_gate_observe_candidate(candidate)
-            if not bool(shadow_gate.get("allow", True)) and self._current_executed_strategy() != "qqq_usdt_aggressive":
+            executor = (
+                self.qqq_executor if candidate.strategy_id == "qqq_usdt_aggressive" else self.googl_executor
+            )
+            shadow_gate = executor.shadow_gate_observe_candidate(candidate)
+            if not bool(shadow_gate.get("allow", True)) and self._current_executed_strategy() != candidate.strategy_id:
                 metadata = dict(candidate.metadata)
                 metadata["shadow_gate"] = shadow_gate
                 metadata["shadow_gate_blocked"] = True
@@ -536,6 +677,8 @@ class StrategyRouterExecutionEngine:
             return {**sync, "current_executed_strategy": stored_strategy, "synced": False}
         if stored_strategy == "qqq_usdt_aggressive" and exchange_strategy is None:
             sync["requires_qqq_external_flat_sync"] = True
+        if stored_strategy == "googl_usdt_aggressive" and exchange_strategy is None:
+            sync["requires_googl_external_flat_sync"] = True
         self._set_current_executed_strategy(exchange_strategy)
         state = self._load_execution_state()
         state["exchange_position_sync"] = sync
@@ -575,6 +718,27 @@ class StrategyRouterExecutionEngine:
         except Exception as exc:
             return {"status": "error", "reason": "qqq_external_flat_sync_failed", "error": str(exc)}
 
+    def _sync_external_googl_flat_after_route(self, position_sync: dict[str, Any], route: dict[str, Any]) -> dict[str, Any] | None:
+        if not bool(position_sync.get("requires_googl_external_flat_sync")):
+            return None
+        candidate = self._route_candidate(route, "googl_usdt_aggressive")
+        context = None
+        if candidate is not None and hasattr(self.googl_executor, "_build_context"):
+            try:
+                context = self.googl_executor._build_context(candidate)
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "reason": "googl_external_flat_context_failed",
+                    "error": str(exc),
+                }
+        try:
+            return self.googl_executor.sync_external_flat(reason="router_exchange_flat_sync", context=context)
+        except TypeError:
+            return self.googl_executor.sync_external_flat(reason="router_exchange_flat_sync")
+        except Exception as exc:
+            return {"status": "error", "reason": "googl_external_flat_sync_failed", "error": str(exc)}
+
     def _route_candidate(self, route: dict[str, Any], strategy_id: str) -> RoutedSignalCandidate | None:
         selected = route.get("selected_candidate") if isinstance(route.get("selected_candidate"), dict) else None
         if selected and selected.get("strategy_id") == strategy_id:
@@ -587,6 +751,7 @@ class StrategyRouterExecutionEngine:
     def _fetch_exchange_position_sync(self) -> dict[str, Any]:
         try:
             qqq_position = self.qqq_executor.fetch_position_state()
+            googl_position = self.googl_executor.fetch_position_state()
             btc_long = self.btc_executor._fetch_position_state("long")
             btc_short = self.btc_executor._fetch_position_state("short")
         except Exception as exc:
@@ -597,6 +762,8 @@ class StrategyRouterExecutionEngine:
             "btc_short_contracts": float(btc_short.get("contracts", 0.0) or 0.0),
             "qqq_contracts": float(qqq_position.get("contracts", 0.0) or 0.0),
             "qqq_notional_usdt": float(qqq_position.get("notional_usdt", 0.0) or 0.0),
+            "googl_contracts": float(googl_position.get("contracts", 0.0) or 0.0),
+            "googl_notional_usdt": float(googl_position.get("notional_usdt", 0.0) or 0.0),
             "updated_at": int(time.time()),
         }
 
@@ -607,20 +774,35 @@ class StrategyRouterExecutionEngine:
             or float(sync.get("btc_short_contracts", 0.0) or 0.0) > 0
         )
         qqq_open = float(sync.get("qqq_contracts", 0.0) or 0.0) > 0
-        if btc_open and qqq_open:
+        googl_open = float(sync.get("googl_contracts", 0.0) or 0.0) > 0
+        open_strategies = int(btc_open) + int(qqq_open) + int(googl_open)
+        if open_strategies > 1:
             return fallback
         if btc_open:
             return "btc_sota"
         if qqq_open:
             return "qqq_usdt_aggressive"
+        if googl_open:
+            return "googl_usdt_aggressive"
         return None
 
     def _candidate_from_payload(self, payload: dict[str, Any] | None) -> RoutedSignalCandidate | None:
         if not payload:
             return None
+        strategy_id = str(payload.get("strategy_id") or "qqq_usdt_aggressive")
+        symbol = payload.get("symbol")
+        if symbol in (None, ""):
+            symbol = getattr(self.qqq_executor, "symbol", "QQQ/USDT:USDT")
+            if strategy_id == "googl_usdt_aggressive":
+                symbol = getattr(self.googl_executor, "symbol", "GOOGL/USDT:USDT")
+            elif strategy_id == "btc_sota":
+                try:
+                    symbol = self.btc_executor.config.symbol
+                except AttributeError:
+                    symbol = "BTC/USDT:USDT"
         return RoutedSignalCandidate(
-            strategy_id=str(payload.get("strategy_id") or "qqq_usdt_aggressive"),
-            symbol=str(payload.get("symbol") or self.qqq_executor.symbol),
+            strategy_id=strategy_id,
+            symbol=str(symbol or "QQQ/USDT:USDT"),
             active=bool(payload.get("active", False)),
             route_score=float(payload.get("route_score", 0.0) or 0.0),
             timestamp=payload.get("timestamp"),
@@ -686,6 +868,8 @@ class StrategyRouterExecutionEngine:
     def _flatten_strategy(self, strategy_id: str | None, *, reason: str) -> list[dict[str, Any]]:
         if strategy_id == "qqq_usdt_aggressive":
             return [{"strategy": strategy_id, "result": self.qqq_executor.close_position(reason=reason)}]
+        if strategy_id == "googl_usdt_aggressive":
+            return [{"strategy": strategy_id, "result": self.googl_executor.close_position(reason=reason)}]
         if strategy_id == "btc_sota":
             return [{"strategy": strategy_id, "result": self._flatten_btc(reason=reason)}]
         return []
@@ -705,6 +889,12 @@ class StrategyRouterExecutionEngine:
                 exchange_position = self.qqq_executor.fetch_position_state()
                 context["position"] = position
                 context["exchange_position"] = exchange_position if isinstance(exchange_position, dict) else {}
+            elif strategy_id == "googl_usdt_aggressive":
+                state = self.googl_executor.load_state()
+                position = state.get("position") if isinstance(state.get("position"), dict) else None
+                exchange_position = self.googl_executor.fetch_position_state()
+                context["position"] = position
+                context["exchange_position"] = exchange_position if isinstance(exchange_position, dict) else {}
             elif strategy_id == "btc_sota":
                 btc_state = self.btc_executor.store.load_snapshot() or {}
                 context["position"] = btc_state.get("position") if isinstance(btc_state.get("position"), dict) else None
@@ -712,8 +902,8 @@ class StrategyRouterExecutionEngine:
             context["capture_error"] = str(exc)
         return context
 
-    def _exchange_position_open_state(self) -> tuple[bool, bool, dict[str, Any]] | None:
-        """Return (btc_open, qqq_open, sync) from the live exchange, or None on failure.
+    def _exchange_position_open_state(self) -> tuple[bool, bool, bool, dict[str, Any]] | None:
+        """Return (btc_open, qqq_open, googl_open, sync) from the live exchange, or None on failure.
 
         Used before a rollback restore so the router does not re-open an incumbent
         on top of a target that actually filled, and does not restore an incumbent
@@ -730,7 +920,16 @@ class StrategyRouterExecutionEngine:
             or float(sync.get("btc_short_contracts", 0.0) or 0.0) > 0
         )
         qqq_open = float(sync.get("qqq_contracts", 0.0) or 0.0) > 0
-        return (btc_open, qqq_open, sync)
+        googl_open = float(sync.get("googl_contracts", 0.0) or 0.0) > 0
+        return (btc_open, qqq_open, googl_open, sync)
+
+    @staticmethod
+    def _rollback_strategy_tag(strategy_id: str | None) -> str:
+        return {
+            "btc_sota": "btc",
+            "qqq_usdt_aggressive": "qqq",
+            "googl_usdt_aggressive": "googl",
+        }.get(str(strategy_id or ""), str(strategy_id or "unknown"))
 
     def _rollback_after_switch_failure(
         self,
@@ -749,69 +948,8 @@ class StrategyRouterExecutionEngine:
             self._set_current_executed_strategy(None)
             return
         incumbent = rollback_context.get("strategy") or previous_executed
-        if incumbent == "qqq_usdt_aggressive":
-            exchange_state = self._exchange_position_open_state()
-            if exchange_state is not None:
-                btc_open, qqq_open, exchange_sync = exchange_state
-                if btc_open and not qqq_open:
-                    # The BTC target actually opened despite the failure signal;
-                    # restoring QQQ on top of it would create a double position.
-                    # Adopt BTC; the next cycle's exchange sync reconciles any
-                    # residual mismatch (e.g., a partially-filled open).
-                    execution_results.append(
-                        {
-                            "strategy": "btc_sota",
-                            "result": {
-                                "status": "btc_open_detected_on_rollback",
-                                "rollback_reason": reason,
-                                "exchange_position_sync": exchange_sync,
-                            },
-                            "rollback": True,
-                            "rollback_reason": reason,
-                        }
-                    )
-                    self._set_current_executed_strategy("btc_sota")
-                    return
-                if qqq_open and not btc_open:
-                    # The incumbent QQQ was never actually flattened on the
-                    # exchange (or the QQQ target filled), so there is nothing to
-                    # restore -- the position we want is already open.
-                    execution_results.append(
-                        {
-                            "strategy": "qqq_usdt_aggressive",
-                            "result": {
-                                "status": "qqq_retained_on_rollback",
-                                "rollback_reason": reason,
-                                "exchange_position_sync": exchange_sync,
-                            },
-                            "rollback": True,
-                            "rollback_reason": reason,
-                        }
-                    )
-                    self._set_current_executed_strategy("qqq_usdt_aggressive")
-                    return
-                if btc_open and qqq_open:
-                    # Double position -- never add more. Keep the stored incumbent
-                    # and let the next cycle's exchange sync reconcile.
-                    self._set_current_executed_strategy("qqq_usdt_aggressive")
-                    return
-            try:
-                restore = self.qqq_executor.restore_position(rollback_context)
-            except Exception as exc:
-                restore = {"status": "error", "reason": "restore_qqq_failed", "error": str(exc)}
-            execution_results.append(
-                {
-                    "strategy": "qqq_usdt_aggressive",
-                    "result": restore,
-                    "rollback": True,
-                    "rollback_reason": reason,
-                }
-            )
-            if str(restore.get("status")) in {"submitted", "paper_restored"}:
-                self._set_current_executed_strategy("qqq_usdt_aggressive")
-                self._record_switch_rollback("qqq_usdt_aggressive")
-            else:
-                self._set_current_executed_strategy(None)
+        if incumbent in ("qqq_usdt_aggressive", "googl_usdt_aggressive"):
+            self._rollback_stock_incumbent(incumbent, rollback_context, reason=reason, execution_results=execution_results)
         elif incumbent == "btc_sota":
             try:
                 redo = self.btc_executor.evaluate_latest()
@@ -830,6 +968,101 @@ class StrategyRouterExecutionEngine:
                 self._record_switch_rollback("btc_sota")
             else:
                 self._set_current_executed_strategy(None)
+        else:
+            self._set_current_executed_strategy(None)
+
+    def _rollback_stock_incumbent(
+        self,
+        incumbent: str,
+        rollback_context: dict[str, Any] | None,
+        *,
+        reason: str,
+        execution_results: list[dict[str, Any]],
+    ) -> None:
+        """Restore a QQQ/GOOGL incumbent after a failed switch, exchange-aware.
+
+        Adopts the single non-incumbent strategy that actually opened on the
+        exchange (so we never stack a restore on top of a filled target), retains
+        the incumbent when it was never flattened, keeps the stored incumbent on
+        ambiguous double-open, and only re-buys at market when the account is flat.
+        """
+        exchange_state = self._exchange_position_open_state()
+        if exchange_state is not None:
+            btc_open, qqq_open, googl_open, exchange_sync = exchange_state
+            open_strategies: list[str] = []
+            if btc_open:
+                open_strategies.append("btc_sota")
+            if qqq_open:
+                open_strategies.append("qqq_usdt_aggressive")
+            if googl_open:
+                open_strategies.append("googl_usdt_aggressive")
+            incumbent_open = incumbent in open_strategies
+            others_open = [strategy for strategy in open_strategies if strategy != incumbent]
+
+            if not incumbent_open and len(others_open) == 1:
+                # The target (or another strategy) actually opened despite the
+                # failure signal; restoring the incumbent on top of it would
+                # create a double position. Adopt the opened strategy; the next
+                # cycle's exchange sync reconciles residual mismatch.
+                adopted = others_open[0]
+                execution_results.append(
+                    {
+                        "strategy": adopted,
+                        "result": {
+                            "status": f"{self._rollback_strategy_tag(adopted)}_open_detected_on_rollback",
+                            "rollback_reason": reason,
+                            "exchange_position_sync": exchange_sync,
+                        },
+                        "rollback": True,
+                        "rollback_reason": reason,
+                    }
+                )
+                self._set_current_executed_strategy(adopted)
+                return
+            if incumbent_open and others_open:
+                # Double position -- never add more. Keep the stored incumbent
+                # and let the next cycle's exchange sync reconcile.
+                self._set_current_executed_strategy(incumbent)
+                return
+            if not incumbent_open and len(others_open) > 1:
+                # Multiple non-incumbent strategies open -- ambiguous. Keep the
+                # stored incumbent and let the next cycle reconcile.
+                self._set_current_executed_strategy(incumbent)
+                return
+            if incumbent_open:
+                # The incumbent was never actually flattened on the exchange, so
+                # there is nothing to restore -- the position we want is already open.
+                execution_results.append(
+                    {
+                        "strategy": incumbent,
+                        "result": {
+                            "status": f"{self._rollback_strategy_tag(incumbent)}_retained_on_rollback",
+                            "rollback_reason": reason,
+                            "exchange_position_sync": exchange_sync,
+                        },
+                        "rollback": True,
+                        "rollback_reason": reason,
+                    }
+                )
+                self._set_current_executed_strategy(incumbent)
+                return
+
+        executor = self.qqq_executor if incumbent == "qqq_usdt_aggressive" else self.googl_executor
+        try:
+            restore = executor.restore_position(rollback_context)
+        except Exception as exc:
+            restore = {"status": "error", "reason": f"restore_{self._rollback_strategy_tag(incumbent)}_failed", "error": str(exc)}
+        execution_results.append(
+            {
+                "strategy": incumbent,
+                "result": restore,
+                "rollback": True,
+                "rollback_reason": reason,
+            }
+        )
+        if str(restore.get("status")) in {"submitted", "paper_restored"}:
+            self._set_current_executed_strategy(incumbent)
+            self._record_switch_rollback(incumbent)
         else:
             self._set_current_executed_strategy(None)
 
@@ -855,6 +1088,36 @@ class StrategyRouterExecutionEngine:
             return False
         until_ts = float(guard.get("until_ts", 0.0) or 0.0)
         return time.time() < until_ts
+
+    @staticmethod
+    def _is_googl_switch(from_strategy: str | None, to_strategy: str | None) -> bool:
+        """True when a switch is between QQQ and GOOGL (either direction)."""
+        googl_pair = {"qqq_usdt_aggressive", "googl_usdt_aggressive"}
+        return from_strategy in googl_pair and to_strategy in googl_pair and from_strategy != to_strategy
+
+    def _record_googl_switch(self) -> None:
+        """Record the wall-clock time of a successful QQQ<->GOOGL switch."""
+        state = self._load_execution_state()
+        state["last_googl_switch_at"] = int(time.time())
+        state["updated_at"] = int(time.time())
+        self._save_execution_state(state)
+
+    def _googl_switch_cooldown_remaining(self, from_strategy: str | None, to_strategy: str | None) -> float | None:
+        """Seconds remaining on the QQQ<->GOOGL switch cooldown, or None when not constrained."""
+        if not self._is_googl_switch(from_strategy, to_strategy):
+            return None
+        state = self._load_execution_state()
+        last_ts = state.get("last_googl_switch_at")
+        if last_ts is None:
+            return None
+        try:
+            cooldown_seconds = max(0.0, float(self.config.googl_switch_cooldown_seconds))
+        except (TypeError, ValueError):
+            cooldown_seconds = 0.0
+        remaining = float(last_ts) + cooldown_seconds - time.time()
+        if remaining <= 0:
+            return None
+        return remaining
 
     def _telegram_credentials(self) -> tuple[str | None, str | None, str | None]:
         token = self.config.telegram_token
@@ -914,6 +1177,7 @@ class StrategyRouterExecutionEngine:
         labels = {
             "btc_sota": "BTC SOTA",
             "qqq_usdt_aggressive": "QQQ/USDT",
+            "googl_usdt_aggressive": "GOOGL/USDT",
             None: "空仓",
         }
         return labels.get(strategy_id, str(strategy_id or "空仓"))
@@ -931,19 +1195,24 @@ class StrategyRouterExecutionEngine:
     def _format_startup_message(self, payload: dict[str, Any]) -> str:
         btc = payload.get("btc") if isinstance(payload.get("btc"), dict) else {}
         qqq = payload.get("qqq") if isinstance(payload.get("qqq"), dict) else {}
+        googl = payload.get("googl") if isinstance(payload.get("googl"), dict) else {}
         btc_status, btc_error = self._bootstrap_component_status(btc)
         qqq_status, qqq_error = self._bootstrap_component_status(qqq)
+        googl_status, googl_error = self._bootstrap_component_status(googl)
         lines = [
             "Router 启动",
             f"模式: {payload.get('mode')}",
-            "链路: BTC SOTA / QQQ-USDT",
+            "链路: BTC SOTA / QQQ-USDT / GOOGL-USDT",
             f"BTC: {btc_status}",
             f"QQQ: {qqq_status}",
+            f"GOOGL: {googl_status}",
         ]
         if btc_error:
             lines.append(f"BTC错误: {btc_error}")
         if qqq_error:
             lines.append(f"QQQ错误: {qqq_error}")
+        if googl_error:
+            lines.append(f"GOOGL错误: {googl_error}")
         return "\n".join(lines)
 
     @staticmethod

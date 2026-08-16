@@ -15,6 +15,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from bot.googl_usdt_executor import GooglOrderContext, GooglUsdtExecutionEngine  # noqa: E402
+from bot.state_store import StateStore  # noqa: E402
+from bot.strategy_router import RoutedSignalCandidate, StrategyRouterConfig  # noqa: E402
 from scripts.replay_googl_usdt_4h import (  # noqa: E402
     attach_googl_daily_state,
     load_okx_4h,
@@ -459,3 +462,223 @@ def test_ramp_pre_stop_ignores_non_conviction_trades(tmp_path: Path) -> None:
     assert r_tight["trades"][0]["trade_return_pct"] == r_wide["trades"][0]["trade_return_pct"]
     # base 档 4% 止损：0.975 × 0.82412 × 0.9975 − 1 ≈ −19.9%
     assert r_tight["trades"][0]["trade_return_pct"] == pytest.approx(-19.9, abs=0.6)
+
+
+# ---------------------------------------------------------------------------
+# 执行器级爬坡契约（GooglUsdtExecutionEngine._build_context 决策输出）。
+#
+# 与上面的回测回归互补：不跑 P&L，而是直接驱动 _build_context 的决策状态机，
+# 锁定每条无前视契约的决策输出 —— 入场 bar 用 base、确认用 prev_close（不自爬坡）、
+# 下一 bar 升满、即跌仍 base、pre_stop 只作用于未确认爬坡单。
+# ---------------------------------------------------------------------------
+
+def _googl_ramp_candidate(*, leverage_tier: str = "offense", leverage: float = 10.0) -> RoutedSignalCandidate:
+    return RoutedSignalCandidate(
+        strategy_id="googl_usdt_aggressive",
+        symbol="GOOGL/USDT:USDT",
+        active=True,
+        route_score=100.0,
+        timestamp="2026-01-01",
+        direction="BULL",
+        event_type="googl_usdt_long",
+        leverage=leverage,
+        strength_label=leverage_tier,
+        source_config="config/test-googl-ramp-runtime.json",
+        metadata={"leverage_tier": leverage_tier, "daily_signal_timestamp": "2026-01-01"},
+    )
+
+
+_RAMP_DB_COUNTER = 0
+
+
+def _ramp_engine(tmp_path: Path, **config_overrides) -> GooglUsdtExecutionEngine:
+    global _RAMP_DB_COUNTER
+    _RAMP_DB_COUNTER += 1
+    router_config = StrategyRouterConfig(
+        mode="paper",
+        state_path=str(tmp_path / "router.json"),
+        btc_strategy_config="config/config.paper.high-leverage-structure.json",
+        qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+        googl_state_db_path=str(tmp_path / f"googl_ramp_{_RAMP_DB_COUNTER}.db"),
+        persist_state=False,
+    )
+    engine = GooglUsdtExecutionEngine.__new__(GooglUsdtExecutionEngine)
+    engine.router_config = router_config
+    googl_config = {
+        "execution_symbol": "GOOGL/USDT:USDT",
+        "base_leverage": 5.0,
+        "stop_loss_pct": 4.0,
+        "ramp_confirm_pct": 0.5,
+        "ramp_pre_stop_pct": 2.0,
+        "taker_fee_rate": 0.0005,
+        "slippage_bps": 0.0,
+    }
+    googl_config.update(config_overrides)
+    engine.googl_config = googl_config
+    engine.store = StateStore(str(router_config.googl_state_db_path))
+    return engine
+
+
+def _drive_ramp_contexts(
+    tmp_path: Path,
+    rows: list[tuple[float, float, float, float]],
+    *,
+    leverage_tier: str = "offense",
+    full_leverage: float = 10.0,
+    **config_overrides,
+) -> list[GooglOrderContext]:
+    """逐 bar 驱动 _build_context，每根 bar 后持久化 position state（等价持仓推进）。"""
+    engine = _ramp_engine(tmp_path, **config_overrides)
+    bars = _ohlc_bars(rows, n_bars=len(rows))
+    candidate = _googl_ramp_candidate(leverage_tier=leverage_tier, leverage=full_leverage)
+    contexts: list[GooglOrderContext] = []
+    for k in range(len(bars)):
+        engine._latest_bars = (  # type: ignore[method-assign]
+            lambda k=k: (bars.iloc[k], float(bars.iloc[k - 1]["close"]) if k >= 1 else None)
+        )
+        context = engine._build_context(candidate)
+        contexts.append(context)
+        position_state = engine._state_from_context(context)
+        engine.save_state({"position": position_state, "last_candidate": context.candidate})
+    return contexts
+
+
+def test_executor_ramp_entry_bar_at_base_leverage(tmp_path: Path) -> None:
+    """入场 bar 即使大阳线越过确认阈值，决策仍 = base（确认只能在收盘后才可知）。"""
+    contexts = _drive_ramp_contexts(
+        tmp_path,
+        [(100, 112, 99, 110)] + [(110, 111, 109, 110)] * 5,
+        full_leverage=10.0,
+    )
+    ctx0 = contexts[0]
+    assert ctx0.ramp_full_leverage == pytest.approx(10.0)
+    assert ctx0.ramped is False
+    assert ctx0.leverage == pytest.approx(5.0)  # base
+    assert ctx0.stop_loss_pct == pytest.approx(2.0)  # pre_stop 宽度
+    assert ctx0.stop_price == pytest.approx(110.0 * 0.98, abs=1e-9)
+
+
+def test_executor_ramp_confirmation_bar_does_not_self_ramp(tmp_path: Path) -> None:
+    """bar1 close 101.5 越过 99×1.005，但确认用 prev_close（bar0 close=99）→ 自身仍 base。"""
+    contexts = _drive_ramp_contexts(
+        tmp_path,
+        [(100, 100, 98, 99), (99, 102, 98.5, 101.5)] + [(101.5, 102, 101, 101.5)] * 4,
+        full_leverage=10.0,
+    )
+    ctx1 = contexts[1]
+    assert ctx1.ramped is False
+    assert ctx1.leverage == pytest.approx(5.0)
+    assert ctx1.ramp_full_leverage == pytest.approx(10.0)
+    assert ctx1.stop_loss_pct == pytest.approx(2.0)  # 未确认仍用 pre_stop
+
+
+def test_executor_ramp_activates_on_next_bar(tmp_path: Path) -> None:
+    """prev_close 确认后下一 bar 升满杠杆，且止损宽度切回正式 stop_loss_pct。"""
+    contexts = _drive_ramp_contexts(
+        tmp_path,
+        [(100, 100, 98, 99), (99, 102, 98.5, 101.5), (101.5, 111, 101, 110)] + [(110, 111, 109, 110)] * 4,
+        full_leverage=10.0,
+    )
+    assert contexts[1].ramped is False
+    ctx2 = contexts[2]
+    assert ctx2.ramped is True
+    assert ctx2.leverage == pytest.approx(10.0)  # 满杠杆
+    assert ctx2.stop_loss_pct == pytest.approx(4.0)  # 确认后走正式 4% 止损
+
+
+def test_executor_ramp_immediate_drop_stays_base(tmp_path: Path) -> None:
+    """入场即跌、从未确认 → 全程 base，且 pre_stop 在 2% 处击穿触发 stop_hit。"""
+    contexts = _drive_ramp_contexts(
+        tmp_path,
+        [(100, 100, 98, 99), (99, 99, 95.5, 96)] + [(96, 96.5, 95, 96)] * 5,
+        full_leverage=10.0,
+    )
+    for ctx in contexts[1:]:
+        assert ctx.ramped is False
+        assert ctx.leverage == pytest.approx(5.0)
+    assert contexts[1].stop_loss_pct == pytest.approx(2.0)
+    assert contexts[1].stop_hit is True  # 95.5 击穿 99×0.98=97.02
+
+
+def test_executor_ramp_pre_stop_tightens_immediate_drop(tmp_path: Path) -> None:
+    """爬坡单用 2% pre_stop、非爬坡单用 4%：同样暴跌，爬坡单先被击穿。"""
+    rows = [(100, 100.5, 99.0, 99.5), (99.5, 99.5, 96.0, 96.5)] + [(96.5, 97, 95.5, 96.5)] * 4
+    ramp_ctxs = _drive_ramp_contexts(tmp_path, rows, full_leverage=10.0)
+    base_ctxs = _drive_ramp_contexts(tmp_path, rows, leverage_tier="base", full_leverage=5.0)
+    # 爬坡单入场 stop 在 2%
+    assert ramp_ctxs[0].stop_loss_pct == pytest.approx(2.0)
+    assert ramp_ctxs[0].stop_price == pytest.approx(99.5 * 0.98, abs=1e-9)
+    # 非爬坡单入场 stop 在 4%
+    assert base_ctxs[0].ramp_full_leverage == pytest.approx(0.0)
+    assert base_ctxs[0].stop_loss_pct == pytest.approx(4.0)
+    assert base_ctxs[0].stop_price == pytest.approx(99.5 * 0.96, abs=1e-9)
+    # bar1 低点 96.0：击穿 2%（97.51）、未击穿 4%（95.52）
+    assert ramp_ctxs[1].stop_hit is True
+    assert base_ctxs[1].stop_hit is False
+
+
+def test_executor_ramp_pre_stop_does_not_touch_ramped_winner(tmp_path: Path) -> None:
+    """确认后走出来的趋势单：止损宽度已是 4%，pre_stop 不再适用。"""
+    contexts = _drive_ramp_contexts(
+        tmp_path,
+        [(100, 103, 99, 102), (102, 111, 106, 110)] + [(110, 111, 109, 110)] * 4,
+        full_leverage=10.0,
+    )
+    assert contexts[1].ramped is False  # prev_close=102 未过 102×1.005
+    assert contexts[2].ramped is True
+    assert contexts[2].leverage == pytest.approx(10.0)
+    assert contexts[2].stop_loss_pct == pytest.approx(4.0)
+    assert contexts[3].stop_loss_pct == pytest.approx(4.0)  # 持续宽止损，2% 回调不误伤
+
+
+def test_executor_ramp_pre_stop_ignores_non_conviction_trades(tmp_path: Path) -> None:
+    """base 档（full==base，非爬坡单）：ramp_full_leverage=0、始终 4% 止损。"""
+    contexts = _drive_ramp_contexts(
+        tmp_path,
+        [(100, 100.5, 99.0, 99.5), (99.5, 99.5, 96.0, 96.5)] + [(96.5, 97, 95.5, 96.5)] * 4,
+        leverage_tier="base",
+        full_leverage=5.0,
+    )
+    for ctx in contexts:
+        assert ctx.ramp_full_leverage == pytest.approx(0.0)
+        assert ctx.leverage == pytest.approx(5.0)
+        assert ctx.stop_loss_pct == pytest.approx(4.0)
+
+
+def test_executor_ramp_entry_bar_timestamp_is_4h_bar_not_signal_date(tmp_path: Path) -> None:
+    """entry_bar_timestamp 必须是 4h bar（非日线信号日期），否则会误压同天后续 bar 的 stop_hit。"""
+    contexts = _drive_ramp_contexts(
+        tmp_path,
+        [(100, 100, 98, 99), (99, 99, 95.5, 96)] + [(96, 96.5, 95, 96)] * 4,
+        full_leverage=10.0,
+    )
+    assert contexts[0].bar_timestamp.startswith("2026-01-01 00:00:00")
+    assert contexts[0].bar_timestamp != "2026-01-01"  # 不是日线信号日期
+    # 入场后第一根 bar 的 stop_hit 不被同天信号日期误压
+    assert contexts[1].stop_hit is True
+
+
+def test_ramp_consistency_replay_vs_executor_decision_layer(tmp_path: Path) -> None:
+    """爬坡一致性核对：同一份 bars 喂 run_googl_4h_replay 与 _build_context 决策层。
+
+    回测 trade 记录完整档 10x（P&L ≈ +95.6%）；执行器决策层给出同样的
+    base→full 时序：入场/确认 bar 用 base 5x，从下一 bar 起 10x。
+    """
+    rows = [(100, 100, 98, 99), (99, 102, 98.5, 101.5), (101.5, 111, 101, 110)] + [(110, 111, 109, 110)] * 4
+    bars = _ohlc_bars(rows, n_bars=7)
+    merged = attach_googl_daily_state(bars, pd.read_csv(_one_day_signal(tmp_path)))
+    result = run_googl_4h_replay(
+        merged, None,
+        leverage_tiers=_RAMP_TIERS,
+        ramp_confirm_pct=0.5, stop_loss_pct=4.0,
+        taker_fee_rate=0.0005, slippage_bps=0.0, initial_capital=1000.0,
+    )
+    assert result["summary"]["trades"] == 1
+    assert result["trades"][0]["leverage"] == pytest.approx(10.0)  # 回测记录完整档
+    assert result["trades"][0]["trade_return_pct"] == pytest.approx(95.6, abs=1.2)
+
+    contexts = _drive_ramp_contexts(tmp_path, rows, full_leverage=10.0)
+    lev_seq = [ctx.leverage for ctx in contexts]
+    assert lev_seq == pytest.approx([5.0, 5.0, 10.0, 10.0, 10.0, 10.0, 10.0])
+    assert [ctx.ramped for ctx in contexts] == [False, False, True, True, True, True, True]
+    assert all(ctx.ramp_full_leverage == pytest.approx(10.0) for ctx in contexts)

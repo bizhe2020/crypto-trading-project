@@ -20,6 +20,8 @@ from typing import Any
 
 import pandas as pd
 
+from bot.market_data import OhlcvRepository
+from bot.okx_client import OkxClient
 from bot.qqq_macro_proxy_overlay import apply_macro_proxy_overlay, build_macro_proxy_context, macro_proxy_overlay_for_bar
 from bot.strategy_router import RoutedSignalCandidate
 
@@ -35,6 +37,7 @@ class GooglUsdtSignalAdapter:
 
     def preview(self) -> RoutedSignalCandidate:
         config = json.loads(self.config_path.read_text())
+        refresh_status = self._refresh_googl_4h(config)
         signal_path = self._load_signal_path(config)
         stale_status = self._stale_status(config, signal_path)
         if bool(stale_status.get("stale")):
@@ -97,6 +100,7 @@ class GooglUsdtSignalAdapter:
                 "daily_signal_timestamp": str(pd.Timestamp(latest["date"])),
                 "berkshire_conviction": bool(latest.get("berkshire_conviction", False)),
                 "leverage_tier": leverage_tier,
+                "data_refresh": refresh_status,
                 "daily_signal_stale": stale_status,
                 "pre_macro_allow_long": bool(pre_macro_allow_long),
                 "pre_macro_leverage": pre_macro_leverage,
@@ -126,6 +130,33 @@ class GooglUsdtSignalAdapter:
         if path.is_absolute():
             return path
         return (ROOT / value).resolve()
+
+    def _refresh_googl_4h(self, config: dict[str, Any]) -> dict[str, Any]:
+        """镜像 QQQ `_refresh_okx_4h`：拉 GOOGL/USDT:USDT 4h 到 data_4h feather。
+
+        受 `data_refresh_enabled` 门控（当前 false，翻 shadow 观察时开）。服务器
+        自闭环下，4h 数据由部署脚本推送 + 本方法在线刷新兜底。
+        """
+        if not bool(config.get("data_refresh_enabled", True)):
+            return {"enabled": False}
+        try:
+            data_4h = self._resolve_path(config["data_4h"])
+            repo = OhlcvRepository(data_4h.parent)
+            client = OkxClient(None, trading_mode="live", proxy=config.get("proxy"))
+            frame = repo.load_pair(
+                str(config["execution_symbol"]),
+                client=client,
+                timeframe=str(config.get("execution_timeframe", "4h")),
+                informative_timeframe=str(config.get("execution_timeframe", "4h")),
+            ).primary_candles
+            return {
+                "enabled": True,
+                "status": "ok",
+                "rows": int(len(frame)),
+                "latest": str(frame["date"].max()) if not frame.empty else None,
+            }
+        except Exception as exc:
+            return {"enabled": True, "status": "error", "error": str(exc)}
 
     def _load_signal_path(self, config: dict[str, Any]) -> pd.DataFrame:
         path = self._resolve_path(str(config["signal_source"]))

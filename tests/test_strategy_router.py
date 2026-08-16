@@ -3065,8 +3065,13 @@ def test_router_resyncs_external_qqq_flat_before_flat_entry_gate(tmp_path: Path)
         def _fetch_position_state(self, pos_side):
             return {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
 
+    class FakeGooglExecutor:
+        def fetch_position_state(self):
+            return {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
+
     engine.qqq_executor = FakeQqqExecutor()
     engine.btc_executor = FakeBtcExecutor()
+    engine.googl_executor = FakeGooglExecutor()
     router.btc_adapter = _FakeAdapter(RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0))
     router.qqq_adapter = _FakeAdapter(
         RoutedSignalCandidate(
@@ -3160,8 +3165,13 @@ def test_router_external_qqq_flat_sync_uses_candidate_context_before_reentry(tmp
         def _fetch_position_state(self, pos_side):
             return {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
 
+    class FakeGooglExecutor:
+        def fetch_position_state(self):
+            return {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
+
     engine.qqq_executor = FakeQqqExecutor()
     engine.btc_executor = FakeBtcExecutor()
+    engine.googl_executor = FakeGooglExecutor()
     router.btc_adapter = _FakeAdapter(RoutedSignalCandidate("btc_sota", "BTC/USDT:USDT", False, 0.0))
     router.qqq_adapter = _FakeAdapter(
         RoutedSignalCandidate(
@@ -4319,7 +4329,8 @@ def test_router_rollback_adopts_btc_when_btc_opened_despite_error(tmp_path: Path
     engine._exchange_position_open_state = lambda: (  # type: ignore[method-assign]
         True,
         False,
-        {"status": "ok", "btc_long_contracts": 1.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0},
+        False,
+        {"status": "ok", "btc_long_contracts": 1.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 0.0},
     )
     restore_calls: list[dict[str, Any]] = []
 
@@ -4361,7 +4372,8 @@ def test_router_rollback_retains_qqq_when_not_actually_flattened(tmp_path: Path)
     engine._exchange_position_open_state = lambda: (  # type: ignore[method-assign]
         False,
         True,
-        {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 119.81},
+        False,
+        {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 119.81, "googl_contracts": 0.0},
     )
     restore_calls: list[dict[str, Any]] = []
 
@@ -4394,3 +4406,391 @@ def test_router_rollback_retains_qqq_when_not_actually_flattened(tmp_path: Path)
     assert len(rollback_entries) == 1
     assert rollback_entries[0]["result"]["status"] == "qqq_retained_on_rollback"
     assert rollback_entries[0]["strategy"] == "qqq_usdt_aggressive"
+
+
+# ---------------------------------------------------------------------------
+# GOOGL 执行分支测试（dispatch / flatten / rollback / position-sync / 切换冷却）。
+#
+# 用 __new__ + fake-executor 模式镜像既有 QQQ/BTC 分支测试；fake 覆盖 router 引擎
+# 使用的完整接口面。cooldown 用真实 time.time()，last_googl_switch_at 置为现在。
+# ---------------------------------------------------------------------------
+
+class _FakeStockExecutor:
+    """Fake QQQ/GOOGL 执行器：覆盖 router_executor 调用的接口面。"""
+
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        fetch_position_state: dict[str, Any] | None = None,
+        state: dict[str, Any] | None = None,
+        evaluate_result: dict[str, Any] | None = None,
+        evaluate_error: Exception | None = None,
+        close_result: dict[str, Any] | None = None,
+        restore_result: dict[str, Any] | None = None,
+        risk_on_open: bool = True,
+        shadow_gate_allow: bool = True,
+        build_context=None,
+    ):
+        self.symbol = symbol
+        self._fetch_position_state_value = (
+            fetch_position_state
+            if fetch_position_state is not None
+            else {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
+        )
+        self._state = state if state is not None else {}
+        self.evaluate_result = evaluate_result if evaluate_result is not None else {"status": "ok", "position_open": False}
+        self.evaluate_error = evaluate_error
+        self.close_result = close_result if close_result is not None else {"status": "closed_confirmed"}
+        self.restore_result = restore_result if restore_result is not None else {"status": "submitted", "action": "restore_stock_usdt_long"}
+        self.risk_on_open = risk_on_open
+        self.shadow_gate_allow = shadow_gate_allow
+        self.close_calls: list[str] = []
+        self.sync_calls: list[tuple[str, Any]] = []
+        self.restore_calls: list[dict[str, Any] | None] = []
+        if build_context is not None:
+            self._build_context = build_context  # type: ignore[method-assign]
+
+    def fetch_position_state(self) -> dict[str, Any]:
+        return dict(self._fetch_position_state_value)
+
+    def load_state(self) -> dict[str, Any]:
+        return dict(self._state)
+
+    def close_position(self, *, reason: str) -> dict[str, Any]:
+        self.close_calls.append(reason)
+        return dict(self.close_result)
+
+    def restore_position(self, rollback: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.restore_calls.append(rollback)
+        return dict(self.restore_result)
+
+    def evaluate_latest(self, candidate=None) -> dict[str, Any]:
+        if self.evaluate_error is not None:
+            raise self.evaluate_error
+        return dict(self.evaluate_result)
+
+    def risk_on_window_status(self) -> dict[str, Any]:
+        return {"enabled": True, "open": self.risk_on_open}
+
+    def shadow_gate_pre_switch_status(self, candidate=None) -> dict[str, Any]:
+        return {"enabled": True, "allow": self.shadow_gate_allow}
+
+    def sync_external_flat(self, *, reason: str, context=None) -> dict[str, Any]:
+        self.sync_calls.append((reason, context))
+        candidate_timestamp = context.candidate.get("timestamp") if context is not None else None
+        return {"status": "synced", "reason": reason, "candidate_timestamp": candidate_timestamp}
+
+
+class _FakeBtcExecutor:
+    def __init__(
+        self,
+        *,
+        fetch_position_state: dict[str, Any] | None = None,
+        evaluate_result: dict[str, Any] | None = None,
+        evaluate_error: Exception | None = None,
+    ):
+        self._fetch_position_state_value = (
+            fetch_position_state
+            if fetch_position_state is not None
+            else {"contracts": 0.0, "notional_usdt": 0.0, "raw": None}
+        )
+        self.evaluate_result = evaluate_result if evaluate_result is not None else {"status": "ok", "position_open": True}
+        self.evaluate_error = evaluate_error
+
+    def _fetch_position_state(self, pos_side: str) -> dict[str, Any]:
+        return dict(self._fetch_position_state_value)
+
+    def evaluate_latest(self) -> dict[str, Any]:
+        if self.evaluate_error is not None:
+            raise self.evaluate_error
+        return dict(self.evaluate_result)
+
+    def close_for_router_switch(self, *, reason: str) -> dict[str, Any]:
+        return {"status": "closed_confirmed"}
+
+
+def _googl_router_engine(
+    tmp_path: Path,
+    *,
+    current_executed: str | None,
+    selected_strategy: str | None,
+    selected_candidate: dict[str, Any] | None,
+    candidates: list[dict[str, Any]] | None = None,
+    qqq: _FakeStockExecutor | None = None,
+    googl: _FakeStockExecutor | None = None,
+    btc: _FakeBtcExecutor | None = None,
+    exchange_open_state: tuple[bool, bool, bool, dict[str, Any]] | None = None,
+    real_exchange_sync: bool = False,
+    real_googl_flat_sync: bool = False,
+) -> tuple[StrategyRouterExecutionEngine, dict[str, Any]]:
+    router = StrategyRouter(
+        StrategyRouterConfig(
+            mode="live",
+            state_path=str(tmp_path / "router.json"),
+            btc_strategy_config="config/config.paper.high-leverage-structure.json",
+            qqq_strategy_config="config/config.paper.qqq-usdt-aggressive-frozen.json",
+            btc_min_route_score=35.0,
+            qqq_min_route_score=96.0,
+            persist_state=False,
+            flatten_before_switch=True,
+        )
+    )
+    engine = StrategyRouterExecutionEngine.__new__(StrategyRouterExecutionEngine)
+    engine.router = router
+    engine.config = router.config
+    engine.execution_state_path = tmp_path / "router.execution.json"
+    execution_state = {"current_executed_strategy": current_executed}
+    engine._load_execution_state = lambda: dict(execution_state)  # type: ignore[method-assign]
+
+    def save_execution_state(payload: dict[str, Any]) -> None:
+        execution_state.clear()
+        execution_state.update(payload)
+
+    engine._save_execution_state = save_execution_state  # type: ignore[method-assign]
+    engine._maybe_send_telegram_notifications = lambda payload: None  # type: ignore[method-assign]
+    if not real_exchange_sync:
+        engine._sync_executed_strategy_with_exchange = lambda stored: {"status": "skipped"}  # type: ignore[method-assign]
+    engine._sync_external_qqq_flat_after_route = lambda position_sync, route: None  # type: ignore[method-assign]
+    if not real_googl_flat_sync:
+        engine._sync_external_googl_flat_after_route = lambda position_sync, route: None  # type: ignore[method-assign]
+    if exchange_open_state is not None:
+        engine._exchange_position_open_state = lambda: exchange_open_state  # type: ignore[method-assign]
+    engine.router.evaluate_latest = lambda current_strategy=None: {  # type: ignore[method-assign]
+        "selected_strategy": selected_strategy,
+        "selected_candidate": selected_candidate,
+        "candidates": candidates if candidates is not None else ([selected_candidate] if selected_candidate else []),
+    }
+    engine.qqq_executor = qqq if qqq is not None else _FakeStockExecutor(symbol="QQQ/USDT:USDT")
+    engine.googl_executor = googl if googl is not None else _FakeStockExecutor(symbol="GOOGL/USDT:USDT")
+    engine.btc_executor = btc if btc is not None else _FakeBtcExecutor()
+    return engine, execution_state
+
+
+_GOOGL_CANDIDATE_PAYLOAD = {
+    "strategy_id": "googl_usdt_aggressive",
+    "symbol": "GOOGL/USDT:USDT",
+    "active": True,
+    "route_score": 100.0,
+    "timestamp": "2026-08-05 00:00:00+00:00",
+    "direction": "BULL",
+    "event_type": "googl_usdt_long",
+    "leverage": 11.2,
+    "strength_label": "offense",
+}
+
+_BTC_CANDIDATE_PAYLOAD = {
+    "strategy_id": "btc_sota",
+    "symbol": "BTC/USDT:USDT",
+    "active": True,
+    "route_score": 96.0,
+    "timestamp": "2026-08-05 01:15",
+    "direction": "BULL",
+    "event_type": "sota_long",
+}
+
+_QQQ_CANDIDATE_PAYLOAD = {
+    "strategy_id": "qqq_usdt_aggressive",
+    "symbol": "QQQ/USDT:USDT",
+    "active": True,
+    "route_score": 100.0,
+    "timestamp": "2026-08-05 12:00:00+00:00",
+    "direction": "BULL",
+    "event_type": "qqq_usdt_long",
+    "leverage": 10.0,
+}
+
+
+def test_router_googl_dispatch_opens_and_records_switch(tmp_path: Path) -> None:
+    """QQQ→GOOGL 切换：GOOGL evaluate 开仓成功 → 记 current=googl + last_googl_switch_at。"""
+    googl = _FakeStockExecutor(
+        symbol="GOOGL/USDT:USDT",
+        evaluate_result={"status": "ok", "position_open": True, "actions": [{"status": "paper_opened"}]},
+    )
+    engine, execution_state = _googl_router_engine(
+        tmp_path,
+        current_executed="qqq_usdt_aggressive",
+        selected_strategy="googl_usdt_aggressive",
+        selected_candidate=_GOOGL_CANDIDATE_PAYLOAD,
+        googl=googl,
+    )
+    result = engine.evaluate_latest()
+    assert result["current_executed_strategy"] == "googl_usdt_aggressive"
+    assert execution_state["current_executed_strategy"] == "googl_usdt_aggressive"
+    assert isinstance(execution_state.get("last_googl_switch_at"), int)
+    assert engine.qqq_executor.close_calls == ["router_switch_to_googl_usdt_aggressive"]
+    dispatch = [item for item in result["execution_results"] if item["strategy"] == "googl_usdt_aggressive"]
+    assert dispatch and dispatch[0]["result"]["position_open"] is True
+
+
+def test_router_googl_switch_held_by_24h_cooldown(tmp_path: Path) -> None:
+    """GOOGL→QQQ 在 24h 冷却内 → hold incumbent（googl_switch_cooldown_hold），不 flatten。"""
+    googl = _FakeStockExecutor(symbol="GOOGL/USDT:USDT")
+    engine, execution_state = _googl_router_engine(
+        tmp_path,
+        current_executed="googl_usdt_aggressive",
+        selected_strategy="qqq_usdt_aggressive",
+        selected_candidate=_QQQ_CANDIDATE_PAYLOAD,
+        googl=googl,
+    )
+    execution_state["last_googl_switch_at"] = int(time.time())
+    result = engine.evaluate_latest()
+    reasons = [item["result"].get("reason") for item in result["execution_results"]]
+    assert "googl_switch_cooldown" in reasons
+    assert "googl_switch_cooldown_hold" in reasons
+    assert googl.close_calls == []  # 冷却内不 flatten incumbent
+    assert result["current_executed_strategy"] == "googl_usdt_aggressive"
+    assert execution_state["current_executed_strategy"] == "googl_usdt_aggressive"
+
+
+def test_router_googl_flatten_calls_close_position_on_switch_away(tmp_path: Path) -> None:
+    """GOOGL→BTC：flatten 走 googl_executor.close_position，成功后切到 BTC。"""
+    googl = _FakeStockExecutor(symbol="GOOGL/USDT:USDT")
+    btc = _FakeBtcExecutor(evaluate_result={"status": "ok", "position_open": True})
+    engine, execution_state = _googl_router_engine(
+        tmp_path,
+        current_executed="googl_usdt_aggressive",
+        selected_strategy="btc_sota",
+        selected_candidate=_BTC_CANDIDATE_PAYLOAD,
+        googl=googl,
+        btc=btc,
+    )
+    result = engine.evaluate_latest()
+    assert googl.close_calls == ["router_switch_to_btc_sota"]
+    assert result["current_executed_strategy"] == "btc_sota"
+    assert execution_state["current_executed_strategy"] == "btc_sota"
+
+
+def test_router_googl_rollback_retains_googl_when_not_flattened(tmp_path: Path) -> None:
+    """GOOGL incumbent 在交易所仍持有 → 不重复 restore，记 googl_retained_on_rollback。"""
+    googl = _FakeStockExecutor(
+        symbol="GOOGL/USDT:USDT",
+        state={"position": {"contracts": 1.0, "entry_price": 200.0, "stop_price": 190.0, "leverage": 10.0}},
+        fetch_position_state={"contracts": 1.0, "notional_usdt": 200.0, "raw": None},
+    )
+    btc = _FakeBtcExecutor(evaluate_error=RuntimeError("mock btc evaluate failure"))
+    engine, execution_state = _googl_router_engine(
+        tmp_path,
+        current_executed="googl_usdt_aggressive",
+        selected_strategy="btc_sota",
+        selected_candidate=_BTC_CANDIDATE_PAYLOAD,
+        googl=googl,
+        btc=btc,
+        exchange_open_state=(
+            False,
+            False,
+            True,
+            {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 1.0},
+        ),
+    )
+    result = engine.evaluate_latest()
+    rollback_entries = [item for item in result["execution_results"] if item.get("rollback")]
+    assert len(rollback_entries) == 1
+    assert rollback_entries[0]["result"]["status"] == "googl_retained_on_rollback"
+    assert googl.restore_calls == []
+    assert result["current_executed_strategy"] == "googl_usdt_aggressive"
+    assert execution_state["current_executed_strategy"] == "googl_usdt_aggressive"
+
+
+def test_router_googl_rollback_restores_googl_when_flat(tmp_path: Path) -> None:
+    """GOOGL 已扁平 + 交易所无任何仓位 → restore GOOGL，current 回到 googl。"""
+    googl = _FakeStockExecutor(
+        symbol="GOOGL/USDT:USDT",
+        state={"position": {"contracts": 1.0, "entry_price": 200.0, "stop_price": 190.0, "leverage": 10.0}},
+        fetch_position_state={"contracts": 1.0, "notional_usdt": 200.0, "raw": None},
+        restore_result={"status": "submitted", "action": "restore_googl_usdt_long"},
+    )
+    btc = _FakeBtcExecutor(evaluate_error=RuntimeError("mock btc evaluate failure"))
+    engine, execution_state = _googl_router_engine(
+        tmp_path,
+        current_executed="googl_usdt_aggressive",
+        selected_strategy="btc_sota",
+        selected_candidate=_BTC_CANDIDATE_PAYLOAD,
+        googl=googl,
+        btc=btc,
+        exchange_open_state=(
+            False,
+            False,
+            False,
+            {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 0.0},
+        ),
+    )
+    result = engine.evaluate_latest()
+    assert len(googl.restore_calls) == 1
+    assert googl.restore_calls[0]["strategy"] == "googl_usdt_aggressive"
+    rollback_entries = [item for item in result["execution_results"] if item.get("rollback")]
+    assert rollback_entries[0]["result"]["status"] == "submitted"
+    assert result["current_executed_strategy"] == "googl_usdt_aggressive"
+    assert execution_state["current_executed_strategy"] == "googl_usdt_aggressive"
+
+
+def test_router_googl_open_not_confirmed_rolls_back_qqq(tmp_path: Path) -> None:
+    """GOOGL dispatch 开仓未确认 → rollback 恢复 QQQ incumbent。"""
+    qqq = _FakeStockExecutor(
+        symbol="QQQ/USDT:USDT",
+        state={"position": {"contracts": 1.0, "entry_price": 700.0, "stop_price": 680.0, "leverage": 10.0}},
+        fetch_position_state={"contracts": 1.0, "notional_usdt": 700.0, "raw": None},
+        restore_result={"status": "submitted", "action": "restore_qqq_usdt_long"},
+    )
+    googl = _FakeStockExecutor(symbol="GOOGL/USDT:USDT", evaluate_result={"status": "ok", "position_open": False})
+    engine, execution_state = _googl_router_engine(
+        tmp_path,
+        current_executed="qqq_usdt_aggressive",
+        selected_strategy="googl_usdt_aggressive",
+        selected_candidate=_GOOGL_CANDIDATE_PAYLOAD,
+        qqq=qqq,
+        googl=googl,
+        exchange_open_state=(
+            False,
+            False,
+            False,
+            {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 0.0},
+        ),
+    )
+    result = engine.evaluate_latest()
+    assert qqq.close_calls == ["router_switch_to_googl_usdt_aggressive"]
+    assert len(qqq.restore_calls) == 1
+    rollback_entries = [item for item in result["execution_results"] if item.get("rollback")]
+    assert rollback_entries[0]["result"]["status"] == "submitted"
+    assert result["current_executed_strategy"] == "qqq_usdt_aggressive"
+    assert execution_state["current_executed_strategy"] == "qqq_usdt_aggressive"
+
+
+def test_router_googl_external_flat_sync_calls_sync_external_flat(tmp_path: Path) -> None:
+    """交易所 GOOGL 已平仓但本地 stored=googl → requires_googl_external_flat_sync + sync_external_flat。"""
+    googl = _FakeStockExecutor(
+        symbol="GOOGL/USDT:USDT",
+        state={"position": {"contracts": 1.0, "entry_price": 200.0, "stop_price": 190.0, "leverage": 10.0}},
+        fetch_position_state={"contracts": 0.0, "notional_usdt": 0.0, "raw": None},
+        build_context=lambda candidate: SimpleNamespace(candidate={"timestamp": candidate.timestamp}),
+    )
+    engine, execution_state = _googl_router_engine(
+        tmp_path,
+        current_executed="googl_usdt_aggressive",
+        selected_strategy=None,
+        selected_candidate=None,
+        candidates=[_GOOGL_CANDIDATE_PAYLOAD],
+        googl=googl,
+        real_exchange_sync=True,
+        real_googl_flat_sync=True,
+    )
+    result = engine.evaluate_latest()
+    assert len(googl.sync_calls) == 1
+    reason, context = googl.sync_calls[0]
+    assert reason == "router_exchange_flat_sync"
+    assert context is not None
+    assert context.candidate["timestamp"] == _GOOGL_CANDIDATE_PAYLOAD["timestamp"]
+    assert result["exchange_position_sync"]["googl_external_flat_sync"]["reason"] == "router_exchange_flat_sync"
+    assert result["current_executed_strategy"] is None
+
+
+def test_router_executed_strategy_from_position_sync_googl() -> None:
+    """_executed_strategy_from_position_sync：只 GOOGL 开 → googl；双开 → fallback。"""
+    flat = {"btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 0.0}
+    assert StrategyRouterExecutionEngine._executed_strategy_from_position_sync(
+        {**flat, "googl_contracts": 1.0}, None
+    ) == "googl_usdt_aggressive"
+    assert StrategyRouterExecutionEngine._executed_strategy_from_position_sync(flat, None) is None
+    assert StrategyRouterExecutionEngine._executed_strategy_from_position_sync(
+        {**flat, "qqq_contracts": 1.0, "googl_contracts": 1.0}, "qqq_usdt_aggressive"
+    ) == "qqq_usdt_aggressive"

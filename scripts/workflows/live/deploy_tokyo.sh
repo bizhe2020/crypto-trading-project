@@ -117,6 +117,7 @@ fi
   bot/qqq_shadow_gate.py \
   bot/qqq_usdt_executor.py \
   bot/qqq_usdt_signal_adapter.py \
+  bot/googl_usdt_executor.py \
   bot/googl_usdt_signal_adapter.py \
   scripts/fetch_public_etf_history.py \
   scripts/fetch_googl_daily_prices.py \
