@@ -139,6 +139,20 @@ def max_drawdown_pct(equity: pd.Series) -> float:
     return float(dd.max(skipna=True) or 0.0)
 
 
+def _bar_float(row: Any, col: str | None, fallback: float) -> float:
+    """读取 itertuples row 的逐 bar 数值列；列未设/缺失/NaN/≤0 回退 fallback。"""
+    if col is None:
+        return float(fallback)
+    raw = getattr(row, col, fallback)
+    try:
+        raw = float(raw)
+    except (TypeError, ValueError):
+        return float(fallback)
+    if pd.isna(raw) or raw <= 0:
+        return float(fallback)
+    return raw
+
+
 def run_googl_4h_replay(
     bars: pd.DataFrame,
     funding: pd.DataFrame | None,
@@ -159,6 +173,8 @@ def run_googl_4h_replay(
     ramp_stop_pct: float = 0.0,
     be_lock_pct: float = 0.0,
     ramp_pre_stop_pct: float = 0.0,
+    lev_scale_col: str | None = None,
+    stop_pct_col: str | None = None,
 ) -> dict[str, Any]:
     """4h 执行层回测主函数。
 
@@ -202,6 +218,16 @@ def run_googl_4h_replay(
     2026-03-18 -28% 在 4% 止损处离场）压到更小（2.5% × 7.5x ≈ -19%），
     而确认后走出来的趋势单仍享 stop_loss_pct 的呼吸空间。仅影响有爬坡档的交易。
     默认 0 = 爬坡确认前后止损宽度一致。
+
+    lev_scale_col：可选的 per-bar 杠杆缩放列名（波动率目标研究用）。设置后，
+    入场杠杆 = leverage_tiers[tier] × 该列值（base 档同样缩放，爬坡/止损语义不变，
+    因为同笔的 full_lev 与 base_lev 缩放同一因子）。列缺失/NaN/≤0 时按 1.0 处理。
+    默认 None = 不缩放，保持原行为。
+
+    stop_pct_col：可选的 per-bar 基础止损宽度列名（%）（波动率自适应止损研究用）。
+    设置后，基础 trailing stop 宽度用该列值替代固定 stop_loss_pct（爬坡前 ramp_pre_stop_pct
+    与爬坡后 ramp_stop_pct 仍按各自 pct 逻辑优先）。列缺失/NaN/≤0 回退 stop_loss_pct。
+    默认 None = 固定 stop_loss_pct，保持原行为。
     """
     merged = bars.copy()
     if funding is not None and include_funding:
@@ -306,7 +332,8 @@ def run_googl_4h_replay(
         # --- 入场（信号允许 + 门未拦截） ---
         if entry_allowed and not holding and not prev_allow:
             tier = str(row.leverage_tier) if hasattr(row, "leverage_tier") else "base"
-            lev = float(leverage_tiers.get(tier, 0.0))
+            scale = _bar_float(row, lev_scale_col, 1.0)
+            lev = float(leverage_tiers.get(tier, 0.0)) * scale
             if lev > 0:
                 fee_cost = per_side_cost
                 capital *= 1.0 - fee_cost * lev
@@ -317,16 +344,17 @@ def run_googl_4h_replay(
                 ramp_full_lev = 0.0
                 ramped = False
                 be_locked = False
-                base_lev = float(leverage_tiers.get("base", 0.0))
+                base_lev = float(leverage_tiers.get("base", 0.0)) * scale
                 if float(ramp_confirm_pct) > 0 and lev > base_lev > 0:
                     # 高于 base 的入场先降 base 起步，盈利确认后升满
                     ramp_full_lev = lev
                     entry_leverage = base_lev
                 # 爬坡档确认前可用更紧止损（ramp_pre_stop_pct）；未设置则统一 stop_loss_pct
+                # （或 stop_pct_col 指定的逐 bar 宽度，波动率自适应止损研究用）
                 init_stop_pct = (
                     float(ramp_pre_stop_pct)
                     if (ramp_full_lev > 0 and float(ramp_pre_stop_pct) > 0)
-                    else float(stop_loss_pct)
+                    else _bar_float(row, stop_pct_col, stop_loss_pct)
                 )
                 stop_price = entry_price * (1.0 - init_stop_pct / 100.0)
                 current_trade = {
@@ -426,7 +454,8 @@ def run_googl_4h_replay(
                 elif ramp_full_lev > 0 and not ramped and float(ramp_pre_stop_pct) > 0:
                     stop_price = max(stop_price, close_price * (1.0 - float(ramp_pre_stop_pct) / 100.0))
                 else:
-                    stop_price = max(stop_price, close_price * (1.0 - float(stop_loss_pct) / 100.0))
+                    base_stop_pct = _bar_float(row, stop_pct_col, stop_loss_pct)
+                    stop_price = max(stop_price, close_price * (1.0 - base_stop_pct / 100.0))
                 # 保本锁：prev_close 相对入场价上涨 ≥ be_lock_pct → 止损底线上移到入场价。
                 # 无前视：用 prev_close（bar 开盘时已知），且要求 was_holding（入场 bar 自身不锁）。
                 if float(be_lock_pct) > 0 and not be_locked and was_holding and entry_price > 0 \
