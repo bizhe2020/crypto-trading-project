@@ -86,7 +86,9 @@ def win_metrics(path: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> t
     w = eq[(eq.index >= start) & (eq.index <= end)]
     if len(w) < 2:
         return 0.0, 0.0
-    total = (float(w.iloc[-1]) / float(w.iloc[0]) - 1.0) * 100.0
+    prev = eq[eq.index < start]
+    base = 1000.0 if prev.empty else float(prev.iloc[-1])
+    total = (float(w.iloc[-1]) / base - 1.0) * 100.0
     return total, max_drawdown_pct(w)
 
 
