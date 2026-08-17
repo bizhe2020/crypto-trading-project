@@ -13,7 +13,7 @@
   "btc_takeover_advantage": 6.0,
   "qqq_takeover_advantage": 6.0,
   "googl_takeover_advantage": 6.0,
-  "googl_execution_enabled": true,
+  "googl_execution_enabled": false,
   "googl_strategy_config": "config/config.paper.googl-high-leverage-runtime.json",
   "strategy_priority": [
     "btc_sota",
