@@ -95,7 +95,8 @@ def load_funding(path: Path) -> pd.DataFrame | None:
         "funding_rate" if "funding_rate" in df.columns else "rate"
     )
     df["funding_rate_value"] = pd.to_numeric(df[rate_col], errors="coerce").fillna(0.0)
-    return df[["date", "funding_rate_value"]].sort_values("date").reset_index(drop=True)
+    df["funding_event_time"] = df["date"]
+    return df[["date", "funding_event_time", "funding_rate_value"]].sort_values("date").reset_index(drop=True)
 
 
 def attach_googl_daily_state(
@@ -239,7 +240,7 @@ def run_googl_4h_replay(
             allow_exact_matches=True,
         )
         merged["funding_rate_value"] = merged["funding_rate_value"].fillna(0.0)
-        merged["funding_event_time"] = merged["date"]
+        merged["funding_event_time"] = merged["funding_event_time"].where(merged["funding_event_time"].notna(), pd.NaT)
         funding_available = True
     else:
         merged["funding_rate_value"] = 0.0
