@@ -14,7 +14,7 @@
   "btc_takeover_advantage": 6.0,
   "qqq_takeover_advantage": 6.0,
   "googl_takeover_advantage": 6.0,
-  "googl_execution_enabled": false,
+  "googl_execution_enabled": true,
   "strategy_priority": [
     "btc_sota",
     "qqq_usdt_aggressive",

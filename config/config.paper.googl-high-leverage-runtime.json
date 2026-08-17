@@ -31,7 +31,7 @@
   "taker_fee_rate": 0.0005,
   "slippage_bps": 5.0,
   "data_4h": "data/okx/futures/GOOGL_USDT_USDT-4h-futures.feather",
-  "data_refresh_enabled": false,
+  "data_refresh_enabled": true,
   "daily_signal_refresh_enabled": false,
   "daily_signal_stale_guard_enabled": true,
   "daily_signal_max_stale_calendar_days": 5,
