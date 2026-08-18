@@ -458,6 +458,10 @@ RSI(2)<22 −69%、RSI(3)<22 +15%，全远差于基线。
 **结论**：三方向都不提升 GOOGL。收益率阈值是过拟合（最优窗口漂移 + 跨资产失败）、VIX 抄底
 是另一套指数策略、RSI 是 whipsaw。数据：`data/public/macro/{ust10y,ust30y,ust5y,tbill13w,vix}.csv`。
 
+**补充（30Y 杠杆 cap）**：第三种机制「30Y z-score 杠杆 cap」也证伪——GOOGL 上 z>1.0→×0.5
+给出 +2167%/51%（看似优于基线 +2048%/54%），但同一机制在 QQQ 上 +447%（跑输基线 +575%）。
+跨资产失败 = 窗口特定过拟合，不是真宏观 edge。**30Y 收益率对策略体系无稳健增量。**
+
 ## 6. 分支落地清单
 
 - [x] 新分支 `feature/googl-high-leverage-strategy`
