@@ -51,6 +51,11 @@ class StrategyRouterConfig:
     qqq_takeover_advantage: float | None = None
     googl_takeover_advantage: float | None = None
     googl_execution_enabled: bool = False
+    enable_gold: bool = False
+    gold_strategy_config: str = "config/config.paper.gold-trend-runtime.json"
+    gold_min_route_score: float = 0.0
+    gold_takeover_advantage: float | None = None
+    gold_execution_enabled: bool = False
     strategy_priority: list[str] | None = None
     persist_state: bool = True
     execution_enabled: bool = False
@@ -153,6 +158,7 @@ class StrategyRouter:
         self.btc_adapter = None
         self.qqq_adapter = None
         self.googl_adapter = None
+        self.gold_adapter = None
         self.candidate_preprocessor: Callable[[list[RoutedSignalCandidate]], list[RoutedSignalCandidate]] | None = None
 
     @classmethod
@@ -219,6 +225,8 @@ class StrategyRouter:
             return float(self.config.qqq_min_route_score)
         if strategy_id == "googl_usdt_aggressive":
             return float(self.config.googl_min_route_score)
+        if strategy_id == "gold_usdt_trend":
+            return float(self.config.gold_min_route_score)
         return 0.0
 
     def _takeover_advantage_for(self, challenger_strategy_id: str) -> float:
@@ -228,6 +236,8 @@ class StrategyRouter:
             return float(self.config.qqq_takeover_advantage)
         if challenger_strategy_id == "googl_usdt_aggressive" and self.config.googl_takeover_advantage is not None:
             return float(self.config.googl_takeover_advantage)
+        if challenger_strategy_id == "gold_usdt_trend" and self.config.gold_takeover_advantage is not None:
+            return float(self.config.gold_takeover_advantage)
         return float(self.config.switch_advantage)
 
     def _is_live_eligible(self, strategy_id: str) -> bool:
@@ -235,11 +245,14 @@ class StrategyRouter:
         下 GOOGL 仍参与评估并被记录，但永不进入实盘选择。"""
         if strategy_id == "googl_usdt_aggressive":
             return bool(self.config.googl_execution_enabled)
+        if strategy_id == "gold_usdt_trend":
+            return bool(self.config.gold_execution_enabled)
         return True
 
     def _collect_candidates(self) -> list[RoutedSignalCandidate]:
         from bot.btc_signal_adapter import BtcSignalAdapter
         from bot.googl_usdt_signal_adapter import GooglUsdtSignalAdapter
+        from bot.gold_usdt_signal_adapter import GoldUsdtSignalAdapter
         from bot.qqq_usdt_signal_adapter import QqqUsdtSignalAdapter
 
         if self.btc_adapter is None:
@@ -248,6 +261,8 @@ class StrategyRouter:
             self.qqq_adapter = QqqUsdtSignalAdapter(Path(self.config.qqq_strategy_config))
         if self.googl_adapter is None:
             self.googl_adapter = GooglUsdtSignalAdapter(Path(self.config.googl_strategy_config))
+        if self.gold_adapter is None:
+            self.gold_adapter = GoldUsdtSignalAdapter(Path(self.config.gold_strategy_config))
         candidates: list[RoutedSignalCandidate] = []
         if self.config.enable_btc:
             candidates.append(self.btc_adapter.preview())
@@ -255,6 +270,8 @@ class StrategyRouter:
             candidates.append(self.qqq_adapter.preview())
         if self.config.enable_googl:
             candidates.append(self.googl_adapter.preview())
+        if self.config.enable_gold:
+            candidates.append(self.gold_adapter.preview())
         return candidates
 
     def _choose_candidate(
