@@ -584,29 +584,30 @@ class GoldUsdtExecutionEngine:
         return dict(overrides)
 
     def _load_bars(self) -> pd.DataFrame:
-        """GOOGL 执行层 bar 源。优先 4h 合约数据；缺省时回退日线分辨率 bar。
+        """GOLD 执行层 bar 源。优先 4h 合约数据；缺省时回退日线分辨率 bar。
 
-        服务器自闭环：4h feather 由部署脚本推送，日线 prices.csv 由
-        scripts/fetch_googl_daily_prices.py 每日刷新（ticker,date,open,close）。
-        日线 fallback 无 high/low，用 open/close 极值近似 —— 仅保证 shadow 观察
+        服务器自闭环：4h feather 由 scripts/fetch_gold_4h.py 每日刷新，
+        日线 prices.csv 由 scripts/scan_gold_daily_signal.py 输出
+        （gold_daily_prices.csv, date/open/high/low/close）。
+        日线 fallback 无 high/low，用 open/close 极值近似 —— 仅保证观察
         不因缺 4h 文件而崩溃，真实执行层观察仍以 4h 为准。
         """
         data_4h = self._resolve_path(str(self.gold_config.get("data_4h", "") or ""))
         if data_4h and data_4h.exists():
             return load_okx_4h(data_4h)
         daily = self._resolve_path(
-            str(self.gold_config.get("data_daily_fallback", "var/runtime/googl/prices.csv") or "")
+            str(self.gold_config.get("data_daily_fallback", "var/runtime/gold/gold_daily_prices.csv") or "")
         )
         if daily and daily.exists():
             prices = pd.read_csv(daily)
             if "ticker" in prices.columns:
-                prices = prices[prices["ticker"].str.upper().isin(["GOLD", "GOOG"])]
+                prices = prices[prices["ticker"].str.upper().isin(["GOLD", "XAU"])]
             prices["date"] = pd.to_datetime(prices["date"], utc=True, errors="coerce")
             prices["open"] = pd.to_numeric(prices.get("open"), errors="coerce")
             prices["close"] = pd.to_numeric(prices.get("close"), errors="coerce")
             prices = prices.dropna(subset=["date", "open", "close"]).sort_values("date").reset_index(drop=True)
             if prices.empty:
-                raise FileNotFoundError(f"GOOGL 日线 fallback 无有效行: {daily}")
+                raise FileNotFoundError(f"GOLD 日线 fallback 无有效行: {daily}")
             return pd.DataFrame(
                 {
                     "date": prices["date"],
@@ -617,7 +618,7 @@ class GoldUsdtExecutionEngine:
                 }
             )
         raise FileNotFoundError(
-            f"GOOGL 执行层数据缺失: data_4h {data_4h} 与日线 fallback {daily} 均不存在"
+            f"GOLD 执行层数据缺失: data_4h {data_4h} 与日线 fallback {daily} 均不存在"
         )
 
     def _load_gold_signal_path(self, signal_source: Path) -> pd.DataFrame:
@@ -877,7 +878,7 @@ class GoldUsdtExecutionEngine:
             elif basis in {"available", "free", "available_balance"}:
                 capital = self._extract_available_usdt(balance)
             else:
-                raise ValueError(f"Unsupported googl_sizing_basis: {self.router_config.gold_sizing_basis}")
+                raise ValueError(f"Unsupported gold_sizing_basis: {self.router_config.gold_sizing_basis}")
         buffer_usdt = max(0.0, float(self.router_config.gold_sizing_cash_buffer_usdt or 0.0))
         return max(0.0, float(capital) - buffer_usdt)
 
@@ -1100,11 +1101,11 @@ class GoldUsdtExecutionEngine:
         return payload
 
     def restore_position(self, rollback: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Re-open the GOOGL long after a failed strategy switch, bypassing entry gates.
+        """Re-open the GOLD long after a failed strategy switch, bypassing entry gates.
 
         The router captures a rollback context (position state + exchange position)
         BEFORE flattening the incumbent. If the target strategy fails to open, this
-        restores the GOOGL position at market with the captured stop, so the account is
+        restores the GOLD position at market with the captured stop, so the account is
         not left flat by a botched switch.
         """
         if self.router_config.mode == "paper":
@@ -1505,7 +1506,7 @@ class GoldUsdtExecutionEngine:
             "exit_price": float(exit_price or 0.0),
             "candidate_timestamp": next_state.get("last_stop_hit", {}).get("candidate_timestamp"),
         }
-        self.store.append_action(str(timestamp or "runtime"), "SYNC_GOOGL_EXTERNAL_FLAT", payload)
+        self.store.append_action(str(timestamp or "runtime"), "SYNC_GOLD_EXTERNAL_FLAT", payload)
         return payload
 
     def _close_order_chunks(self, amount: float, notional_usdt: float) -> list[float]:
@@ -1973,7 +1974,7 @@ class GoldUsdtExecutionEngine:
         elif attach_algo_client_id:
             request["algoClOrdId"] = attach_algo_client_id
         else:
-            raise ValueError("Missing GOOGL attached stop identifier")
+            raise ValueError("Missing GOLD attached stop identifier")
         return request
 
     def _build_conditional_algo_amend_request(
@@ -1995,7 +1996,7 @@ class GoldUsdtExecutionEngine:
         elif attach_algo_client_id:
             request["algoClOrdId"] = attach_algo_client_id
         else:
-            raise ValueError("Missing GOOGL conditional stop identifier")
+            raise ValueError("Missing GOLD conditional stop identifier")
         return request
 
     def _amend_exchange_stop(

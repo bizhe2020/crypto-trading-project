@@ -494,12 +494,15 @@ class StrategyRouterExecutionEngine:
     def _preprocess_route_candidates(self, candidates: list[RoutedSignalCandidate]) -> list[RoutedSignalCandidate]:
         processed: list[RoutedSignalCandidate] = []
         for candidate in candidates:
-            if candidate.strategy_id not in ("qqq_usdt_aggressive", "googl_usdt_aggressive"):
+            if candidate.strategy_id not in ("qqq_usdt_aggressive", "googl_usdt_aggressive", "gold_usdt_trend"):
                 processed.append(candidate)
                 continue
-            executor = (
-                self.qqq_executor if candidate.strategy_id == "qqq_usdt_aggressive" else self.googl_executor
-            )
+            if candidate.strategy_id == "qqq_usdt_aggressive":
+                executor = self.qqq_executor
+            elif candidate.strategy_id == "googl_usdt_aggressive":
+                executor = self.googl_executor
+            else:
+                executor = self.gold_executor
             shadow_gate = executor.shadow_gate_observe_candidate(candidate)
             if not bool(shadow_gate.get("allow", True)) and self._current_executed_strategy() != candidate.strategy_id:
                 metadata = dict(candidate.metadata)
@@ -949,6 +952,8 @@ class StrategyRouterExecutionEngine:
             return [{"strategy": strategy_id, "result": self.qqq_executor.close_position(reason=reason)}]
         if strategy_id == "googl_usdt_aggressive":
             return [{"strategy": strategy_id, "result": self.googl_executor.close_position(reason=reason)}]
+        if strategy_id == "gold_usdt_trend":
+            return [{"strategy": strategy_id, "result": self.gold_executor.close_position(reason=reason)}]
         if strategy_id == "btc_sota":
             return [{"strategy": strategy_id, "result": self._flatten_btc(reason=reason)}]
         return []
@@ -972,6 +977,12 @@ class StrategyRouterExecutionEngine:
                 state = self.googl_executor.load_state()
                 position = state.get("position") if isinstance(state.get("position"), dict) else None
                 exchange_position = self.googl_executor.fetch_position_state()
+                context["position"] = position
+                context["exchange_position"] = exchange_position if isinstance(exchange_position, dict) else {}
+            elif strategy_id == "gold_usdt_trend":
+                state = self.gold_executor.load_state()
+                position = state.get("position") if isinstance(state.get("position"), dict) else None
+                exchange_position = self.gold_executor.fetch_position_state()
                 context["position"] = position
                 context["exchange_position"] = exchange_position if isinstance(exchange_position, dict) else {}
             elif strategy_id == "btc_sota":
@@ -1060,7 +1071,7 @@ class StrategyRouterExecutionEngine:
         reason: str,
         execution_results: list[dict[str, Any]],
     ) -> None:
-        """Restore a QQQ/GOOGL incumbent after a failed switch, exchange-aware.
+        """Restore a QQQ/GOOGL/GOLD incumbent after a failed switch, exchange-aware.
 
         Adopts the single non-incumbent strategy that actually opened on the
         exchange (so we never stack a restore on top of a filled target), retains
@@ -1130,7 +1141,12 @@ class StrategyRouterExecutionEngine:
                 self._set_current_executed_strategy(incumbent)
                 return
 
-        executor = self.qqq_executor if incumbent == "qqq_usdt_aggressive" else self.googl_executor
+        if incumbent == "qqq_usdt_aggressive":
+            executor = self.qqq_executor
+        elif incumbent == "gold_usdt_trend":
+            executor = self.gold_executor
+        else:
+            executor = self.googl_executor
         try:
             restore = executor.restore_position(rollback_context)
         except Exception as exc:
@@ -1261,6 +1277,7 @@ class StrategyRouterExecutionEngine:
             "btc_sota": "BTC SOTA",
             "qqq_usdt_aggressive": "QQQ/USDT",
             "googl_usdt_aggressive": "GOOGL/USDT",
+            "gold_usdt_trend": "GOLD/XAU",
             None: "空仓",
         }
         return labels.get(strategy_id, str(strategy_id or "空仓"))
@@ -1279,16 +1296,19 @@ class StrategyRouterExecutionEngine:
         btc = payload.get("btc") if isinstance(payload.get("btc"), dict) else {}
         qqq = payload.get("qqq") if isinstance(payload.get("qqq"), dict) else {}
         googl = payload.get("googl") if isinstance(payload.get("googl"), dict) else {}
+        gold = payload.get("gold") if isinstance(payload.get("gold"), dict) else {}
         btc_status, btc_error = self._bootstrap_component_status(btc)
         qqq_status, qqq_error = self._bootstrap_component_status(qqq)
         googl_status, googl_error = self._bootstrap_component_status(googl)
+        gold_status, gold_error = self._bootstrap_component_status(gold)
         lines = [
             "Router 启动",
             f"模式: {payload.get('mode')}",
-            "链路: BTC SOTA / QQQ-USDT / GOOGL-USDT",
+            "链路: BTC SOTA / QQQ-USDT / GOOGL-USDT / GOLD-XAU",
             f"BTC: {btc_status}",
             f"QQQ: {qqq_status}",
             f"GOOGL: {googl_status}",
+            f"GOLD: {gold_status}",
         ]
         if btc_error:
             lines.append(f"BTC错误: {btc_error}")
@@ -1296,6 +1316,8 @@ class StrategyRouterExecutionEngine:
             lines.append(f"QQQ错误: {qqq_error}")
         if googl_error:
             lines.append(f"GOOGL错误: {googl_error}")
+        if gold_error:
+            lines.append(f"GOLD错误: {gold_error}")
         return "\n".join(lines)
 
     @staticmethod

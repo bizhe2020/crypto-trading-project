@@ -4801,3 +4801,89 @@ def test_router_executed_strategy_from_position_sync_googl() -> None:
     assert StrategyRouterExecutionEngine._executed_strategy_from_position_sync(
         {**flat, "qqq_contracts": 1.0, "googl_contracts": 1.0}, "qqq_usdt_aggressive"
     ) == "qqq_usdt_aggressive"
+
+
+def test_router_gold_flatten_calls_close_position_on_switch_away(tmp_path: Path) -> None:
+    """GOLD→BTC：flatten 走 gold_executor.close_position（不能返回空列表），成功后切到 BTC。"""
+    gold = _FakeStockExecutor(symbol="XAU/USDT:USDT")
+    btc = _FakeBtcExecutor(evaluate_result={"status": "ok", "position_open": True})
+    engine, execution_state = _googl_router_engine(
+        tmp_path,
+        current_executed="gold_usdt_trend",
+        selected_strategy="btc_sota",
+        selected_candidate=_BTC_CANDIDATE_PAYLOAD,
+        gold=gold,
+        btc=btc,
+    )
+    result = engine.evaluate_latest()
+    assert gold.close_calls == ["router_switch_to_btc_sota"]
+    assert result["current_executed_strategy"] == "btc_sota"
+    assert execution_state["current_executed_strategy"] == "btc_sota"
+
+
+def test_router_gold_rollback_retains_gold_when_not_flattened(tmp_path: Path) -> None:
+    """GOLD incumbent 在交易所仍持有 → 不重复 restore，记 gold_retained_on_rollback。"""
+    gold = _FakeStockExecutor(
+        symbol="XAU/USDT:USDT",
+        state={"position": {"contracts": 1.0, "entry_price": 4200.0, "stop_price": 3900.0, "leverage": 4.0}},
+        fetch_position_state={"contracts": 1.0, "notional_usdt": 4200.0, "raw": None},
+    )
+    btc = _FakeBtcExecutor(evaluate_error=RuntimeError("mock btc evaluate failure"))
+    engine, execution_state = _googl_router_engine(
+        tmp_path,
+        current_executed="gold_usdt_trend",
+        selected_strategy="btc_sota",
+        selected_candidate=_BTC_CANDIDATE_PAYLOAD,
+        gold=gold,
+        btc=btc,
+        exchange_open_state=(
+            False,
+            False,
+            False,
+            True,
+            {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 0.0, "gold_contracts": 1.0},
+        ),
+    )
+    result = engine.evaluate_latest()
+    rollback_entries = [item for item in result["execution_results"] if item.get("rollback")]
+    assert len(rollback_entries) == 1
+    assert rollback_entries[0]["result"]["status"] == "gold_retained_on_rollback"
+    assert gold.restore_calls == []
+    assert result["current_executed_strategy"] == "gold_usdt_trend"
+    assert execution_state["current_executed_strategy"] == "gold_usdt_trend"
+
+
+def test_router_gold_rollback_restores_gold_when_flat(tmp_path: Path) -> None:
+    """GOLD 已扁平 + 交易所无任何仓位 → restore 走 gold_executor（不能误派发给 googl），current 回 gold。"""
+    gold = _FakeStockExecutor(
+        symbol="XAU/USDT:USDT",
+        state={"position": {"contracts": 1.0, "entry_price": 4200.0, "stop_price": 3900.0, "leverage": 4.0}},
+        fetch_position_state={"contracts": 1.0, "notional_usdt": 4200.0, "raw": None},
+        restore_result={"status": "submitted", "action": "restore_gold_usdt_long"},
+    )
+    googl = _FakeStockExecutor(symbol="GOOGL/USDT:USDT")
+    btc = _FakeBtcExecutor(evaluate_error=RuntimeError("mock btc evaluate failure"))
+    engine, execution_state = _googl_router_engine(
+        tmp_path,
+        current_executed="gold_usdt_trend",
+        selected_strategy="btc_sota",
+        selected_candidate=_BTC_CANDIDATE_PAYLOAD,
+        gold=gold,
+        googl=googl,
+        btc=btc,
+        exchange_open_state=(
+            False,
+            False,
+            False,
+            False,
+            {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 0.0, "gold_contracts": 0.0},
+        ),
+    )
+    result = engine.evaluate_latest()
+    assert len(gold.restore_calls) == 1
+    assert gold.restore_calls[0]["strategy"] == "gold_usdt_trend"
+    assert googl.restore_calls == []
+    rollback_entries = [item for item in result["execution_results"] if item.get("rollback")]
+    assert rollback_entries[0]["result"]["status"] == "submitted"
+    assert result["current_executed_strategy"] == "gold_usdt_trend"
+    assert execution_state["current_executed_strategy"] == "gold_usdt_trend"
