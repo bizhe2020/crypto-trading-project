@@ -144,7 +144,7 @@ class StrategyRouterConfig:
     gold_market_hours_timezone: str = "UTC"
     gold_market_hours_start: str = "00:00"
     gold_market_hours_end: str = "23:59"
-    gold_market_calendar: str = "24/7"
+    gold_market_calendar: str = "none"
     gold_switch_cooldown_seconds: float = 86400.0
     okx_markets_cache_path: str = "var/okx/markets_cache.json"
     telegram_enabled: bool = False

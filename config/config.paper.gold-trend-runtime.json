@@ -1,7 +1,7 @@
 {
   "mode": "paper",
   "signal_source": "var/runtime/gold/gold_daily_signal.csv",
-  "execution_symbol": "XAU-USDT-SWAP",
+  "execution_symbol": "XAU/USDT:USDT",
   "execution_timeframe": "4h",
   "stop_loss_pct": 8.0,
   "leverage": 4.0,
@@ -15,5 +15,7 @@
   "offense_leverage": 4.0,
   "defense_leverage": 4.0,
   "ramp_confirm_pct": 0.0,
-  "ramp_pre_stop_pct": 0.0
+  "ramp_pre_stop_pct": 0.0,
+  "data_4h": "data/okx/futures/XAU_USDT_USDT-4h-futures.feather",
+  "data_daily_fallback": "var/runtime/gold/gold_daily_prices.csv"
 }

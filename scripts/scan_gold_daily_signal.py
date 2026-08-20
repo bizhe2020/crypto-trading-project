@@ -34,7 +34,11 @@ OKX_CANDLES = "https://www.okx.com/api/v5/market/candles"
 
 
 def fetch_okx_daily(inst_id: str = "XAU-USDT-SWAP") -> pd.DataFrame:
-    """从 OKX 拉 XAU-USDT-SWAP 日线（分页，最多 1000 根）。"""
+    """从 OKX 拉 XAU-USDT-SWAP 日线（分页，最多 1000 根），保留 OHLC。
+
+    除 date/close 外保留 open/high/low，供 executor 的 data_daily_fallback
+    （gold_daily_prices.csv）使用；信号计算只需 date/close。
+    """
     rows: list[list[str]] = []
     after: str | None = None
     for _ in range(5):
@@ -52,15 +56,17 @@ def fetch_okx_daily(inst_id: str = "XAU-USDT-SWAP") -> pd.DataFrame:
     df = pd.DataFrame(rows, columns=["ts", "o", "h", "l", "c", "vol", "volCcy", "volCcyQuote", "confirm"])
     df = df.drop_duplicates("ts")
     df["date"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms", utc=True).dt.normalize()
-    df["close"] = df["c"].astype(float)
-    return df.sort_values("date")[["date", "close"]].reset_index(drop=True)
+    for col, src in [("open", "o"), ("high", "h"), ("low", "l"), ("close", "c")]:
+        df[col] = df[src].astype(float)
+    return df.sort_values("date")[["date", "open", "high", "low", "close"]].reset_index(drop=True)
 
 
 def load_daily(input_path: Path | None) -> pd.DataFrame:
     if input_path and input_path.exists():
         df = pd.read_csv(input_path)
         df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None).dt.normalize()
-        return df[["date", "close"]].sort_values("date").reset_index(drop=True)
+        cols = [c for c in ("date", "open", "high", "low", "close") if c in df.columns]
+        return df[cols].sort_values("date").reset_index(drop=True)
     return fetch_okx_daily()
 
 
@@ -79,6 +85,8 @@ def generate_signal(daily: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate GOLD daily MA-cross signal.")
     parser.add_argument("--out", default="var/runtime/gold/gold_daily_signal.csv")
+    parser.add_argument("--prices-out", default="var/runtime/gold/gold_daily_prices.csv",
+                        help="日线 OHLC 输出（executor data_daily_fallback 用）")
     parser.add_argument("--input", default=None, help="本地已有日线 CSV（date,close），跳过 OKX 拉取")
     args = parser.parse_args()
 
@@ -87,7 +95,13 @@ def main() -> None:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     sig.to_csv(out, index=False)
+    prices_out = Path(args.prices_out)
+    if not prices_out.is_absolute():
+        prices_out = (ROOT / str(prices_out)).resolve()
+    prices_out.parent.mkdir(parents=True, exist_ok=True)
+    daily.to_csv(prices_out, index=False)
     print(f"gold signal -> {out}  ({len(sig)} 行, 最新 {sig.iloc[-1].date.date()} {sig.iloc[-1].position})")
+    print(f"gold daily prices -> {prices_out}  ({len(daily)} 行)")
 
 
 if __name__ == "__main__":
