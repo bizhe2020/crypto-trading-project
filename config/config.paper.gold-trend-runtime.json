@@ -3,7 +3,7 @@
   "signal_source": "var/runtime/gold/gold_daily_signal.csv",
   "execution_symbol": "XAU-USDT-SWAP",
   "execution_timeframe": "4h",
-  "stop_loss_pct": 5.0,
+  "stop_loss_pct": 8.0,
   "leverage": 4.0,
   "leverage_profile_name": "fixed4",
   "frozen_label": "gold_usdt_trend_ma50_100_5pct_4x_20260820",
