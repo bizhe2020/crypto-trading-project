@@ -9,5 +9,11 @@
   "frozen_label": "gold_usdt_trend_ma50_100_5pct_4x_20260820",
   "data_refresh_enabled": false,
   "daily_signal_stale_guard_enabled": true,
-  "daily_signal_max_stale_calendar_days": 5
+  "daily_signal_max_stale_calendar_days": 5,
+  "exchange_leverage": 4.0,
+  "base_leverage": 4.0,
+  "offense_leverage": 4.0,
+  "defense_leverage": 4.0,
+  "ramp_confirm_pct": 0.0,
+  "ramp_pre_stop_pct": 0.0
 }
