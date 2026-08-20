@@ -122,6 +122,29 @@ def attach_googl_daily_state(
     return merged.reset_index(drop=True)
 
 
+def attach_gold_daily_state(
+    okx_4h: pd.DataFrame,
+    signal_path: pd.DataFrame,
+    *,
+    trim_to_signal_end: bool = True,
+) -> pd.DataFrame:
+    """把日线黄金信号（position=GOLD/FLAT + leverage_tier）附着到 4h bars。"""
+    daily = signal_path[["date", "position", "leverage_tier", "target_leverage"]].copy()
+    daily["date"] = pd.to_datetime(daily["date"], utc=True)
+    daily = daily.sort_values("date").reset_index(drop=True)
+    merged = pd.merge_asof(
+        okx_4h.sort_values("date"),
+        daily,
+        on="date",
+        direction="backward",
+        allow_exact_matches=True,
+    )
+    if trim_to_signal_end:
+        merged = merged[merged["date"] <= daily["date"].max()].copy()
+    merged["allow_long"] = merged["position"].eq("GOLD")
+    return merged.reset_index(drop=True)
+
+
 def is_funding_settlement_bar(bar_date: Any, funding_event_time: Any) -> bool:
     if pd.isna(funding_event_time):
         return False
