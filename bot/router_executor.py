@@ -11,6 +11,7 @@ from typing import Any
 import requests
 
 from bot.googl_usdt_executor import GooglUsdtExecutionEngine
+from bot.gold_usdt_executor import GoldUsdtExecutionEngine
 from bot.okx_executor import OkxExecutionEngine
 from bot.qqq_usdt_executor import QqqUsdtExecutionEngine
 from bot.strategy_router import RoutedSignalCandidate, StrategyRouter
@@ -27,6 +28,7 @@ class StrategyRouterExecutionEngine:
         self.btc_executor = OkxExecutionEngine.from_file(self.config.btc_strategy_config)
         self.qqq_executor = QqqUsdtExecutionEngine(self.config, self.config.qqq_strategy_config)
         self.googl_executor = GooglUsdtExecutionEngine(self.config, self.config.googl_strategy_config)
+        self.gold_executor = GoldUsdtExecutionEngine(self.config, self.config.gold_strategy_config)
         self.router.candidate_preprocessor = self._preprocess_route_candidates
         self.execution_state_path = self.router.state_path.with_suffix(self.router.state_path.suffix + ".execution")
         self.heartbeat_path = self._resolve_heartbeat_path()
@@ -43,6 +45,7 @@ class StrategyRouterExecutionEngine:
             "btc": self.btc_executor.bootstrap(),
             "qqq": self.qqq_executor.bootstrap(),
             "googl": self.googl_executor.bootstrap(),
+            "gold": self.gold_executor.bootstrap(),
         }
         if bool(self.config.telegram_notify_startup):
             self._send_telegram(self._format_startup_message(payload))
@@ -58,6 +61,7 @@ class StrategyRouterExecutionEngine:
         qqq_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "qqq_usdt_aggressive" else None
         btc_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "btc_sota" else None
         googl_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "googl_usdt_aggressive" else None
+        gold_candidate = self._candidate_from_payload(selected_candidate) if selected_strategy == "gold_usdt_trend" else None
         external_qqq_flat_sync = self._sync_external_qqq_flat_after_route(position_sync, route)
         if external_qqq_flat_sync is not None:
             position_sync["qqq_external_flat_sync"] = external_qqq_flat_sync
