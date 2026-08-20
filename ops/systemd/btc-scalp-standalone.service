@@ -1,0 +1,17 @@
+[Unit]
+Description=BTC scalping standalone bot (30% allocation, fixed notional)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__PROJECT_DIR__
+ExecStart=__PYTHON_BIN__ __PROJECT_DIR__/bot/run_bot.py --config config/config.live.high-leverage-structure.json --run-loop --poll-interval-seconds 15
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+StandardOutput=append:__PROJECT_DIR__/var/log/btc_scalp_standalone.log
+StandardError=append:__PROJECT_DIR__/var/log/btc_scalp_standalone.log
+
+[Install]
+WantedBy=multi-user.target
