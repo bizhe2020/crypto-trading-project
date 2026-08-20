@@ -4330,6 +4330,7 @@ def test_router_rollback_adopts_btc_when_btc_opened_despite_error(tmp_path: Path
         True,
         False,
         False,
+        False,
         {"status": "ok", "btc_long_contracts": 1.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 0.0},
     )
     restore_calls: list[dict[str, Any]] = []
@@ -4372,6 +4373,7 @@ def test_router_rollback_retains_qqq_when_not_actually_flattened(tmp_path: Path)
     engine._exchange_position_open_state = lambda: (  # type: ignore[method-assign]
         False,
         True,
+        False,
         False,
         {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 119.81, "googl_contracts": 0.0},
     )
@@ -4520,7 +4522,8 @@ def _googl_router_engine(
     qqq: _FakeStockExecutor | None = None,
     googl: _FakeStockExecutor | None = None,
     btc: _FakeBtcExecutor | None = None,
-    exchange_open_state: tuple[bool, bool, bool, dict[str, Any]] | None = None,
+    gold: _FakeStockExecutor | None = None,
+    exchange_open_state: tuple[bool, bool, bool, bool, dict[str, Any]] | None = None,
     real_exchange_sync: bool = False,
     real_googl_flat_sync: bool = False,
 ) -> tuple[StrategyRouterExecutionEngine, dict[str, Any]]:
@@ -4564,6 +4567,7 @@ def _googl_router_engine(
     engine.qqq_executor = qqq if qqq is not None else _FakeStockExecutor(symbol="QQQ/USDT:USDT")
     engine.googl_executor = googl if googl is not None else _FakeStockExecutor(symbol="GOOGL/USDT:USDT")
     engine.btc_executor = btc if btc is not None else _FakeBtcExecutor()
+    engine.gold_executor = gold if gold is not None else _FakeStockExecutor(symbol="XAU-USDT-SWAP")
     return engine, execution_state
 
 
@@ -4680,6 +4684,7 @@ def test_router_googl_rollback_retains_googl_when_not_flattened(tmp_path: Path) 
             False,
             False,
             True,
+            False,
             {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 1.0},
         ),
     )
@@ -4712,6 +4717,7 @@ def test_router_googl_rollback_restores_googl_when_flat(tmp_path: Path) -> None:
             False,
             False,
             False,
+            False,
             {"status": "ok", "btc_long_contracts": 0.0, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 0.0},
         ),
     )
@@ -4741,6 +4747,7 @@ def test_router_googl_open_not_confirmed_rolls_back_qqq(tmp_path: Path) -> None:
         qqq=qqq,
         googl=googl,
         exchange_open_state=(
+            False,
             False,
             False,
             False,
