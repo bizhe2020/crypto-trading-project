@@ -4803,6 +4803,19 @@ def test_router_executed_strategy_from_position_sync_googl() -> None:
     ) == "qqq_usdt_aggressive"
 
 
+def test_router_position_sync_ignores_btc_when_disabled() -> None:
+    """enable_btc=false 时 BTC 由独立 btc-scalp 管理，position sync 不得把 BTC 持仓识别为 btc_sota。"""
+    sync = {"btc_long_contracts": 8.47, "btc_short_contracts": 0.0, "qqq_contracts": 0.0, "googl_contracts": 0.0, "gold_contracts": 0.0}
+    # 默认（不忽略）：BTC 持仓 → btc_sota
+    assert StrategyRouterExecutionEngine._executed_strategy_from_position_sync(sync, None) == "btc_sota"
+    # enable_btc=false（ignore_btc=True）：忽略 BTC，四腿全空 → None
+    assert StrategyRouterExecutionEngine._executed_strategy_from_position_sync(sync, None, ignore_btc=True) is None
+    # 忽略 BTC 但 QQQ 有持仓 → 仍正确识别 qqq
+    assert StrategyRouterExecutionEngine._executed_strategy_from_position_sync(
+        {**sync, "qqq_contracts": 1.0}, None, ignore_btc=True
+    ) == "qqq_usdt_aggressive"
+
+
 def test_router_gold_flatten_calls_close_position_on_switch_away(tmp_path: Path) -> None:
     """GOLD→BTC：flatten 走 gold_executor.close_position（不能返回空列表），成功后切到 BTC。"""
     gold = _FakeStockExecutor(symbol="XAU/USDT:USDT")

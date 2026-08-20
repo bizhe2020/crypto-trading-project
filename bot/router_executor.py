@@ -739,7 +739,11 @@ class StrategyRouterExecutionEngine:
         sync = self._fetch_exchange_position_sync()
         if sync.get("status") != "ok":
             return sync
-        exchange_strategy = self._executed_strategy_from_position_sync(sync, stored_strategy)
+        exchange_strategy = self._executed_strategy_from_position_sync(
+            sync,
+            stored_strategy,
+            ignore_btc=not bool(self.config.enable_btc),
+        )
         if exchange_strategy == stored_strategy:
             state = self._load_execution_state()
             state["exchange_position_sync"] = sync
@@ -847,10 +851,21 @@ class StrategyRouterExecutionEngine:
         }
 
     @staticmethod
-    def _executed_strategy_from_position_sync(sync: dict[str, Any], fallback: str | None = None) -> str | None:
+    def _executed_strategy_from_position_sync(
+        sync: dict[str, Any],
+        fallback: str | None = None,
+        *,
+        ignore_btc: bool = False,
+    ) -> str | None:
+        # enable_btc=false 时 BTC 由独立的 btc-scalp 服务管理，router 不应把
+        # 交易所里的 BTC 持仓识别为自己的 btc_sota 腿，否则切换时会误平 BTC。
         btc_open = (
-            float(sync.get("btc_long_contracts", 0.0) or 0.0) > 0
-            or float(sync.get("btc_short_contracts", 0.0) or 0.0) > 0
+            (
+                float(sync.get("btc_long_contracts", 0.0) or 0.0) > 0
+                or float(sync.get("btc_short_contracts", 0.0) or 0.0) > 0
+            )
+            if not ignore_btc
+            else False
         )
         qqq_open = float(sync.get("qqq_contracts", 0.0) or 0.0) > 0
         googl_open = float(sync.get("googl_contracts", 0.0) or 0.0) > 0
