@@ -4878,7 +4878,7 @@ class OkxExecutionEngine:
                 "decision": decision,
             }
 
-        target_notional = available_usdt * effective_leverage
+        target_notional = available_usdt * self.config.position_size_pct * effective_leverage
         reference_price = float(action.entry_price or 0.0)
         if reference_price <= 0:
             return sizing, {
