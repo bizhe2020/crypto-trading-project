@@ -132,10 +132,6 @@ class ExecutorConfig:
     loose_stage0_trigger_r: float = 2.0
     loose_stage1_trigger_r: float = 4.0
     loose_stage1_lock_r: float = 1.5
-    enable_runner_trailing: bool = False
-    runner_trigger_r: float = 2.0
-    runner_retrace_r: float = 1.0
-    runner_retrace_pct: float | None = None
     S0_trigger_rr: float = 0.5
     S1_trigger_rr: float = 1.0
     S3_trigger_rr: float = 3.0
@@ -403,10 +399,6 @@ class ExecutorConfig:
             loose_stage0_trigger_r=self.loose_stage0_trigger_r,
             loose_stage1_trigger_r=self.loose_stage1_trigger_r,
             loose_stage1_lock_r=self.loose_stage1_lock_r,
-            enable_runner_trailing=self.enable_runner_trailing,
-            runner_trigger_r=self.runner_trigger_r,
-            runner_retrace_r=self.runner_retrace_r,
-            runner_retrace_pct=self.runner_retrace_pct,
             S0_trigger_rr=self.S0_trigger_rr,
             S1_trigger_rr=self.S1_trigger_rr,
             S3_trigger_rr=self.S3_trigger_rr,

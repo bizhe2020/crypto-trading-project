@@ -154,11 +154,6 @@ class StrategyConfig:
     loose_stage0_trigger_r: float = 2.0
     loose_stage1_trigger_r: float = 4.0
     loose_stage1_lock_r: float = 1.5
-    # runner（从最高点回撤跟踪）——stage1 锁利到位后，随 peak 继续上移止损，捕获超级行情
-    enable_runner_trailing: bool = False
-    runner_trigger_r: float = 2.0
-    runner_retrace_r: float = 1.0
-    runner_retrace_pct: float | None = None
     # dynamic high leverage（与 executor 的 dynamic_high_leverage 对齐）
     enable_dynamic_high_leverage_structure: bool = False
     dynamic_base_leverage: float = 4.0
@@ -327,7 +322,6 @@ class PositionState:
     pressure_touch_lock_update_idx: int | None = None
     last_stop_update_reason: str | None = None
     last_stop_update_idx: int | None = None
-    runner_peak_price: float | None = None
 
 
 @dataclass
@@ -1952,24 +1946,6 @@ class ScalpRobustEngine:
                 new_stop = min(new_stop, pos.entry_price + risk_price * trigger_r)
                 new_stage = new_stage_candidate
 
-        # runner：stage1 锁利到位后，随最高点回撤继续上移止损，捕获超级行情
-        if self.config.enable_runner_trailing and (new_stage >= 1 or stage >= 1):
-            if pnl >= self.config.runner_trigger_r * pos.risk_amount:
-                obs = self._rr_observation_price(pos, curr, trigger_mode)
-                peak = max(pos.runner_peak_price or pos.entry_price, curr.h)
-                pos.runner_peak_price = peak
-                retrace_price = risk_price * self.config.runner_retrace_r
-                if self.config.runner_retrace_pct is not None:
-                    retrace_price = peak * (self.config.runner_retrace_pct / 100.0)
-                runner_stop = peak - retrace_price
-                # 不能低于已锁的 stage stop；不能高于现价（避免虚构成交/立即触发）
-                runner_stop = max(runner_stop, new_stop if new_stop is not None else pos.sl_price)
-                runner_stop = min(runner_stop, obs)
-                if runner_stop > (new_stop if new_stop is not None else pos.sl_price):
-                    new_stop = runner_stop
-                    if new_stage < 1:
-                        new_stage = 1
-
         if new_stop is None:
             return None
         pos.sl_price = new_stop
@@ -2009,24 +1985,6 @@ class ScalpRobustEngine:
                 # 保护：锁利幅度不能超过触发点，否则止损低于现价（复利爆炸 bug）
                 new_stop = max(new_stop, pos.entry_price - risk_price * trigger_r)
                 new_stage = new_stage_candidate
-
-        # runner：stage1 锁利到位后，随最低点反弹继续下移止损，捕获超级行情
-        if self.config.enable_runner_trailing and (new_stage >= 1 or stage >= 1):
-            if pnl >= self.config.runner_trigger_r * pos.risk_amount:
-                obs = self._rr_observation_price(pos, curr, trigger_mode)
-                trough = min(pos.runner_peak_price or pos.entry_price, curr.l)
-                pos.runner_peak_price = trough
-                retrace_price = risk_price * self.config.runner_retrace_r
-                if self.config.runner_retrace_pct is not None:
-                    retrace_price = trough * (self.config.runner_retrace_pct / 100.0)
-                runner_stop = trough + retrace_price
-                # 不能高于已锁的 stage stop；不能低于现价（避免虚构成交/立即触发）
-                runner_stop = min(runner_stop, new_stop if new_stop is not None else pos.sl_price)
-                runner_stop = max(runner_stop, obs)
-                if runner_stop < (new_stop if new_stop is not None else pos.sl_price):
-                    new_stop = runner_stop
-                    if new_stage < 1:
-                        new_stage = 1
 
         if new_stop is None:
             return None
