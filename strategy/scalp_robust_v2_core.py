@@ -148,6 +148,45 @@ class StrategyConfig:
     T1: int = 15
     T2: int = 40
     T_max: int = 96
+    max_hold_days: int | None = None
+    enable_structure_invalidation_exit: bool = False
+    structure_invalidation_buffer_pct: float = 0.0
+    loose_stage0_trigger_r: float = 2.0
+    loose_stage1_trigger_r: float = 4.0
+    loose_stage1_lock_r: float = 1.5
+    # runner（从最高点回撤跟踪）——stage1 锁利到位后，随 peak 继续上移止损，捕获超级行情
+    enable_runner_trailing: bool = False
+    runner_trigger_r: float = 2.0
+    runner_retrace_r: float = 1.0
+    runner_retrace_pct: float | None = None
+    # dynamic high leverage（与 executor 的 dynamic_high_leverage 对齐）
+    enable_dynamic_high_leverage_structure: bool = False
+    dynamic_base_leverage: float = 4.0
+    dynamic_high_growth_leverage: float = 7.5
+    dynamic_tight_stop_leverage: float = 7.5
+    dynamic_recovery_leverage: float = 2.0
+    dynamic_drawdown_leverage: float = 2.0
+    dynamic_unhealthy_leverage: float = 2.0
+    dynamic_defense_leverage: float = 2.0
+    dynamic_max_effective_leverage: float = 20.0
+    dynamic_state_lookback_trades: int = 8
+    dynamic_reattack_lookback_trades: int = 2
+    dynamic_defense_enter_unit_return_pct: float = -2.0
+    dynamic_defense_enter_win_rate_pct: float = 20.0
+    dynamic_loss_streak_threshold: int = 3
+    dynamic_drawdown_threshold_pct: float = 20.0
+    dynamic_offense_enter_unit_return_pct: float = -0.5
+    dynamic_offense_enter_win_rate_pct: float = 40.0
+    dynamic_reattack_unit_return_pct: float = 0.5
+    dynamic_reattack_win_rate_pct: float = 33.0
+    dynamic_win_streak_threshold: int = 2
+    dynamic_health_lookback_trades: int = 6
+    dynamic_health_min_unit_return_pct: float = 0.0
+    dynamic_health_min_win_rate_pct: float = 25.0
+    dynamic_tight_stop_pct: float = 1.25
+    dynamic_max_stop_distance_pct: float = 1.5
+    dynamic_high_growth_max_stop_distance_pct: float = 2.0
+    dynamic_defense_max_stop_distance_pct: float = 1.5
     S0_trigger_rr: float = 0.5
     S1_trigger_rr: float = 1.0
     S3_trigger_rr: float = 3.0
@@ -254,6 +293,7 @@ class PositionState:
     target_rr: float
     max_hold_bars: int | None
     trail_style: str
+    structure_invalidation_price: float | None = None
     stage: int = -1
     tit_stage: int = 0
     time_based_trailing_enabled: bool = False
@@ -287,6 +327,7 @@ class PositionState:
     pressure_touch_lock_update_idx: int | None = None
     last_stop_update_reason: str | None = None
     last_stop_update_idx: int | None = None
+    runner_peak_price: float | None = None
 
 
 @dataclass
@@ -886,6 +927,16 @@ class ScalpRobustEngine:
         self._regime_config_cache: dict[str, StrategyConfig] = {}
         self._atr_15m = self._compute_atr_series(self.config.atr_period)
         self._reset_pending_pullback_state()
+        self.dynamic_state: dict[str, Any] = {
+            "mode": "offense",
+            "capital": self.capital,
+            "drawdown_peak": self.capital,
+            "unit_returns": [],
+            "loss_streak": 0,
+            "win_streak": 0,
+            "last_update_time": None,
+            "last_decision": None,
+        }
 
     @classmethod
     def from_candles(
@@ -1029,6 +1080,43 @@ class ScalpRobustEngine:
         )
         filled_target_price = self._target_price_from_rr(filled_entry_price, sl_price, direction, target_rr)
         stop_distance = abs(filled_entry_price - sl_price)
+        structure_invalidation_price = None
+        if self.config.enable_structure_invalidation_exit:
+            prev_lows = [l for l in self.precomputed.lows_15m if l < idx]
+            if prev_lows:
+                structure_invalidation_price = (
+                    self.c15m[prev_lows[-1]].l
+                    * (1 - self.config.structure_invalidation_buffer_pct / 100)
+                )
+        # dynamic high leverage：算 effective_leverage + defense 超限 skip
+        effective_leverage = float(self.config.leverage)
+        dynamic_decision: dict[str, Any] | None = None
+        if self.config.enable_dynamic_high_leverage_structure:
+            stop_distance_pct = stop_distance / filled_entry_price * 100.0 if filled_entry_price > 0 else 0.0
+            diagnostics = {
+                "entry_price": filled_entry_price,
+                "stop_price": sl_price,
+                "stop_distance_pct": stop_distance_pct,
+                "regime_label": regime_label,
+                "trail_style": trail_style,
+                "direction": direction,
+                "is_high_growth": regime_label == "high_growth",
+                "is_tight_stop": 0.0 < stop_distance_pct <= float(self.config.dynamic_tight_stop_pct),
+                "available_usdt": self.capital,
+            }
+            risk_mode, mode_reasons, mode_stats = self._dynamic_next_mode(diagnostics)
+            effective_leverage, leverage_reasons = self._dynamic_select_effective_leverage(risk_mode, diagnostics, mode_stats)
+            dynamic_decision = {
+                "risk_mode": risk_mode,
+                "mode_reasons": mode_reasons,
+                "mode_stats": mode_stats,
+                "effective_leverage": effective_leverage,
+                "leverage_reasons": leverage_reasons,
+                "diagnostics": diagnostics,
+            }
+            max_stop = self._dynamic_max_stop_distance_for(risk_mode, diagnostics["is_high_growth"])
+            if stop_distance_pct > max_stop:
+                return None  # defense / stop 超限，skip 开仓
         if requested_notional_override is not None:
             notional = max(float(requested_notional_override), 0.0)
             max_notional = notional
@@ -1037,7 +1125,7 @@ class ScalpRobustEngine:
             max_notional = (
                 float(self.config.fixed_notional_usdt)
                 if self.config.fixed_notional_usdt is not None
-                else self.capital * position_size_pct * self.config.leverage
+                else self.capital * position_size_pct * effective_leverage
             )
             risk_based_notional = (
                 (risk_amount / stop_distance) * filled_entry_price
@@ -1056,6 +1144,7 @@ class ScalpRobustEngine:
             entry_price=filled_entry_price,
             sl_price=sl_price,
             initial_sl_price=sl_price,
+            structure_invalidation_price=structure_invalidation_price,
             target_price=filled_target_price,
             entry_time=datetime.fromtimestamp(self.c15m[idx].ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M"),
             capital_at_entry=self.capital,
@@ -1077,6 +1166,9 @@ class ScalpRobustEngine:
             exit_profile=exit_profile,
             exit_profile_reason=exit_profile_reason,
             exit_profile_overrides=dict(exit_profile_overrides) if isinstance(exit_profile_overrides, dict) else None,
+            execution_effective_leverage=effective_leverage if dynamic_decision is not None else None,
+            execution_risk_mode=dynamic_decision["risk_mode"] if dynamic_decision is not None else None,
+            execution_leverage_reasons=list(dynamic_decision["leverage_reasons"]) if dynamic_decision is not None else None,
         )
         if self.config.replay_sync_entry_to_signal_price:
             self.sync_position_execution(
@@ -1249,6 +1341,22 @@ class ScalpRobustEngine:
             )
         )
         self.capital += pnl
+        if self.config.enable_dynamic_high_leverage_structure:
+            unit_return = pnl / pos.capital_at_entry if pos.capital_at_entry > 0 else 0.0
+            if not isinstance(self.dynamic_state.get("unit_returns"), list):
+                self.dynamic_state["unit_returns"] = []
+            self.dynamic_state["unit_returns"].append(unit_return)
+            if unit_return > 0:
+                self.dynamic_state["win_streak"] = int(self.dynamic_state.get("win_streak", 0) or 0) + 1
+                self.dynamic_state["loss_streak"] = 0
+            else:
+                self.dynamic_state["loss_streak"] = int(self.dynamic_state.get("loss_streak", 0) or 0) + 1
+                self.dynamic_state["win_streak"] = 0
+            self.dynamic_state["capital"] = self.capital
+            self.dynamic_state["drawdown_peak"] = max(
+                float(self.dynamic_state.get("drawdown_peak", self.capital) or self.capital),
+                self.capital,
+            )
         self.exit_reasons[reason] = self.exit_reasons.get(reason, 0) + 1
         self.position = None
         return StrategyAction(
@@ -1267,6 +1375,98 @@ class ScalpRobustEngine:
             },
         )
 
+    def _dynamic_recent_stats(self, unit_returns: list[Any], lookback: int) -> dict[str, float]:
+        values = [float(x) for x in unit_returns[-max(lookback, 0):] if x is not None]
+        if not values:
+            return {"unit_return_pct": 0.0, "win_rate_pct": 0.0, "count": 0.0}
+        wins = sum(1 for x in values if x > 0)
+        return {
+            "unit_return_pct": sum(values) * 100.0,
+            "win_rate_pct": wins / len(values) * 100.0,
+            "count": float(len(values)),
+        }
+
+    def _dynamic_next_mode(self, diagnostics: dict[str, Any]) -> tuple[str, list[str], dict[str, Any]]:
+        state = self.dynamic_state
+        unit_returns = state.get("unit_returns") if isinstance(state.get("unit_returns"), list) else []
+        recent = self._dynamic_recent_stats(unit_returns, int(self.config.dynamic_state_lookback_trades))
+        short = self._dynamic_recent_stats(unit_returns, int(self.config.dynamic_reattack_lookback_trades))
+        mode = str(state.get("mode") or "offense")
+        capital = float(state.get("capital", 0.0) or 0.0)
+        peak = float(state.get("drawdown_peak", capital) or capital)
+        drawdown_pct = (peak - capital) / peak * 100.0 if peak > 0 else 0.0
+        reasons: list[str] = []
+        if mode != "defense":
+            if recent["count"] > 0 and recent["unit_return_pct"] <= float(self.config.dynamic_defense_enter_unit_return_pct):
+                reasons.append("low_recent_unit_return")
+            if recent["count"] > 0 and recent["win_rate_pct"] <= float(self.config.dynamic_defense_enter_win_rate_pct):
+                reasons.append("low_recent_win_rate")
+            if int(state.get("loss_streak", 0) or 0) >= int(self.config.dynamic_loss_streak_threshold):
+                reasons.append("loss_streak")
+            if drawdown_pct >= float(self.config.dynamic_drawdown_threshold_pct):
+                reasons.append("drawdown")
+            return ("defense" if reasons else "offense"), reasons, {"recent": recent, "short": short, "drawdown_pct": drawdown_pct}
+        recovered = (
+            recent["count"] > 0
+            and recent["unit_return_pct"] >= float(self.config.dynamic_offense_enter_unit_return_pct)
+            and recent["win_rate_pct"] >= float(self.config.dynamic_offense_enter_win_rate_pct)
+        )
+        if recovered:
+            return "offense", ["recovered_recent_signal"], {"recent": recent, "short": short, "drawdown_pct": drawdown_pct}
+        reattack = (
+            short["count"] > 0
+            and short["unit_return_pct"] >= float(self.config.dynamic_reattack_unit_return_pct)
+            and short["win_rate_pct"] >= float(self.config.dynamic_reattack_win_rate_pct)
+        )
+        if reattack:
+            return "offense", ["short_window_reattack"], {"recent": recent, "short": short, "drawdown_pct": drawdown_pct}
+        return "defense", reasons, {"recent": recent, "short": short, "drawdown_pct": drawdown_pct}
+
+    def _dynamic_select_effective_leverage(
+        self,
+        risk_mode: str,
+        diagnostics: dict[str, Any],
+        mode_stats: dict[str, Any],
+    ) -> tuple[float, list[str]]:
+        max_leverage = float(self.config.dynamic_max_effective_leverage)
+        if risk_mode == "defense":
+            return min(float(self.config.dynamic_defense_leverage), max_leverage), ["state_defense_reduce"]
+        leverage = float(self.config.dynamic_base_leverage)
+        reasons = ["base"]
+        if diagnostics["is_high_growth"]:
+            leverage = max(leverage, float(self.config.dynamic_high_growth_leverage))
+            reasons.append("high_growth")
+        if diagnostics["is_tight_stop"]:
+            leverage = max(leverage, float(self.config.dynamic_tight_stop_leverage))
+            reasons.append("tight_stop")
+        if int(self.dynamic_state.get("win_streak", 0) or 0) >= int(self.config.dynamic_win_streak_threshold):
+            leverage = min(max_leverage, leverage * 1.15)
+            reasons.append("win_streak_expand")
+        health = self._dynamic_recent_stats(
+            self.dynamic_state.get("unit_returns") if isinstance(self.dynamic_state.get("unit_returns"), list) else [],
+            int(self.config.dynamic_health_lookback_trades),
+        )
+        if (
+            health["count"] > 0
+            and (
+                health["unit_return_pct"] < float(self.config.dynamic_health_min_unit_return_pct)
+                or health["win_rate_pct"] < float(self.config.dynamic_health_min_win_rate_pct)
+            )
+        ):
+            leverage = min(leverage, float(self.config.dynamic_unhealthy_leverage))
+            reasons.append("market_unhealthy_reduce")
+        if float(mode_stats.get("drawdown_pct", 0.0) or 0.0) >= float(self.config.dynamic_drawdown_threshold_pct):
+            leverage = min(leverage, float(self.config.dynamic_drawdown_leverage))
+            reasons.append("drawdown_reduce")
+        return max(0.0, min(leverage, max_leverage)), reasons
+
+    def _dynamic_max_stop_distance_for(self, risk_mode: str, is_high_growth: bool) -> float:
+        if risk_mode == "defense":
+            return float(self.config.dynamic_defense_max_stop_distance_pct)
+        if is_high_growth:
+            return float(self.config.dynamic_high_growth_max_stop_distance_pct)
+        return float(self.config.dynamic_max_stop_distance_pct)
+
     def manage_position(self, idx: int) -> list[StrategyAction]:
         if not self.position:
             return []
@@ -1281,6 +1481,15 @@ class ScalpRobustEngine:
             return actions
 
         if pos.direction == Direction.BULL:
+            if (
+                self.config.enable_structure_invalidation_exit
+                and pos.structure_invalidation_price is not None
+                and curr.l < pos.structure_invalidation_price
+            ):
+                actions.append(
+                    self.close_position(idx, "structure_invalidation", pos.structure_invalidation_price)
+                )
+                return actions
             if curr.l <= pos.sl_price:
                 actions.append(self.close_position(idx, "stop_loss", pos.sl_price))
                 return actions
@@ -1731,7 +1940,7 @@ class ScalpRobustEngine:
         if risk_price <= 0:
             return None
         templates = {
-            "loose": [(2.0, 0.0), (4.0, 1.5)],
+            "loose": [(self.config.loose_stage0_trigger_r, 0.0), (self.config.loose_stage1_trigger_r, self.config.loose_stage1_lock_r)],
             "normal": [(1.0, 0.0), (2.0, 0.5), (3.0, 1.0)],
             "tight": [(0.75, 0.25), (1.5, 0.75)],
         }
@@ -1739,7 +1948,27 @@ class ScalpRobustEngine:
         for new_stage_candidate, (trigger_r, lock_r) in enumerate(template):
             if pnl >= trigger_r * pos.risk_amount and stage < new_stage_candidate:
                 new_stop = pos.entry_price + risk_price * lock_r
+                # 保护：锁利幅度不能超过触发点，否则止损高于现价（复利爆炸 bug）
+                new_stop = min(new_stop, pos.entry_price + risk_price * trigger_r)
                 new_stage = new_stage_candidate
+
+        # runner：stage1 锁利到位后，随最高点回撤继续上移止损，捕获超级行情
+        if self.config.enable_runner_trailing and (new_stage >= 1 or stage >= 1):
+            if pnl >= self.config.runner_trigger_r * pos.risk_amount:
+                obs = self._rr_observation_price(pos, curr, trigger_mode)
+                peak = max(pos.runner_peak_price or pos.entry_price, curr.h)
+                pos.runner_peak_price = peak
+                retrace_price = risk_price * self.config.runner_retrace_r
+                if self.config.runner_retrace_pct is not None:
+                    retrace_price = peak * (self.config.runner_retrace_pct / 100.0)
+                runner_stop = peak - retrace_price
+                # 不能低于已锁的 stage stop；不能高于现价（避免虚构成交/立即触发）
+                runner_stop = max(runner_stop, new_stop if new_stop is not None else pos.sl_price)
+                runner_stop = min(runner_stop, obs)
+                if runner_stop > (new_stop if new_stop is not None else pos.sl_price):
+                    new_stop = runner_stop
+                    if new_stage < 1:
+                        new_stage = 1
 
         if new_stop is None:
             return None
@@ -1769,7 +1998,7 @@ class ScalpRobustEngine:
         if risk_price <= 0:
             return None
         templates = {
-            "loose": [(2.0, 0.0), (4.0, 1.5)],
+            "loose": [(self.config.loose_stage0_trigger_r, 0.0), (self.config.loose_stage1_trigger_r, self.config.loose_stage1_lock_r)],
             "normal": [(1.0, 0.0), (2.0, 0.5), (3.0, 1.0)],
             "tight": [(0.75, 0.25), (1.5, 0.75)],
         }
@@ -1777,7 +2006,27 @@ class ScalpRobustEngine:
         for new_stage_candidate, (trigger_r, lock_r) in enumerate(template):
             if pnl >= trigger_r * pos.risk_amount and stage < new_stage_candidate:
                 new_stop = pos.entry_price - risk_price * lock_r
+                # 保护：锁利幅度不能超过触发点，否则止损低于现价（复利爆炸 bug）
+                new_stop = max(new_stop, pos.entry_price - risk_price * trigger_r)
                 new_stage = new_stage_candidate
+
+        # runner：stage1 锁利到位后，随最低点反弹继续下移止损，捕获超级行情
+        if self.config.enable_runner_trailing and (new_stage >= 1 or stage >= 1):
+            if pnl >= self.config.runner_trigger_r * pos.risk_amount:
+                obs = self._rr_observation_price(pos, curr, trigger_mode)
+                trough = min(pos.runner_peak_price or pos.entry_price, curr.l)
+                pos.runner_peak_price = trough
+                retrace_price = risk_price * self.config.runner_retrace_r
+                if self.config.runner_retrace_pct is not None:
+                    retrace_price = trough * (self.config.runner_retrace_pct / 100.0)
+                runner_stop = trough + retrace_price
+                # 不能高于已锁的 stage stop；不能低于现价（避免虚构成交/立即触发）
+                runner_stop = min(runner_stop, new_stop if new_stop is not None else pos.sl_price)
+                runner_stop = max(runner_stop, obs)
+                if runner_stop < (new_stop if new_stop is not None else pos.sl_price):
+                    new_stop = runner_stop
+                    if new_stage < 1:
+                        new_stage = 1
 
         if new_stop is None:
             return None
@@ -2737,7 +2986,7 @@ class ScalpRobustEngine:
             if regime == "bull_weak":
                 rr = self.config.bull_weak_long_rr_ratio_override or rr
                 style = self.config.bull_weak_long_trail_style_override or style
-            return score, rr, None, style
+            return score, rr, (self.config.max_hold_days * self.config.T_max if self.config.max_hold_days else None), style
 
         score = self._btc_bear_trend_score_for_idx(idx)
         if not self.config.enable_short_regime_layered_exit:
@@ -2756,4 +3005,4 @@ class ScalpRobustEngine:
         if regime == "bear_weak":
             rr = self.config.bear_weak_short_rr_ratio_override or rr
             style = self.config.bear_weak_short_trail_style_override or style
-        return score, rr, None, style
+        return score, rr, (self.config.max_hold_days * self.config.T_max if self.config.max_hold_days else None), style

@@ -129,6 +129,13 @@ class ExecutorConfig:
     T1: int = 15
     T2: int = 40
     T_max: int = 96
+    loose_stage0_trigger_r: float = 2.0
+    loose_stage1_trigger_r: float = 4.0
+    loose_stage1_lock_r: float = 1.5
+    enable_runner_trailing: bool = False
+    runner_trigger_r: float = 2.0
+    runner_retrace_r: float = 1.0
+    runner_retrace_pct: float | None = None
     S0_trigger_rr: float = 0.5
     S1_trigger_rr: float = 1.0
     S3_trigger_rr: float = 3.0
@@ -393,6 +400,13 @@ class ExecutorConfig:
             T1=self.T1,
             T2=self.T2,
             T_max=self.T_max,
+            loose_stage0_trigger_r=self.loose_stage0_trigger_r,
+            loose_stage1_trigger_r=self.loose_stage1_trigger_r,
+            loose_stage1_lock_r=self.loose_stage1_lock_r,
+            enable_runner_trailing=self.enable_runner_trailing,
+            runner_trigger_r=self.runner_trigger_r,
+            runner_retrace_r=self.runner_retrace_r,
+            runner_retrace_pct=self.runner_retrace_pct,
             S0_trigger_rr=self.S0_trigger_rr,
             S1_trigger_rr=self.S1_trigger_rr,
             S3_trigger_rr=self.S3_trigger_rr,
@@ -464,6 +478,35 @@ class ExecutorConfig:
             slippage_bps=self.slippage_bps,
             replay_sync_entry_to_signal_price=self.replay_sync_entry_to_signal_price,
             require_non_bearish_structure_for_long=self.require_non_bearish_structure_for_long_live,
+            # 注意：引擎内 dynamic 仅在回测时显式开启；实盘 executor 用自己的 _dynamic_high_leverage_pre_open，
+            # 不能在这里传 True，否则实盘会双重处理 dynamic 杠杆。
+            enable_dynamic_high_leverage_structure=False,
+            dynamic_base_leverage=self.dynamic_base_leverage,
+            dynamic_high_growth_leverage=self.dynamic_high_growth_leverage,
+            dynamic_tight_stop_leverage=self.dynamic_tight_stop_leverage,
+            dynamic_recovery_leverage=self.dynamic_recovery_leverage,
+            dynamic_drawdown_leverage=self.dynamic_drawdown_leverage,
+            dynamic_unhealthy_leverage=self.dynamic_unhealthy_leverage,
+            dynamic_defense_leverage=self.dynamic_defense_leverage,
+            dynamic_max_effective_leverage=self.dynamic_max_effective_leverage,
+            dynamic_state_lookback_trades=self.dynamic_state_lookback_trades,
+            dynamic_reattack_lookback_trades=self.dynamic_reattack_lookback_trades,
+            dynamic_defense_enter_unit_return_pct=self.dynamic_defense_enter_unit_return_pct,
+            dynamic_defense_enter_win_rate_pct=self.dynamic_defense_enter_win_rate_pct,
+            dynamic_loss_streak_threshold=self.dynamic_loss_streak_threshold,
+            dynamic_drawdown_threshold_pct=self.dynamic_drawdown_threshold_pct,
+            dynamic_offense_enter_unit_return_pct=self.dynamic_offense_enter_unit_return_pct,
+            dynamic_offense_enter_win_rate_pct=self.dynamic_offense_enter_win_rate_pct,
+            dynamic_reattack_unit_return_pct=self.dynamic_reattack_unit_return_pct,
+            dynamic_reattack_win_rate_pct=self.dynamic_reattack_win_rate_pct,
+            dynamic_win_streak_threshold=self.dynamic_win_streak_threshold,
+            dynamic_health_lookback_trades=self.dynamic_health_lookback_trades,
+            dynamic_health_min_unit_return_pct=self.dynamic_health_min_unit_return_pct,
+            dynamic_health_min_win_rate_pct=self.dynamic_health_min_win_rate_pct,
+            dynamic_tight_stop_pct=self.dynamic_tight_stop_pct,
+            dynamic_max_stop_distance_pct=self.dynamic_max_stop_distance_pct,
+            dynamic_high_growth_max_stop_distance_pct=self.dynamic_high_growth_max_stop_distance_pct,
+            dynamic_defense_max_stop_distance_pct=self.dynamic_defense_max_stop_distance_pct,
         )
 
 class OkxExecutionEngine:
