@@ -154,6 +154,16 @@ class StrategyConfig:
     loose_stage0_trigger_r: float = 2.0
     loose_stage1_trigger_r: float = 4.0
     loose_stage1_lock_r: float = 1.5
+    normal_stage0_trigger_r: float = 1.0
+    normal_stage0_lock_r: float = 0.0
+    normal_stage1_trigger_r: float = 2.0
+    normal_stage1_lock_r: float = 0.5
+    normal_stage2_trigger_r: float = 3.0
+    normal_stage2_lock_r: float = 1.0
+    tight_stage0_trigger_r: float = 0.75
+    tight_stage0_lock_r: float = 0.25
+    tight_stage1_trigger_r: float = 1.5
+    tight_stage1_lock_r: float = 0.75
     # dynamic high leverage（与 executor 的 dynamic_high_leverage 对齐）
     enable_dynamic_high_leverage_structure: bool = False
     dynamic_base_leverage: float = 4.0
@@ -1935,8 +1945,15 @@ class ScalpRobustEngine:
             return None
         templates = {
             "loose": [(self.config.loose_stage0_trigger_r, 0.0), (self.config.loose_stage1_trigger_r, self.config.loose_stage1_lock_r)],
-            "normal": [(1.0, 0.0), (2.0, 0.5), (3.0, 1.0)],
-            "tight": [(0.75, 0.25), (1.5, 0.75)],
+            "normal": [
+                (self.config.normal_stage0_trigger_r, self.config.normal_stage0_lock_r),
+                (self.config.normal_stage1_trigger_r, self.config.normal_stage1_lock_r),
+                (self.config.normal_stage2_trigger_r, self.config.normal_stage2_lock_r),
+            ],
+            "tight": [
+                (self.config.tight_stage0_trigger_r, self.config.tight_stage0_lock_r),
+                (self.config.tight_stage1_trigger_r, self.config.tight_stage1_lock_r),
+            ],
         }
         template = templates.get(pos.trail_style, templates["normal"])
         for new_stage_candidate, (trigger_r, lock_r) in enumerate(template):
@@ -1975,8 +1992,15 @@ class ScalpRobustEngine:
             return None
         templates = {
             "loose": [(self.config.loose_stage0_trigger_r, 0.0), (self.config.loose_stage1_trigger_r, self.config.loose_stage1_lock_r)],
-            "normal": [(1.0, 0.0), (2.0, 0.5), (3.0, 1.0)],
-            "tight": [(0.75, 0.25), (1.5, 0.75)],
+            "normal": [
+                (self.config.normal_stage0_trigger_r, self.config.normal_stage0_lock_r),
+                (self.config.normal_stage1_trigger_r, self.config.normal_stage1_lock_r),
+                (self.config.normal_stage2_trigger_r, self.config.normal_stage2_lock_r),
+            ],
+            "tight": [
+                (self.config.tight_stage0_trigger_r, self.config.tight_stage0_lock_r),
+                (self.config.tight_stage1_trigger_r, self.config.tight_stage1_lock_r),
+            ],
         }
         template = templates.get(pos.trail_style, templates["normal"])
         for new_stage_candidate, (trigger_r, lock_r) in enumerate(template):
