@@ -29,7 +29,7 @@ if str(ROOT) not in sys.path:
 
 MA_FAST = 50
 MA_SLOW = 100
-LEVERAGE = 8.0
+LEVERAGE = 20.0
 OKX_CANDLES = "https://www.okx.com/api/v5/market/candles"
 
 
