@@ -4550,16 +4550,18 @@ class OkxExecutionEngine:
             else:
                 try:
                     balance = self.client.fetch_balance()
-                    available_usdt, balance_source = self._extract_available_usdt(balance)
+                    total_usdt = self._extract_total_usdt(balance)
+                    available_usdt, _ = self._extract_available_usdt(balance)
+                    balance_source = "total_equity"
                 except Exception as exc:
                     return {"status": "error", "reason": "balance_unavailable", "error": str(exc)}
                 max_notional = (
                     self.config.fixed_notional_usdt
                     if self.config.fixed_notional_usdt is not None
-                    else available_usdt * self.config.position_size_pct * self.config.leverage
+                    else total_usdt * self.config.position_size_pct * self.config.leverage
                 )
                 stop_price = action.stop_price
-                risk_amount = available_usdt * self.config.risk_per_trade
+                risk_amount = total_usdt * self.config.risk_per_trade
                 stop_distance = abs(reference_price - stop_price) if stop_price is not None else 0.0
                 risk_based_notional = (
                     (risk_amount / stop_distance) * reference_price
@@ -4567,7 +4569,7 @@ class OkxExecutionEngine:
                     else max_notional
                 )
                 notional = min(max_notional, risk_based_notional)
-                margin_usdt = available_usdt * self.config.position_size_pct
+                margin_usdt = total_usdt * self.config.position_size_pct
             amount = round(notional / reference_price, 6)
             sizing = self._build_order_sizing(amount, notional, reference_price)
             if sizing["amount"] <= 0:
@@ -5103,10 +5105,12 @@ class OkxExecutionEngine:
         live_capital = float(getattr(engine, "capital", 0.0) or 0.0)
         try:
             balance = self.client.fetch_balance()
-            available_usdt, _ = self._extract_available_usdt(balance)
+            # 现金不足时取账户余额最大：用 total_equity（总资产）而非 available_usdt（可用余额），
+            # 让 scalp 的 size 不被趋势腿占用的保证金挤占。
+            total_usdt = self._extract_total_usdt(balance)
         except Exception:
             return live_capital
-        engine.capital = available_usdt
+        engine.capital = total_usdt
         return float(engine.capital)
 
     def _build_exchange_bracket_params(self, action: StrategyAction, attach_algo_client_id: str | None = None) -> dict[str, Any]:
@@ -6069,7 +6073,7 @@ class OkxExecutionEngine:
             balance = self.client.fetch_balance()
             available_usdt, _ = self._extract_available_usdt(balance)
             total_usdt = self._extract_total_usdt(balance)
-            engine.capital = available_usdt
+            engine.capital = total_usdt
             capital_at_entry = total_usdt
         except Exception:
             capital_at_entry = float(getattr(position, "capital_at_entry", engine.capital) or engine.capital)
