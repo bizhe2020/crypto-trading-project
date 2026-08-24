@@ -38,6 +38,7 @@ class GooglOrderContext:
     ramped: bool = False
     be_locked: bool = False
     bar_timestamp: str | None = None
+    peak_raise_bar_timestamp: str | None = None
 
 
 class GooglUsdtExecutionEngine:
@@ -720,7 +721,8 @@ class GooglUsdtExecutionEngine:
             effective_stop_loss_pct = stop_loss_pct
 
         previous_stop = float(previous.get("stop_price", 0.0) or 0.0)
-        peak_price = max(float(previous.get("peak_price", 0.0) or 0.0), reference_price)
+        previous_peak = float(previous.get("peak_price", 0.0) or 0.0)
+        peak_price = max(previous_peak, reference_price)
         stop_price = max(previous_stop, peak_price * (1.0 - effective_stop_loss_pct / 100.0))
         bar_timestamp = str(pd.Timestamp(latest["date"]))
         # 入场 bar 保护：仅跳过"入场那一根已收盘 bar"的止损判定。
@@ -728,7 +730,16 @@ class GooglUsdtExecutionEngine:
         # 否则会把入场当天后续所有 4h bar 的止损都误压掉（爬坡 pre_stop 失效）。
         entry_bar_timestamp = previous.get("entry_bar_timestamp")
         same_entry_bar = bool(entry_bar_timestamp and bar_timestamp and str(entry_bar_timestamp) == str(bar_timestamp))
-        stop_hit = bool(previous_stop > 0 and latest_low <= previous_stop and not same_entry_bar)
+        # 峰值抬升 bar 保护：抬高止损的那根已收盘 bar，其 low 发生在 peak(收盘)之前，
+        # 不能用它自己的 low 去回看式触发新止损（先跌后涨会被误判成"跌破止损"）。
+        # 与 same_entry_bar 同理：只对"抬升 peak 之后的 bar"判止损。
+        peak_raise_bar_timestamp = previous.get("peak_raise_bar_timestamp")
+        if peak_price > previous_peak:
+            peak_raise_bar_timestamp = bar_timestamp
+        same_peak_raise_bar = bool(
+            peak_raise_bar_timestamp and bar_timestamp and str(peak_raise_bar_timestamp) == str(bar_timestamp)
+        )
+        stop_hit = bool(previous_stop > 0 and latest_low <= previous_stop and not same_entry_bar and not same_peak_raise_bar)
         return GooglOrderContext(
             symbol=self.symbol,
             margin_mode=str(self.router_config.googl_margin_mode),
@@ -744,6 +755,7 @@ class GooglUsdtExecutionEngine:
             ramped=ramped,
             be_locked=be_locked,
             bar_timestamp=bar_timestamp,
+            peak_raise_bar_timestamp=peak_raise_bar_timestamp,
         )
 
     def _risk_on_window_status(self) -> dict[str, Any]:
@@ -776,6 +788,7 @@ class GooglUsdtExecutionEngine:
             "be_locked": bool(context.be_locked),
             "entry_candidate_timestamp": previous.get("entry_candidate_timestamp") or context.candidate.get("timestamp"),
             "entry_bar_timestamp": previous.get("entry_bar_timestamp") or context.bar_timestamp,
+            "peak_raise_bar_timestamp": context.peak_raise_bar_timestamp,
             "route_score": context.route_score,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -1033,6 +1046,7 @@ class GooglUsdtExecutionEngine:
             ramped=bool(position.get("ramped", False)),
             be_locked=bool(position.get("be_locked", False)),
             bar_timestamp=position.get("entry_bar_timestamp"),
+            peak_raise_bar_timestamp=position.get("peak_raise_bar_timestamp"),
         )
 
     def open_position(self, context: GooglOrderContext) -> dict[str, Any]:
