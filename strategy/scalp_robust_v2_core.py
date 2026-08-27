@@ -164,6 +164,8 @@ class StrategyConfig:
     tight_stage0_lock_r: float = 0.25
     tight_stage1_trigger_r: float = 1.5
     tight_stage1_lock_r: float = 0.75
+    # BOS 直接开仓：上破前高（MSS 反转）时立即开仓，不等 OB 回踩 + 收阳确认
+    enable_bos_direct_entry: bool = False
     # dynamic high leverage（与 executor 的 dynamic_high_leverage 对齐）
     enable_dynamic_high_leverage_structure: bool = False
     dynamic_base_leverage: float = 4.0
@@ -2479,7 +2481,21 @@ class ScalpRobustEngine:
                 if i in (self.precomputed.highs_set | self.precomputed.lows_set):
                     pending = self._build_pending_pullback(i, bias)
                     if pending and self.pending_by_direction[pending.direction] is None:
-                        self.pending_by_direction[pending.direction] = pending
+                        if self.config.enable_bos_direct_entry and pending.direction == Direction.BULL:
+                            # BOS 直接开仓：上破前高（MSS 反转）时立即开仓，不等 OB 回踩 + 收阳
+                            entry = self.c15m[i].c
+                            sl_raw = pending.ob_zone["bottom"]
+                            sl_buffer_pct = self._sl_buffer_pct_for_direction(Direction.BULL)
+                            sl = sl_raw * (1 - sl_buffer_pct / 100)
+                            risk = abs(entry - sl)
+                            if risk > 0:
+                                _, target_rr, _, _ = self._exit_template_for_idx(i, Direction.BULL)
+                                tp = entry + risk * target_rr
+                                action = self.open_position(i, Direction.BULL, entry, sl, tp, candidate_event_type="bos_direct")
+                                if action:
+                                    actions.append(action)
+                        else:
+                            self.pending_by_direction[pending.direction] = pending
                 continue
 
             if self.waiting_for_pullback and self.ob_zone and self.waiting_direction:
@@ -2505,11 +2521,25 @@ class ScalpRobustEngine:
             if not self.position and not self.waiting_for_pullback and i in (self.precomputed.highs_set | self.precomputed.lows_set):
                 pending = self._build_pending_pullback(i, bias)
                 if pending:
-                    self.waiting_for_pullback = True
-                    self.bos_idx = pending.bos_idx
-                    self.ob_zone = pending.ob_zone
-                    self.waiting_direction = pending.direction
-                    self.waiting_pullback_window = pending.pullback_window
+                    if self.config.enable_bos_direct_entry and pending.direction == Direction.BULL:
+                        # BOS 直接开仓：上破前高（MSS 反转）时立即开仓，不等 OB 回踩 + 收阳
+                        entry = self.c15m[i].c
+                        sl_raw = pending.ob_zone["bottom"]
+                        sl_buffer_pct = self._sl_buffer_pct_for_direction(Direction.BULL)
+                        sl = sl_raw * (1 - sl_buffer_pct / 100)
+                        risk = abs(entry - sl)
+                        if risk > 0:
+                            _, target_rr, _, _ = self._exit_template_for_idx(i, Direction.BULL)
+                            tp = entry + risk * target_rr
+                            action = self.open_position(i, Direction.BULL, entry, sl, tp, candidate_event_type="bos_direct")
+                            if action:
+                                actions.append(action)
+                    else:
+                        self.waiting_for_pullback = True
+                        self.bos_idx = pending.bos_idx
+                        self.ob_zone = pending.ob_zone
+                        self.waiting_direction = pending.direction
+                        self.waiting_pullback_window = pending.pullback_window
 
         return actions
 
