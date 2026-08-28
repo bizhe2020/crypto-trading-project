@@ -132,6 +132,7 @@ class ExecutorConfig:
     loose_stage0_trigger_r: float = 2.0
     loose_stage1_trigger_r: float = 4.0
     loose_stage1_lock_r: float = 1.5
+    loose_stage0_lock_r: float = 0.0
     normal_stage0_trigger_r: float = 1.0
     normal_stage0_lock_r: float = 0.0
     normal_stage1_trigger_r: float = 2.0
@@ -409,6 +410,7 @@ class ExecutorConfig:
             loose_stage0_trigger_r=self.loose_stage0_trigger_r,
             loose_stage1_trigger_r=self.loose_stage1_trigger_r,
             loose_stage1_lock_r=self.loose_stage1_lock_r,
+            loose_stage0_lock_r=self.loose_stage0_lock_r,
             normal_stage0_trigger_r=self.normal_stage0_trigger_r,
             normal_stage0_lock_r=self.normal_stage0_lock_r,
             normal_stage1_trigger_r=self.normal_stage1_trigger_r,

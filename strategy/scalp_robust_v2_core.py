@@ -154,6 +154,7 @@ class StrategyConfig:
     loose_stage0_trigger_r: float = 2.0
     loose_stage1_trigger_r: float = 4.0
     loose_stage1_lock_r: float = 1.5
+    loose_stage0_lock_r: float = 0.0
     normal_stage0_trigger_r: float = 1.0
     normal_stage0_lock_r: float = 0.0
     normal_stage1_trigger_r: float = 2.0
@@ -166,6 +167,12 @@ class StrategyConfig:
     tight_stage1_lock_r: float = 0.75
     # BOS 直接开仓：上破前高（MSS 反转）时立即开仓，不等 OB 回踩 + 收阳确认
     enable_bos_direct_entry: bool = False
+    # shadow risk gate（实盘风控）：权益回撤/单日亏损/连续亏损触发暂停开仓
+    enable_shadow_risk_gate: bool = False
+    shadow_daily_loss_stop_pct: float = 0.0
+    shadow_equity_drawdown_stop_pct: float = 0.0
+    shadow_equity_drawdown_cooldown_days: int = 0
+    shadow_consecutive_loss_stop: int = 0
     # dynamic high leverage（与 executor 的 dynamic_high_leverage 对齐）
     enable_dynamic_high_leverage_structure: bool = False
     dynamic_base_leverage: float = 4.0
@@ -943,6 +950,13 @@ class ScalpRobustEngine:
             "last_update_time": None,
             "last_decision": None,
         }
+        self.shadow_state: dict[str, Any] = {
+            "drawdown_peak": self.capital,
+            "loss_streak": 0,
+            "pause_until_ts": 0.0,
+            "day_start_capital": {},
+            "day_pnl": {},
+        }
 
     @classmethod
     def from_candles(
@@ -1064,7 +1078,9 @@ class ScalpRobustEngine:
         exit_profile: str | None = None,
         exit_profile_reason: str | None = None,
         exit_profile_overrides: dict[str, Any] | None = None,
-    ) -> StrategyAction:
+    ) -> StrategyAction | None:
+        if self._shadow_gate_blocked(idx):
+            return None
         applied_risk_per_trade, risk_regime = self._risk_per_trade_for_idx(idx, direction)
         risk_amount = self.capital * applied_risk_per_trade
         filled_entry_price = self._apply_entry_slippage(entry_price, direction)
@@ -1276,6 +1292,59 @@ class ScalpRobustEngine:
         if capital_at_entry is not None:
             pos.capital_at_entry = float(capital_at_entry)
 
+    def _shadow_gate_blocked(self, idx: int) -> bool:
+        if not self.config.enable_shadow_risk_gate:
+            return False
+        ts = self.c15m[idx].ts
+        return ts < float(self.shadow_state.get("pause_until_ts", 0.0) or 0.0)
+
+    def _shadow_gate_after_close(self, pnl: float, exit_ts: float) -> None:
+        if not self.config.enable_shadow_risk_gate:
+            return
+        st = self.shadow_state
+        capital = self.capital
+        peak = max(float(st.get("drawdown_peak", capital) or capital), capital)
+        st["drawdown_peak"] = peak
+        if pnl > 0:
+            st["loss_streak"] = 0
+        else:
+            st["loss_streak"] = int(st.get("loss_streak", 0) or 0) + 1
+        day_key = datetime.fromtimestamp(exit_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        day_start = st.get("day_start_capital")
+        day_pnl = st.get("day_pnl")
+        if not isinstance(day_start, dict):
+            day_start = {}
+        if not isinstance(day_pnl, dict):
+            day_pnl = {}
+        if day_key not in day_start:
+            day_start[day_key] = capital - pnl
+            day_pnl[day_key] = 0.0
+        day_pnl[day_key] = float(day_pnl.get(day_key, 0.0) or 0.0) + pnl
+        st["day_start_capital"] = day_start
+        st["day_pnl"] = day_pnl
+        next_utc_day_ts = (int(exit_ts // 86400) + 1) * 86400
+        # 单日亏损
+        daily_stop = float(self.config.shadow_daily_loss_stop_pct or 0.0)
+        start_cap = float(day_start[day_key])
+        if daily_stop > 0 and start_cap > 0:
+            daily_loss_pct = -float(day_pnl[day_key]) / start_cap * 100.0
+            if daily_loss_pct >= daily_stop:
+                st["pause_until_ts"] = max(float(st.get("pause_until_ts", 0.0) or 0.0), next_utc_day_ts)
+        # 连续亏损
+        streak_stop = int(self.config.shadow_consecutive_loss_stop or 0)
+        if streak_stop > 0 and int(st.get("loss_streak", 0) or 0) >= streak_stop:
+            st["pause_until_ts"] = max(float(st.get("pause_until_ts", 0.0) or 0.0), next_utc_day_ts)
+            st["loss_streak"] = 0
+        # 权益回撤
+        dd_stop = float(self.config.shadow_equity_drawdown_stop_pct or 0.0)
+        if dd_stop > 0 and peak > 0:
+            dd_pct = (peak - capital) / peak * 100.0
+            if dd_pct >= dd_stop:
+                pause_until = exit_ts + float(self.config.shadow_equity_drawdown_cooldown_days or 0) * 86400.0
+                st["pause_until_ts"] = max(float(st.get("pause_until_ts", 0.0) or 0.0), pause_until)
+                st["drawdown_peak"] = capital
+                st["loss_streak"] = 0
+
     def close_position(self, idx: int, reason: str, exit_price: float | None = None) -> StrategyAction:
         if not self.position:
             return StrategyAction(type=ActionType.HOLD, timestamp=self._timestamp_for_idx(idx), reason="no_position")
@@ -1347,6 +1416,7 @@ class ScalpRobustEngine:
             )
         )
         self.capital += pnl
+        self._shadow_gate_after_close(pnl, self.c15m[idx].ts)
         if self.config.enable_dynamic_high_leverage_structure:
             unit_return = pnl / pos.capital_at_entry if pos.capital_at_entry > 0 else 0.0
             if not isinstance(self.dynamic_state.get("unit_returns"), list):
@@ -1946,7 +2016,7 @@ class ScalpRobustEngine:
         if risk_price <= 0:
             return None
         templates = {
-            "loose": [(self.config.loose_stage0_trigger_r, 0.0), (self.config.loose_stage1_trigger_r, self.config.loose_stage1_lock_r)],
+            "loose": [(self.config.loose_stage0_trigger_r, self.config.loose_stage0_lock_r), (self.config.loose_stage1_trigger_r, self.config.loose_stage1_lock_r)],
             "normal": [
                 (self.config.normal_stage0_trigger_r, self.config.normal_stage0_lock_r),
                 (self.config.normal_stage1_trigger_r, self.config.normal_stage1_lock_r),
@@ -1993,7 +2063,7 @@ class ScalpRobustEngine:
         if risk_price <= 0:
             return None
         templates = {
-            "loose": [(self.config.loose_stage0_trigger_r, 0.0), (self.config.loose_stage1_trigger_r, self.config.loose_stage1_lock_r)],
+            "loose": [(self.config.loose_stage0_trigger_r, self.config.loose_stage0_lock_r), (self.config.loose_stage1_trigger_r, self.config.loose_stage1_lock_r)],
             "normal": [
                 (self.config.normal_stage0_trigger_r, self.config.normal_stage0_lock_r),
                 (self.config.normal_stage1_trigger_r, self.config.normal_stage1_lock_r),
