@@ -91,6 +91,10 @@ class ExecutorConfig:
     enable_directional_regime_switch: bool = False
     long_regime_filter_1d_ema_period: int | None = None
     short_regime_filter_1d_ema_period: int | None = None
+    # 日线乖离 alpha 门（只限多）：日线收盘乖离 > daily_alpha_max_dev_pct 时禁新多单
+    enable_daily_alpha_gate: bool = False
+    daily_alpha_sma_period: int = 200
+    daily_alpha_max_dev_pct: float = 12.0
     enable_dual_pending_state: bool = False
     enable_regime_layered_exit: bool = False
     enable_short_regime_layered_exit: bool = False
@@ -369,6 +373,9 @@ class ExecutorConfig:
             enable_directional_regime_switch=self.enable_directional_regime_switch,
             long_regime_filter_1d_ema_period=self.long_regime_filter_1d_ema_period,
             short_regime_filter_1d_ema_period=self.short_regime_filter_1d_ema_period,
+            enable_daily_alpha_gate=self.enable_daily_alpha_gate,
+            daily_alpha_sma_period=self.daily_alpha_sma_period,
+            daily_alpha_max_dev_pct=self.daily_alpha_max_dev_pct,
             enable_dual_pending_state=self.enable_dual_pending_state,
             enable_regime_layered_exit=self.enable_regime_layered_exit,
             enable_short_regime_layered_exit=self.enable_short_regime_layered_exit,

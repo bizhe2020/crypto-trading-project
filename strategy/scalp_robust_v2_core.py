@@ -108,6 +108,11 @@ class StrategyConfig:
     enable_directional_regime_switch: bool = False
     long_regime_filter_1d_ema_period: int | None = None
     short_regime_filter_1d_ema_period: int | None = None
+    # 日线乖离 alpha 门（只限多）：最近已完成日收盘 > 日线 SMA(sma_period) ×(1+max_dev%) 时禁新多单；
+    # 空头不受此门约束。warmup（不足 sma_period 个已收盘日）放行。
+    enable_daily_alpha_gate: bool = False
+    daily_alpha_sma_period: int = 200
+    daily_alpha_max_dev_pct: float = 12.0
     enable_dual_pending_state: bool = False
     regime_position_size_pct_below_ema: float | None = None
     enable_regime_layered_exit: bool = False
@@ -398,6 +403,9 @@ class PrecomputedState:
     bear_trend_score_for_15m: list[int] | None = None
     regime_label_for_15m: list[str] | None = None
     regime_features_for_15m: list[dict[str, Any]] | None = None
+    # 每根 4h K 的“最近已完成日”收盘相对日线 SMA 的乖离（%）；不足 sma_period 个已收盘日为 nan。
+    # 只依赖已收盘日线，不含前视；索引方式 self.mapping[idx] 与回测 A/B 完全一致。
+    daily_dev_pct_4h: list[float] | None = None
 
 
 def load_candles(path: str | Path) -> list[Candle]:
@@ -535,6 +543,37 @@ def precompute_1d_bear_regime(candles: list[Candle], ema_period: int = 200) -> l
     return regime
 
 
+def precompute_daily_dev_pct(candles: list[Candle], sma_period: int = 200) -> list[float]:
+    """每根 K 线所属 UTC 日的"上一已收盘日"收盘价相对日线 SMA 的乖离（%）。
+
+    - 日线收盘 = 按 UTC 日聚合的当日最后一根 K 线收盘（当日未收盘，交易时刻不可用）；
+    - 对某根 K 线，取严格早于其所属日的最近 sma_period 个已收盘日算 SMA 与 close；
+    - 不足 sma_period 个已收盘日 → nan（调用方按放行处理）。
+    口径与离线 A/B 一致：asof = daily[daily.index < candle_date]。
+    """
+    result = [float("nan")] * len(candles)
+    if not candles:
+        return result
+    daily_closes: list[float] = []
+    current_day = None
+    day_idx = -1
+    for pos, candle in enumerate(candles):
+        day = datetime.fromtimestamp(candle.ts, tz=timezone.utc).date()
+        if day != current_day:
+            current_day = day
+            daily_closes.append(candle.c)
+            day_idx += 1
+        else:
+            daily_closes[day_idx] = candle.c
+        completed = day_idx  # 严格早于当日的已收盘日数量
+        if completed < sma_period:
+            continue
+        base = sum(daily_closes[completed - sma_period : completed]) / sma_period
+        if base:
+            result[pos] = (daily_closes[completed - 1] / base - 1.0) * 100.0
+    return result
+
+
 def compute_ema_series(candles: list[Candle], period: int) -> list[float]:
     if not candles:
         return []
@@ -659,6 +698,7 @@ def build_precomputed_state(c4h: list[Candle], c15m: list[Candle], swing_n: int 
     bull_trend_score_4h = precompute_trend_score_4h(c4h, ema50_4h, ema200_4h)
     bear_trend_score_4h = precompute_bear_trend_score_4h(c4h, ema50_4h, ema200_4h)
     broken_bear, reclaimed_bear, broken_bull, reclaimed_bull = precompute_mss(c15m, highs_15m, lows_15m, lookback=lookback)
+    daily_dev_pct_4h = precompute_daily_dev_pct(c4h)
     return PrecomputedState(
         bias_4h=bias_4h,
         regime_1d_bull_100=regime_1d_bull_100,
@@ -677,6 +717,7 @@ def build_precomputed_state(c4h: list[Candle], c15m: list[Candle], swing_n: int 
         reclaimed_bear=reclaimed_bear,
         broken_bull=broken_bull,
         reclaimed_bull=reclaimed_bull,
+        daily_dev_pct_4h=daily_dev_pct_4h,
     )
 
 
@@ -2740,6 +2781,9 @@ class ScalpRobustEngine:
                 "enable_directional_regime_switch": self.config.enable_directional_regime_switch,
                 "long_regime_filter_1d_ema_period": self.config.long_regime_filter_1d_ema_period,
                 "short_regime_filter_1d_ema_period": self.config.short_regime_filter_1d_ema_period,
+                "enable_daily_alpha_gate": self.config.enable_daily_alpha_gate,
+                "daily_alpha_sma_period": self.config.daily_alpha_sma_period,
+                "daily_alpha_max_dev_pct": self.config.daily_alpha_max_dev_pct,
                 "enable_dual_pending_state": self.config.enable_dual_pending_state,
                 "regime_position_size_pct_below_ema": self.config.regime_position_size_pct_below_ema,
                 "enable_regime_layered_exit": self.config.enable_regime_layered_exit,
@@ -2867,7 +2911,33 @@ class ScalpRobustEngine:
         direction = self.config.regime_filter_1d_direction
         return self._regime_state_for_idx(idx, int(period), direction)
 
+    def _daily_alpha_gate_ok_for_idx(self, idx: int, direction: str) -> bool:
+        """日线乖离 alpha 门（只限多）：日线乖离超过阈值时禁新多单，空头不受限。
+
+        warmup（不足 sma_period 个已收盘日 / 索引越界 / 未预计算）一律放行。
+        用 self.mapping[idx] 索引 4h 级数组，与回测 A/B 口径完全一致。
+        """
+        if not self.config.enable_daily_alpha_gate:
+            return True
+        if direction != Direction.BULL:
+            return True
+        values = self.precomputed.daily_dev_pct_4h
+        if not values:
+            return True
+        if idx < 0 or idx >= len(self.mapping):
+            return True
+        mapped_idx = self.mapping[idx]
+        if mapped_idx < 0 or mapped_idx >= len(values):
+            return True
+        dev = values[mapped_idx]
+        if dev is None or math.isnan(dev):
+            return True
+        cap = float(self.config.daily_alpha_max_dev_pct or 0.0)
+        return dev <= cap
+
     def _regime_ok_for_direction_idx(self, idx: int, direction: str) -> bool:
+        if not self._daily_alpha_gate_ok_for_idx(idx, direction):
+            return False
         if not self.config.enable_directional_regime_switch:
             period = self.config.regime_filter_1d_ema_period
             if period is None:
