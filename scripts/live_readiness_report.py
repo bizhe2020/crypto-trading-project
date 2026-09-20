@@ -26,8 +26,6 @@ from strategy.scalp_robust_v2_core import (  # noqa: E402
     PrecomputedState,
     ScalpRobustEngine,
     align_timeframes,
-    build_precomputed_state,
-    build_precomputed_state_asof_15m,
     build_precomputed_state_confirmed_4h,
     dataframe_to_candles,
 )
@@ -204,16 +202,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-fee-sensitivity", action="store_true", help="Run slower full-window fee stress cases.")
     parser.add_argument("--include-yearly", action="store_true", help="Run slower per-year baseline/autoTIT checks.")
     parser.add_argument(
-        "--informative-asof-from-15m",
-        action="store_true",
-        help="Use primary-candle as-of 4h state to match live evaluation instead of finalized 4h candles.",
-    )
-    parser.add_argument(
-        "--confirmed-4h-only",
-        action="store_true",
-        help="Use only the previous fully closed 4h candle state for each primary candle.",
-    )
-    parser.add_argument(
         "--replay-sync-entry-to-signal-price",
         action="store_true",
         help="Sync replay position accounting back to signal/exchange entry price after modeled open slippage.",
@@ -231,9 +219,14 @@ def load_prepared_data(
     data_4h_path: Path,
     start: pd.Timestamp,
     threshold_payload: dict[str, Any] | None,
-    informative_asof_from_15m: bool = False,
-    confirmed_4h_only: bool = False,
 ) -> PreparedData:
+    """加载数据并构造**唯一口径**的预计算状态（无前视，与实盘一致）。
+
+    这里只允许一条路径：`build_precomputed_state_confirmed_4h`。
+    历史上有过 `confirmed_4h_only` / `informative_asof_from_15m` 开关与一条裸口径
+    回退分支，那条裸分支会读到当时尚未收盘的 4h，实测使 2022 至今回测总收益从
+    +396% 虚增到 +8525%。相关开关已全部移除，详见 docs/backtest_lookahead_policy.md。
+    """
     df15 = load_dataframe(data_15m_path, start=start)
     df4 = load_dataframe(data_4h_path)
     if df15.empty:
@@ -245,14 +238,7 @@ def load_prepared_data(
     c4h = dataframe_to_candles(df4)
     c15m = dataframe_to_candles(df15)
     mapping = align_timeframes(c4h, c15m)
-    if informative_asof_from_15m and confirmed_4h_only:
-        raise ValueError("informative_asof_from_15m and confirmed_4h_only are mutually exclusive")
-    if confirmed_4h_only:
-        precomputed = build_precomputed_state_confirmed_4h(c4h, c15m)
-    elif informative_asof_from_15m:
-        precomputed = build_precomputed_state_asof_15m(c4h, c15m, threshold_payload=threshold_payload)
-    else:
-        precomputed = build_precomputed_state(c4h, c15m)
+    precomputed = build_precomputed_state_confirmed_4h(c4h, c15m)
     regime_labels, regime_features = precompute_regime_state(c4h, sorted(set(mapping)), threshold_payload)
     return PreparedData(
         c4h=c4h,
@@ -692,8 +678,6 @@ def build_report(
     start_date: str,
     include_fee_sensitivity: bool,
     include_yearly: bool,
-    informative_asof_from_15m: bool,
-    confirmed_4h_only: bool,
     replay_sync_entry_to_signal_price: bool,
 ) -> dict[str, Any]:
     base_payload = load_config_payload(config_path)
@@ -706,8 +690,6 @@ def build_report(
         data_4h_path,
         start,
         base_payload.get("regime_switcher_thresholds"),
-        informative_asof_from_15m=informative_asof_from_15m,
-        confirmed_4h_only=confirmed_4h_only,
     )
     end_date = date_string(prepared.end)
     current_year_start = f"{prepared.end.year}-01-01"
@@ -786,8 +768,8 @@ def build_report(
         "data": {
             "data_15m": str(data_15m_path.resolve()),
             "data_4h": str(data_4h_path.resolve()),
-            "informative_asof_from_15m": bool(informative_asof_from_15m),
-            "confirmed_4h_only": bool(confirmed_4h_only),
+            "informative_asof_from_15m": False,
+            "confirmed_4h_only": True,  # 唯一口径，不可关闭（见 docs/backtest_lookahead_policy.md）
             "replay_sync_entry_to_signal_price": bool(replay_sync_entry_to_signal_price),
             "start": str(prepared.start),
             "end": str(prepared.end),
@@ -805,7 +787,7 @@ def build_report(
             "include_fee_sensitivity": include_fee_sensitivity,
             "include_yearly": include_yearly,
             "replay_sync_entry_to_signal_price": bool(replay_sync_entry_to_signal_price),
-            "confirmed_4h_only": bool(confirmed_4h_only),
+            "confirmed_4h_only": True,  # 唯一口径，不可关闭
         },
         "cases": case_results,
         "yearly": years,
@@ -827,8 +809,6 @@ def main() -> None:
         start_date=args.start_date,
         include_fee_sensitivity=args.include_fee_sensitivity,
         include_yearly=args.include_yearly,
-        informative_asof_from_15m=args.informative_asof_from_15m,
-        confirmed_4h_only=args.confirmed_4h_only,
         replay_sync_entry_to_signal_price=args.replay_sync_entry_to_signal_price,
     )
     output_dir = Path(args.output_dir)

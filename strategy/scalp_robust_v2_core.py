@@ -685,7 +685,22 @@ def find_ob(candles: list[Candle], idx: int, direction: str) -> dict[str, float]
     return None
 
 
-def build_precomputed_state(c4h: list[Candle], c15m: list[Candle], swing_n: int = 3, lookback: int = 80) -> PrecomputedState:
+def _build_precomputed_state_lookahead(
+    c4h: list[Candle], c15m: list[Candle], swing_n: int = 3, lookback: int = 80
+) -> PrecomputedState:
+    """【内部私有 · 有前视 · 禁止直接调用】
+
+    裸构造器：只填充按 4h 索引的数组，**不含** `*_for_15m` 因果数组。
+    调用方若拿它配合 `align_timeframes()` 的 `mapping[idx]` 使用，就会读到
+    **当时尚未收盘的那根 4h**，产生前视偏差。
+
+    实测代价（BTC 2022-01-01 → 2026-09-20）：总收益从 +396% 虚增到 +8525%。
+
+    唯一合法入口是 `build_precomputed_state_confirmed_4h()`，它在本函数之上
+    补写 `*_for_15m` 数组（`mapped_idx - 1`）。
+
+    详见 docs/backtest_lookahead_policy.md。
+    """
     highs_15m, lows_15m = precompute_swings(c15m, n=swing_n, lookback=lookback)
     fvgs_4h = precompute_fvgs_4h(c4h)
     bias_4h = precompute_4h_bias(c4h, fvgs_4h)
@@ -721,202 +736,13 @@ def build_precomputed_state(c4h: list[Candle], c15m: list[Candle], swing_n: int 
     )
 
 
-def _partial_4h_candle(c15m: list[Candle], idx: int) -> Candle:
-    current = c15m[idx]
-    bucket_seconds = 4 * 60 * 60
-    bucket_ts = current.ts - (current.ts % bucket_seconds)
-    start_idx = idx
-    while start_idx > 0 and c15m[start_idx - 1].ts >= bucket_ts:
-        start_idx -= 1
-    bucket = c15m[start_idx : idx + 1]
-    return Candle(
-        ts=bucket_ts,
-        o=bucket[0].o,
-        h=max(candle.h for candle in bucket),
-        l=min(candle.l for candle in bucket),
-        c=bucket[-1].c,
-        v=sum(candle.v for candle in bucket),
-    )
-
-
-def _asof_4h_series(c4h: list[Candle], c15m: list[Candle], idx: int) -> list[Candle]:
-    partial = _partial_4h_candle(c15m, idx)
-    history = [candle for candle in c4h if candle.ts < partial.ts]
-    return [*history, partial]
-
-
-def _last_or_default(values: list[Any], default: Any) -> Any:
-    return values[-1] if values else default
-
-
-def _ema_next(previous: float, value: float, period: int) -> float:
-    alpha = 2.0 / (float(period) + 1.0)
-    return alpha * value + (1.0 - alpha) * previous
-
-
-def _asof_bias_from_fvgs(
-    completed_fvgs: list[tuple[int, str, float, float]],
-    c4h: list[Candle],
-    partial: Candle,
-    history_len: int,
-) -> str:
-    fvgs: list[tuple[int, str, float, float]] = [
-        fvg for fvg in completed_fvgs if fvg[0] < history_len
-    ]
-    if history_len >= 2:
-        prev2 = c4h[history_len - 2]
-        if prev2.l > partial.h:
-            fvgs.append((history_len, "bull", prev2.l, partial.h))
-        if prev2.h < partial.l:
-            fvgs.append((history_len, "bear", partial.l, prev2.h))
-
-    cp = partial.c
-    bull_above = False
-    bear_below = False
-    for _fvg_idx, ftype, top, bottom in reversed(fvgs):
-        if ftype == "bull" and cp > top:
-            bull_above = True
-            break
-        if ftype == "bear" and cp < bottom:
-            bear_below = True
-            break
-    if bull_above and not bear_below:
-        return Direction.BULL
-    if bear_below and not bull_above:
-        return Direction.BEAR
-    if bull_above:
-        return Direction.BULL
-    if bear_below:
-        return Direction.BEAR
-    return Direction.NONE
-
-
-def _partial_regime_state(c4h: list[Candle], ema_values: list[float], partial: Candle, history_len: int, period: int, direction: str) -> bool:
-    if history_len <= 0 or history_len < period - 1:
-        return False
-    ema = _ema_next(ema_values[history_len - 1], partial.c, period)
-    return partial.c > ema if direction == "bull" else partial.c < ema
-
-
-def _partial_trend_scores(
-    completed_ema50: list[float],
-    completed_ema200: list[float],
-    partial: Candle,
-    history_len: int,
-) -> tuple[int, int]:
-    if history_len <= 0:
-        return (0, 0)
-    ema50 = _ema_next(completed_ema50[history_len - 1], partial.c, 50)
-    ema200 = _ema_next(completed_ema200[history_len - 1], partial.c, 200)
-    bull_score = 0
-    bear_score = 0
-    if partial.c > ema50:
-        bull_score += 1
-    if partial.c < ema50:
-        bear_score += 1
-    if ema50 > ema200:
-        bull_score += 1
-    if ema50 < ema200:
-        bear_score += 1
-    if history_len >= 3:
-        prev_ema50 = completed_ema50[history_len - 3]
-        if ema50 > prev_ema50:
-            bull_score += 1
-        if ema50 < prev_ema50:
-            bear_score += 1
-    if partial.c > 0 and (ema50 - ema200) / partial.c > 0.02:
-        bull_score += 1
-    if partial.c > 0 and (ema200 - ema50) / partial.c > 0.02:
-        bear_score += 1
-    return (bull_score, bear_score)
-
-
-def build_precomputed_state_asof_15m(
-    c4h: list[Candle],
-    c15m: list[Candle],
-    swing_n: int = 3,
-    lookback: int = 80,
-    threshold_payload: dict[str, Any] | None = None,
-) -> PrecomputedState:
-    state = build_precomputed_state(c4h, c15m, swing_n=swing_n, lookback=lookback)
-    bias_for_15m: list[str] = []
-    regime_1d_bull_100_for_15m: list[bool] = []
-    regime_1d_bull_200_for_15m: list[bool] = []
-    regime_1d_bear_100_for_15m: list[bool] = []
-    regime_1d_bear_200_for_15m: list[bool] = []
-    bull_trend_score_for_15m: list[int] = []
-    bear_trend_score_for_15m: list[int] = []
-    regime_label_for_15m: list[str] = []
-    regime_features_for_15m: list[dict[str, Any]] = []
-
-    try:
-        from scripts.regime_detector import compute_regime_features, detect_regime
-    except Exception:
-        compute_regime_features = None
-        detect_regime = None
-
-    completed_fvgs = precompute_fvgs_4h(c4h)
-    completed_ema50 = state.ema50_4h
-    completed_ema100 = compute_ema_series(c4h, 100)
-    completed_ema200 = state.ema200_4h
-    regime_cache: dict[int, tuple[str, dict[str, Any]]] = {}
-    history_len = 0
-    for idx in range(len(c15m)):
-        series = _asof_4h_series(c4h, c15m, idx)
-        partial = series[-1]
-        while history_len < len(c4h) and c4h[history_len].ts < partial.ts:
-            history_len += 1
-
-        bias = _asof_bias_from_fvgs(completed_fvgs, c4h, partial, history_len)
-        bull_100 = _partial_regime_state(c4h, completed_ema100, partial, history_len, 100, "bull")
-        bull_200 = _partial_regime_state(c4h, completed_ema200, partial, history_len, 200, "bull")
-        bear_100 = _partial_regime_state(c4h, completed_ema100, partial, history_len, 100, "bear")
-        bear_200 = _partial_regime_state(c4h, completed_ema200, partial, history_len, 200, "bear")
-        bull_score, bear_score = _partial_trend_scores(completed_ema50, completed_ema200, partial, history_len)
-        cached_regime = regime_cache.get(history_len)
-        if cached_regime is None:
-            features: dict[str, Any] = {}
-            label = "flat"
-            if compute_regime_features is not None and detect_regime is not None:
-                try:
-                    regime_history = c4h[:history_len]
-                    features = compute_regime_features(regime_history, threshold_payload)
-                    label = detect_regime(regime_history, threshold_payload)
-                except Exception:
-                    features = {}
-                    label = "flat"
-            cached_regime = (label, features)
-            regime_cache[history_len] = cached_regime
-        label, features = cached_regime
-        bias_for_15m.append(bias)
-        regime_1d_bull_100_for_15m.append(bull_100)
-        regime_1d_bull_200_for_15m.append(bull_200)
-        regime_1d_bear_100_for_15m.append(bear_100)
-        regime_1d_bear_200_for_15m.append(bear_200)
-        bull_trend_score_for_15m.append(bull_score)
-        bear_trend_score_for_15m.append(bear_score)
-        regime_label_for_15m.append(label)
-        regime_features_for_15m.append(features)
-
-    state.bias_for_15m = bias_for_15m
-    state.regime_1d_bull_100_for_15m = regime_1d_bull_100_for_15m
-    state.regime_1d_bull_200_for_15m = regime_1d_bull_200_for_15m
-    state.regime_1d_bear_100_for_15m = regime_1d_bear_100_for_15m
-    state.regime_1d_bear_200_for_15m = regime_1d_bear_200_for_15m
-    state.bull_trend_score_for_15m = bull_trend_score_for_15m
-    state.bear_trend_score_for_15m = bear_trend_score_for_15m
-    state.regime_label_for_15m = regime_label_for_15m
-    state.regime_features_for_15m = regime_features_for_15m
-    return state
-
-
 def build_precomputed_state_confirmed_4h(
     c4h: list[Candle],
     c15m: list[Candle],
     swing_n: int = 3,
     lookback: int = 80,
 ) -> PrecomputedState:
-    state = build_precomputed_state(c4h, c15m, swing_n=swing_n, lookback=lookback)
+    state = _build_precomputed_state_lookahead(c4h, c15m, swing_n=swing_n, lookback=lookback)
     mapping = align_timeframes(c4h, c15m)
     bias_for_15m: list[str] = []
     regime_1d_bull_100_for_15m: list[bool] = []
@@ -1006,8 +832,15 @@ class ScalpRobustEngine:
         c15m: list[Candle],
         config: StrategyConfig | None = None,
     ) -> "ScalpRobustEngine":
+        """用「只含已收盘 4h 状态」的无前视口径构建引擎。
+
+        注意：这里必须使用 `build_precomputed_state_confirmed_4h`。早前版本用的是
+        `_build_precomputed_state_lookahead`，它把 4h 状态按 `mapping[idx]` 对齐 —— 而
+        `align_timeframes` 的 `mapping[idx]` 指向**当时尚未收盘的那根 4h**，
+        会引入前视偏差（实测使 2022 至今回测总收益从 +396% 虚增到 +8525%）。
+        """
         mapping = align_timeframes(c4h, c15m)
-        precomputed = build_precomputed_state(c4h, c15m)
+        precomputed = build_precomputed_state_confirmed_4h(c4h, c15m)
         return cls(c4h, c15m, mapping, precomputed, config)
 
     def snapshot(self) -> StrategySnapshot:
