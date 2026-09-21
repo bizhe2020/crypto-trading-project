@@ -79,6 +79,15 @@ class ExecutorConfig:
     strategy_type: str = "scalp_robust_v2"
     position_size_pct: float = 0.35
     fixed_notional_usdt: float | None = None
+    # 波动率目标仓位（与 strategy.StrategyConfig 对齐，无前视）
+    enable_vol_target_sizing: bool = False
+    vol_target_reference_pct: float = 0.25
+    vol_target_min_scale: float = 0.25
+    vol_target_max_scale: float = 2.0
+    # ATR 止损宽度钳制
+    enable_atr_stop_bounds: bool = False
+    atr_stop_cap_multiple: float = 0.0
+    atr_stop_floor_multiple: float = 0.0
     pos_side: str = "long"
     data_root: str = "data/okx/futures"
     markets_cache_path: str | None = "var/okx/markets_cache.json"
@@ -95,6 +104,8 @@ class ExecutorConfig:
     enable_daily_alpha_gate: bool = False
     daily_alpha_sma_period: int = 200
     daily_alpha_max_dev_pct: float = 12.0
+    # 日线乖离下限门（只限多）；None = 关闭
+    daily_alpha_min_dev_pct: float | None = None
     enable_dual_pending_state: bool = False
     enable_regime_layered_exit: bool = False
     enable_short_regime_layered_exit: bool = False
@@ -214,6 +225,15 @@ class ExecutorConfig:
     shadow_equity_drawdown_stop_pct: float = 0.0
     shadow_equity_drawdown_cooldown_days: int = 0
     shadow_consecutive_loss_stop: int = 0
+    # 闸门语义扩展（默认值保持既有行为不变）
+    shadow_daily_loss_pause_days: float = 0.0
+    shadow_consecutive_loss_pause_days: float = 0.0
+    shadow_drawdown_peak_reset: bool = True
+    shadow_halt_drawdown_pct: float = 0.0
+    # 是否在回测里启用引擎级 shadow gate。
+    # 默认 False：`live_readiness_report` 的历史口径里闸门只在执行层生效，
+    # 打开它会改变既有基线数字，故必须显式开启（见 docs/btc_scalp_optimization_20260921.md）。
+    enable_shadow_risk_gate_backtest: bool = False
     enable_high_leverage_guard: bool = False
     high_leverage_guard_min_leverage: float = 10.0
     high_leverage_min_liquidation_buffer_pct: float = 1.2
@@ -364,6 +384,25 @@ class ExecutorConfig:
             risk_per_trade=self.risk_per_trade,
             position_size_pct=self.position_size_pct,
             fixed_notional_usdt=self.fixed_notional_usdt,
+            enable_vol_target_sizing=self.enable_vol_target_sizing,
+            vol_target_reference_pct=self.vol_target_reference_pct,
+            vol_target_min_scale=self.vol_target_min_scale,
+            vol_target_max_scale=self.vol_target_max_scale,
+            enable_atr_stop_bounds=self.enable_atr_stop_bounds,
+            atr_stop_cap_multiple=self.atr_stop_cap_multiple,
+            atr_stop_floor_multiple=self.atr_stop_floor_multiple,
+            # shadow gate：只有在显式打开回测开关时才注入引擎（默认保持历史口径）
+            enable_shadow_risk_gate=bool(
+                self.enable_shadow_risk_gate and self.enable_shadow_risk_gate_backtest
+            ),
+            shadow_daily_loss_stop_pct=self.shadow_daily_loss_stop_pct,
+            shadow_equity_drawdown_stop_pct=self.shadow_equity_drawdown_stop_pct,
+            shadow_equity_drawdown_cooldown_days=self.shadow_equity_drawdown_cooldown_days,
+            shadow_consecutive_loss_stop=self.shadow_consecutive_loss_stop,
+            shadow_daily_loss_pause_days=self.shadow_daily_loss_pause_days,
+            shadow_consecutive_loss_pause_days=self.shadow_consecutive_loss_pause_days,
+            shadow_drawdown_peak_reset=self.shadow_drawdown_peak_reset,
+            shadow_halt_drawdown_pct=self.shadow_halt_drawdown_pct,
             rr_ratio=self.rr_ratio,
             pullback_window=self.pullback_window,
             sl_buffer_pct=self.sl_buffer_pct,
@@ -376,6 +415,7 @@ class ExecutorConfig:
             enable_daily_alpha_gate=self.enable_daily_alpha_gate,
             daily_alpha_sma_period=self.daily_alpha_sma_period,
             daily_alpha_max_dev_pct=self.daily_alpha_max_dev_pct,
+            daily_alpha_min_dev_pct=self.daily_alpha_min_dev_pct,
             enable_dual_pending_state=self.enable_dual_pending_state,
             enable_regime_layered_exit=self.enable_regime_layered_exit,
             enable_short_regime_layered_exit=self.enable_short_regime_layered_exit,
@@ -4445,6 +4485,18 @@ class OkxExecutionEngine:
             state["loss_streak"] = int(state.get("loss_streak", 0) or 0) + 1
 
         triggered: list[str] = []
+        daily_pause_days = float(self.config.shadow_daily_loss_pause_days or 0.0)
+        streak_pause_days = float(self.config.shadow_consecutive_loss_pause_days or 0.0)
+        daily_pause_ts = (
+            (action_dt + timedelta(days=daily_pause_days)).timestamp()
+            if daily_pause_days > 0
+            else self._shadow_next_utc_day_ts(action_dt)
+        )
+        streak_pause_ts = (
+            (action_dt + timedelta(days=streak_pause_days)).timestamp()
+            if streak_pause_days > 0
+            else self._shadow_next_utc_day_ts(action_dt)
+        )
         daily_stop = float(self.config.shadow_daily_loss_stop_pct or 0.0)
         start_capital = float(day_start_capital[day_key])
         if daily_stop > 0 and start_capital > 0:
@@ -4453,7 +4505,7 @@ class OkxExecutionEngine:
                 triggered.append(f"daily_loss:{daily_loss_pct:.2f}")
                 state["pause_until_ts"] = max(
                     float(state.get("pause_until_ts", 0.0) or 0.0),
-                    self._shadow_next_utc_day_ts(action_dt),
+                    daily_pause_ts,
                 )
 
         streak_stop = int(self.config.shadow_consecutive_loss_stop or 0)
@@ -4461,7 +4513,7 @@ class OkxExecutionEngine:
             triggered.append(f"consecutive_loss:{state['loss_streak']}")
             state["pause_until_ts"] = max(
                 float(state.get("pause_until_ts", 0.0) or 0.0),
-                self._shadow_next_utc_day_ts(action_dt),
+                streak_pause_ts,
             )
             state["loss_streak"] = 0
 
@@ -4475,8 +4527,20 @@ class OkxExecutionEngine:
                     float(state.get("pause_until_ts", 0.0) or 0.0),
                     self._shadow_cooldown_until_ts(action_dt, int(self.config.shadow_equity_drawdown_cooldown_days or 0)),
                 )
-                state["drawdown_peak"] = capital
+                if bool(self.config.shadow_drawdown_peak_reset):
+                    state["drawdown_peak"] = capital
                 state["loss_streak"] = 0
+
+        halt_stop = float(self.config.shadow_halt_drawdown_pct or 0.0)
+        if halt_stop > 0 and peak > 0:
+            halt_drawdown_pct = (peak - capital) / peak * 100.0
+            if halt_drawdown_pct >= halt_stop:
+                triggered.append(f"halt:{halt_drawdown_pct:.2f}")
+                state["pause_until_ts"] = max(
+                    float(state.get("pause_until_ts", 0.0) or 0.0),
+                    (action_dt + timedelta(days=36500)).timestamp(),
+                )
+                state["halted"] = True
 
         state["real_position_open"] = False
         state["real_position_direction"] = None

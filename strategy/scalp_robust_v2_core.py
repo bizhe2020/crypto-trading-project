@@ -101,6 +101,16 @@ class StrategyConfig:
     risk_per_trade: float = 0.01
     position_size_pct: float = 0.35
     fixed_notional_usdt: float | None = None
+    # 波动率目标仓位：按「参考波动 / 当前已实现波动」缩放每笔风险预算。
+    # 已实现波动只用 entry bar（含）及之前已收盘的 ATR，无前视。
+    enable_vol_target_sizing: bool = False
+    vol_target_reference_pct: float = 0.25
+    vol_target_min_scale: float = 0.25
+    vol_target_max_scale: float = 2.0
+    # ATR 止损宽度钳制：结构止损之上叠加 ATR 倍数上限（收窄）/ 下限（放宽）。
+    enable_atr_stop_bounds: bool = False
+    atr_stop_cap_multiple: float = 0.0
+    atr_stop_floor_multiple: float = 0.0
     allow_long: bool = True
     allow_short: bool = True
     regime_filter_1d_ema_period: int | None = None
@@ -113,6 +123,10 @@ class StrategyConfig:
     enable_daily_alpha_gate: bool = False
     daily_alpha_sma_period: int = 200
     daily_alpha_max_dev_pct: float = 12.0
+    # 日线乖离「下限」门（只限多）：最近已完成日收盘 < 日线 SMA(sma_period) ×(1+min_dev%) 时禁新多单。
+    # 用途：形态级归因显示「深度贴水区间的多头」期望≈0（见 docs/btc_scalp_optimization_20260921.md §7）。
+    # None = 关闭（默认，行为不变）。
+    daily_alpha_min_dev_pct: float | None = None
     enable_dual_pending_state: bool = False
     regime_position_size_pct_below_ema: float | None = None
     enable_regime_layered_exit: bool = False
@@ -178,6 +192,13 @@ class StrategyConfig:
     shadow_equity_drawdown_stop_pct: float = 0.0
     shadow_equity_drawdown_cooldown_days: int = 0
     shadow_consecutive_loss_stop: int = 0
+    # 闸门语义扩展：>0 时用「平仓时刻 + N 天」替换默认的「暂停到下一 UTC 日」；
+    # 回撤触发后是否重置 drawdown_peak（False 可避免阶梯式放血）；
+    # >0 时回撤达到该值即永久停牌（pause 设到极远未来，需人工重置 state）。
+    shadow_daily_loss_pause_days: float = 0.0
+    shadow_consecutive_loss_pause_days: float = 0.0
+    shadow_drawdown_peak_reset: bool = True
+    shadow_halt_drawdown_pct: float = 0.0
     # dynamic high leverage（与 executor 的 dynamic_high_leverage 对齐）
     enable_dynamic_high_leverage_structure: bool = False
     dynamic_base_leverage: float = 4.0
@@ -956,6 +977,10 @@ class ScalpRobustEngine:
         if self._shadow_gate_blocked(idx):
             return None
         applied_risk_per_trade, risk_regime = self._risk_per_trade_for_idx(idx, direction)
+        vol_scale = 1.0
+        if self.config.enable_vol_target_sizing:
+            vol_scale = self._vol_target_scale(idx)
+            applied_risk_per_trade = applied_risk_per_trade * vol_scale
         risk_amount = self.capital * applied_risk_per_trade
         filled_entry_price = self._apply_entry_slippage(entry_price, direction)
         position_size_pct = self._position_size_pct_for_idx(idx)
@@ -974,6 +999,7 @@ class ScalpRobustEngine:
             trail_style=trail_style,
             risk_regime=risk_regime,
         )
+        sl_price, atr_stop_bounds = self._apply_atr_stop_bounds(idx, direction, entry_price, sl_price)
         filled_target_price = self._target_price_from_rr(filled_entry_price, sl_price, direction, target_rr)
         stop_distance = abs(filled_entry_price - sl_price)
         structure_invalidation_price = None
@@ -1100,6 +1126,8 @@ class ScalpRobustEngine:
                 "max_notional": max_notional,
                 "risk_based_notional": risk_based_notional,
                 "risk_per_trade": applied_risk_per_trade,
+                "vol_target_scale": vol_scale,
+                "atr_stop_bounds": atr_stop_bounds,
                 "risk_amount": self.position.risk_amount,
                 "risk_regime": risk_regime,
                 "entry_fee": self.position.entry_fee,
@@ -1197,17 +1225,27 @@ class ScalpRobustEngine:
         st["day_start_capital"] = day_start
         st["day_pnl"] = day_pnl
         next_utc_day_ts = (int(exit_ts // 86400) + 1) * 86400
+        daily_pause_ts = (
+            exit_ts + float(self.config.shadow_daily_loss_pause_days or 0.0) * 86400.0
+            if float(self.config.shadow_daily_loss_pause_days or 0.0) > 0
+            else next_utc_day_ts
+        )
+        streak_pause_ts = (
+            exit_ts + float(self.config.shadow_consecutive_loss_pause_days or 0.0) * 86400.0
+            if float(self.config.shadow_consecutive_loss_pause_days or 0.0) > 0
+            else next_utc_day_ts
+        )
         # 单日亏损
         daily_stop = float(self.config.shadow_daily_loss_stop_pct or 0.0)
         start_cap = float(day_start[day_key])
         if daily_stop > 0 and start_cap > 0:
             daily_loss_pct = -float(day_pnl[day_key]) / start_cap * 100.0
             if daily_loss_pct >= daily_stop:
-                st["pause_until_ts"] = max(float(st.get("pause_until_ts", 0.0) or 0.0), next_utc_day_ts)
+                st["pause_until_ts"] = max(float(st.get("pause_until_ts", 0.0) or 0.0), daily_pause_ts)
         # 连续亏损
         streak_stop = int(self.config.shadow_consecutive_loss_stop or 0)
         if streak_stop > 0 and int(st.get("loss_streak", 0) or 0) >= streak_stop:
-            st["pause_until_ts"] = max(float(st.get("pause_until_ts", 0.0) or 0.0), next_utc_day_ts)
+            st["pause_until_ts"] = max(float(st.get("pause_until_ts", 0.0) or 0.0), streak_pause_ts)
             st["loss_streak"] = 0
         # 权益回撤
         dd_stop = float(self.config.shadow_equity_drawdown_stop_pct or 0.0)
@@ -1216,8 +1254,19 @@ class ScalpRobustEngine:
             if dd_pct >= dd_stop:
                 pause_until = exit_ts + float(self.config.shadow_equity_drawdown_cooldown_days or 0) * 86400.0
                 st["pause_until_ts"] = max(float(st.get("pause_until_ts", 0.0) or 0.0), pause_until)
-                st["drawdown_peak"] = capital
+                if bool(self.config.shadow_drawdown_peak_reset):
+                    st["drawdown_peak"] = capital
                 st["loss_streak"] = 0
+        # 永久停牌
+        halt_stop = float(self.config.shadow_halt_drawdown_pct or 0.0)
+        if halt_stop > 0 and peak > 0:
+            halt_dd_pct = (peak - capital) / peak * 100.0
+            if halt_dd_pct >= halt_stop:
+                st["pause_until_ts"] = max(
+                    float(st.get("pause_until_ts", 0.0) or 0.0),
+                    exit_ts + 100.0 * 365.0 * 86400.0,
+                )
+                st["halted"] = True
 
     def close_position(self, idx: int, reason: str, exit_price: float | None = None) -> StrategyAction:
         if not self.position:
@@ -2766,6 +2815,9 @@ class ScalpRobustEngine:
         if dev is None or math.isnan(dev):
             return True
         cap = float(self.config.daily_alpha_max_dev_pct or 0.0)
+        floor = self.config.daily_alpha_min_dev_pct
+        if floor is not None and dev < float(floor):
+            return False
         return dev <= cap
 
     def _regime_ok_for_direction_idx(self, idx: int, direction: str) -> bool:
@@ -2800,6 +2852,70 @@ class ScalpRobustEngine:
         if self.config.regime_position_size_pct_below_ema is not None:
             return self.config.regime_position_size_pct_below_ema
         return self.config.position_size_pct
+
+    def _vol_target_scale(self, idx: int) -> float:
+        """波动率目标缩放系数 = 参考波动 / 当前 ATR%（仅用 idx 及之前已收盘 K 线）。
+
+        返回值被裁剪到 [vol_target_min_scale, vol_target_max_scale]；
+        数据不足或参考值非法时返回 1.0（不影响原行为）。
+        """
+        reference = float(self.config.vol_target_reference_pct or 0.0)
+        if not self.config.enable_vol_target_sizing or reference <= 0:
+            return 1.0
+        atr = self._atr_for_idx(idx)
+        price = self.c15m[idx].c if 0 <= idx < len(self.c15m) else 0.0
+        if atr <= 0 or price <= 0:
+            return 1.0
+        realized_pct = atr / price * 100.0
+        if realized_pct <= 0:
+            return 1.0
+        scale = reference / realized_pct
+        lower = float(self.config.vol_target_min_scale)
+        upper = float(self.config.vol_target_max_scale)
+        return max(lower, min(upper, scale))
+
+    def _apply_atr_stop_bounds(
+        self,
+        idx: int,
+        direction: str,
+        entry_price: float,
+        sl_price: float,
+    ) -> tuple[float, dict[str, Any] | None]:
+        """把结构止损的宽度钳制到 ATR 倍数区间内（上限收窄 / 下限放宽）。"""
+        if not self.config.enable_atr_stop_bounds:
+            return sl_price, None
+        cap_multiple = float(self.config.atr_stop_cap_multiple or 0.0)
+        floor_multiple = float(self.config.atr_stop_floor_multiple or 0.0)
+        if cap_multiple <= 0 and floor_multiple <= 0:
+            return sl_price, None
+        atr = self._atr_for_idx(idx)
+        if atr <= 0 or entry_price <= 0:
+            return sl_price, None
+        original_distance = abs(entry_price - sl_price)
+        if original_distance <= 0:
+            return sl_price, None
+        bound = "none"
+        new_distance = original_distance
+        if cap_multiple > 0 and original_distance > cap_multiple * atr:
+            new_distance = cap_multiple * atr
+            bound = "cap"
+        elif floor_multiple > 0 and original_distance < floor_multiple * atr:
+            new_distance = floor_multiple * atr
+            bound = "floor"
+        if bound == "none":
+            return sl_price, None
+        if direction == Direction.BULL:
+            new_sl = entry_price - new_distance
+        else:
+            new_sl = entry_price + new_distance
+        info = {
+            "bound": bound,
+            "original_distance": original_distance,
+            "new_distance": new_distance,
+            "original_atr_multiple": original_distance / atr,
+            "new_atr_multiple": new_distance / atr,
+        }
+        return new_sl, info
 
     def _pullback_window_for_direction(self, direction: str) -> int:
         if direction == Direction.BEAR and self.config.short_pullback_window is not None:
