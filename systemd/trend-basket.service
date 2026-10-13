@@ -1,0 +1,18 @@
+[Unit]
+Description=Trend-vote basket leg (XAU / QQQ perps, idle margin beside btc-scalp-standalone)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 与 btc-scalp-standalone 共用同一个发布目录（部署时按实际 WorkingDirectory 替换）。
+WorkingDirectory=/root/projects/crypto-trading-releases/router-risk-20260603_1a2a61f
+ExecStart=/root/projects/crypto-trading-releases/router-risk-20260603_1a2a61f/.venv/bin/python bot/trend_basket_executor.py --config config/config.live.trend-basket.json --run-loop
+Restart=always
+RestartSec=30
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:/root/projects/crypto-trading-releases/router-risk-20260603_1a2a61f/var/log/trend_basket.log
+StandardError=append:/root/projects/crypto-trading-releases/router-risk-20260603_1a2a61f/var/log/trend_basket.log
+
+[Install]
+WantedBy=multi-user.target

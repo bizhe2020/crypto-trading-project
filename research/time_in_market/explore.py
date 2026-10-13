@@ -16,8 +16,16 @@ import itertools
 import json
 from pathlib import Path
 
+import sys
+
 import numpy as np
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from strategy.trend_vote import vote_target  # noqa: E402  实盘篮子腿共用同一实现
 
 FEE_SLIP = 0.0008  # 单边
 LONG_FUNDING_PER_DAY = 0.0003  # 0.01% × 3
@@ -204,17 +212,20 @@ def main() -> None:
 
     # 防过拟合：不挑单一参数，每条腿用预先声明的「趋势投票」（5 条规则仓位的平均，0~1），
     # 三腿等权成篮子。规则集在看结果之前固定，不做二次筛选。
-    vote_rules = ("sma50_L", "sma100_L", "sma200_L", "tsmom30_L", "tsmom90_L")
     votes: dict[str, pd.DataFrame] = {}
     for leg, d in legs.items():
-        fam = signal_family(d)
-        target = sum(fam[r] for r in vote_rules) / len(vote_rules)
+        target = vote_target(d["close"])
         votes[leg] = to_calendar(sleeve_returns(d, target, 1.0), cal)
     basket_ret = sum(v["ret"] for v in votes.values()) / len(votes)
     basket_pos = sum(v["pos"] for v in votes.values()) / len(votes)
+    # 两腿篮子（黄金 + QQQ）：实盘 BTC 腿与 scalp 同合约冲突，单币种保证金账户里没有无冲突的 BTC 合约。
+    non_btc = [leg for leg in votes if leg != "BTC"]
+    basket2_ret = sum(votes[leg]["ret"] for leg in non_btc) / len(non_btc)
+    basket2_pos = sum(votes[leg]["pos"] for leg in non_btc) / len(non_btc)
     vote_rows = []
     for name, (r, pos) in {**{f"vote_{leg}": (v["ret"], v["pos"]) for leg, v in votes.items()},
-                           "basket3": (basket_ret, basket_pos)}.items():
+                           "basket3": (basket_ret, basket_pos),
+                           "basket2_gld_qqq": (basket2_ret, basket2_pos)}.items():
         vote_rows.append({"name": name, "k": 0.0,
                           **{f"{w}|{kk}": vv for w, mm in windowed(r, pos).items() for kk, vv in mm.items()}})
         for k in (0.5, 1.0, 2.0, 3.0):
@@ -222,6 +233,20 @@ def main() -> None:
             pp = ((scalp["pos"] > 0) | (pos != 0)).astype(float)
             vote_rows.append({"name": f"scalp+{k}x{name}", "k": k,
                               **{f"{w}|{kk}": vv for w, mm in windowed(rr, pp).items() for kk, vv in mm.items()}})
+    # 压力：成本与资金费翻倍（只影响袖子；scalp 逐笔已含其自身成本）。
+    global FEE_SLIP, LONG_FUNDING_PER_DAY
+    base_cost = (FEE_SLIP, LONG_FUNDING_PER_DAY)
+    FEE_SLIP, LONG_FUNDING_PER_DAY = base_cost[0] * 2, base_cost[1] * 2
+    stress = {}
+    for leg in non_btc:
+        target = vote_target(legs[leg]["close"])
+        stress[leg] = to_calendar(sleeve_returns(legs[leg], target, 1.0), cal)
+    FEE_SLIP, LONG_FUNDING_PER_DAY = base_cost
+    stress_ret = sum(s["ret"] for s in stress.values()) / len(stress)
+    for k in (1.0, 2.0):
+        rr = scalp["ret"] + k * stress_ret
+        vote_rows.append({"name": f"STRESS2x_cost:scalp+{k}xbasket2_gld_qqq", "k": k,
+                          **{f"{w}|{kk}": vv for w, mm in windowed(rr, scalp["pos"]).items() for kk, vv in mm.items()}})
     pd.DataFrame(vote_rows).to_csv(out_path_votes(args.output), index=False)
     exposure = pd.DataFrame({leg: v["pos"] for leg, v in votes.items()})
     exposure.to_csv(Path(args.output).with_name(Path(args.output).stem + "_vote_exposure.csv"))

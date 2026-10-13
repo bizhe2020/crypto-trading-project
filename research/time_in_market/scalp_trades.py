@@ -26,9 +26,16 @@ def main() -> None:
     parser.add_argument("--data-4h", required=True)
     parser.add_argument("--start", default="2022-01-01")
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--shadow-gate-backtest",
+        action="store_true",
+        help="在引擎内启用 shadow risk gate（实盘执行层会跑这道闸门；不开则逐笔流比实盘多出被闸门挡掉的单）",
+    )
     args = parser.parse_args()
 
     payload = load_base_config(Path(args.config))
+    if args.shadow_gate_backtest:
+        payload["enable_shadow_risk_gate_backtest"] = True
     prepared = load_prepared_data(
         Path(args.data_15m),
         Path(args.data_4h),

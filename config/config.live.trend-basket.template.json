@@ -1,0 +1,22 @@
+{
+  "mode": "live",
+  "dry_run": true,
+  "enabled": true,
+  "credentials_config_path": "config/config.live.high-leverage-structure.json",
+  "state_db_path": "state/trend_basket_live.db",
+  "signal_data_dir": "var/trend_basket/etf",
+  "legs": [
+    {"name": "gold", "signal_symbol": "GLD", "execution_symbol": "XAU/USDT:USDT", "weight": 0.5},
+    {"name": "qqq", "signal_symbol": "QQQ", "execution_symbol": "QQQ/USDT:USDT", "weight": 0.5}
+  ],
+  "basket_multiplier": 1.0,
+  "leverage": 6,
+  "margin_mode": "isolated",
+  "rebalance_band_frac": 0.1,
+  "max_basket_margin_frac": 0.2,
+  "min_order_notional_usdt": 20.0,
+  "ny_close_buffer_minutes": 15,
+  "history_days": 500,
+  "poll_interval_seconds": 300,
+  "failure_retry_seconds": 900
+}
