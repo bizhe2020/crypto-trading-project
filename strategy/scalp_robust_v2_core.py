@@ -458,19 +458,22 @@ def dataframe_to_candles(dataframe: pd.DataFrame) -> list[Candle]:
     else:
         raise ValueError("Dataframe must contain date or timestamp column")
 
-    candles: list[Candle] = []
-    for idx, row in df.iterrows():
-        candles.append(
-            Candle(
-                ts=float(timestamps.iloc[idx]),
-                o=float(row["open"]),
-                h=float(row["high"]),
-                l=float(row["low"]),
-                c=float(row["close"]),
-                v=float(row.get("volume", 0.0)),
-            )
+    # 列式转换：iterrows 在 23 万根 15m 上实盘需 ~44s，是 K 线处理延迟的主因。
+    def _column(name: str) -> list[float]:
+        return pd.to_numeric(df[name]).astype(float).tolist()
+
+    volumes = _column("volume") if "volume" in df.columns else [0.0] * len(df)
+    return [
+        Candle(ts=ts, o=o, h=h, l=l, c=c, v=v)
+        for ts, o, h, l, c, v in zip(
+            timestamps.astype(float).tolist(),
+            _column("open"),
+            _column("high"),
+            _column("low"),
+            _column("close"),
+            volumes,
         )
-    return candles
+    ]
 
 
 def align_timeframes(c4h: list[Candle], c15m: list[Candle]) -> list[int]:

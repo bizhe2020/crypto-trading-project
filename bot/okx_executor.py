@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import time
 import uuid
@@ -3585,7 +3586,8 @@ class OkxExecutionEngine:
                 latest_closed_time = self.latest_closed_candle_time(close_buffer_seconds)
                 last_processed = self.store.get_value("last_processed_candle_time")
                 if last_processed == latest_closed_time:
-                    sleep_seconds = max(wait_seconds, poll_interval_seconds)
+                    # 直接睡到下一根收盘+buffer；不再与 poll 取 max，否则贴近边界时多等一个 poll。
+                    sleep_seconds = wait_seconds
                     payload = {
                         "event": "waiting",
                         "symbol": self.config.symbol,
@@ -3595,7 +3597,7 @@ class OkxExecutionEngine:
                     }
                     self.store.append_action(latest_closed_time, "WAIT", payload)
                     print(json.dumps(payload, ensure_ascii=False))
-                    self._sleep_with_telegram(max(wait_seconds, poll_interval_seconds), poll_interval_seconds)
+                    self._sleep_with_telegram(sleep_seconds, poll_interval_seconds)
                     continue
 
                 status = self.evaluate_latest()
@@ -6510,17 +6512,21 @@ class OkxExecutionEngine:
         closed = self._floor_to_timeframe(now) - timedelta(seconds=self._timeframe_seconds())
         return closed.strftime("%Y-%m-%d %H:%M")
 
+    def _next_close_deadline(self, now: datetime, close_buffer_seconds: int) -> datetime:
+        # 与 latest_closed_candle_time 同一时钟（now - buffer）。若用裸 now 取整，
+        # 醒在 [边界, 边界+buffer) 内时会直接跳到下一根，整根 K 线晚 15 分钟处理。
+        current_boundary = self._floor_to_timeframe(now - timedelta(seconds=close_buffer_seconds))
+        return current_boundary + timedelta(seconds=self._timeframe_seconds() + close_buffer_seconds)
+
     def next_closed_candle_time(self, close_buffer_seconds: int = 5) -> str:
         now = datetime.now(timezone.utc)
-        current_boundary = self._floor_to_timeframe(now)
-        next_boundary = current_boundary + timedelta(seconds=self._timeframe_seconds() + close_buffer_seconds)
-        return next_boundary.strftime("%Y-%m-%d %H:%M:%S")
+        return self._next_close_deadline(now, close_buffer_seconds).strftime("%Y-%m-%d %H:%M:%S")
 
     def seconds_until_next_close(self, close_buffer_seconds: int = 5) -> int:
         now = datetime.now(timezone.utc)
-        current_boundary = self._floor_to_timeframe(now)
-        next_boundary = current_boundary + timedelta(seconds=self._timeframe_seconds() + close_buffer_seconds)
-        return max(int((next_boundary - now).total_seconds()), 1)
+        next_boundary = self._next_close_deadline(now, close_buffer_seconds)
+        # 向上取整：int() 截断会让唤醒点落在 buffer 之前。
+        return max(math.ceil((next_boundary - now).total_seconds()), 1)
 
     def _engine_candles(self, engine: Any) -> list[Any]:
         candles = getattr(engine, "candles", None)
