@@ -83,6 +83,17 @@ ETF 日线本机访问 Yahoo 会 403，需在东京跑 `scripts/fetch_public_etf
 | 4 | `search_basket_k_cap.py` | SMA200 乖离 cap：低阈值（8~15%）降收益，高阈值（20~30%）的增益只来自 4~10 段行情 → 不加 cap |
 | 5 | `sim_basket_liquidation.py` | k × 杠杆同账户模拟（见 §3）；杠杆 ≤10x 强平影响可忽略，20x 以上强平频繁、收益下降；k 越大收益越高、盈亏比越低 |
 
+### QQQ 腿研究（`research/qqq_leg/study.py`，2026-10-14）
+
+数据（东京拉取后放 `var/tmp/qqq_research/raw/`）：QQQ、^VIX、^VIX3M、^VXN、^TNX（Yahoo）；DFII10 实际利率、T10Y2Y（FRED，多滞后 1 日）；Shiller CAPE（multpl 月度，滞后 1 个月）。
+候选按文献预先声明：SMA200 单规则（Gayed & Bilello 2016 *Leverage for the Long Run*）、已实现/下行/隐含波动目标（Moreira & Muir 2017；Cederburg et al. 2020 指出样本外不稳；Wang & Yan 2021 下行波动）、VIX 水平与 VIX/VIX3M 倒挂、10Y 60 日上行冲击、曲线倒挂、实际利率、CAPE 分位。共 52 个，2007→，资金费 6%/年。
+
+- 宏观/恐慌/估值叠加**没有一个在 2007-13、2014-20、2021- 三段都优于 V5**：VIX 水平过滤全部变差（VIX 尖峰本身偏反向信号）；期限结构倒挂前两段好、2021- 变差；利率冲击/实际利率/曲线倒挂中性偏差；CAPE 近年一直在 99% 分位，等于长期减仓而非择时。
+- 波动目标 cap>1（平静时加杠杆）只是加杠杆：收益升、Sharpe 不升、回撤 25%→33~42%。
+- 唯一稳健的改进是把 QQQ 腿换成 **SMA200 单规则**：同账户模拟（k=2、10x、含强平与 scalp 拒单）2022 起 +1709% vs V5 +1481%，回撤 65.5% vs 65.9%，日盈亏比 1.190 vs 1.184；篮子单独 2007 起 +777%/回撤 36.7% vs +467%/41.0%，强平 1 次 vs 3 次；20 年里 13 年更好；调仓日 131 vs 1046。弱点：2007-13 更差（QQQ 单腿 Sharpe 0.26 vs 0.33）；且是在 52 个候选里看过结果后选的，有选择偏差。
+- 资金费是 QQQ 腿最大的成本：按 12%/年，所有方案年化收益≈0；当前实测 3.7%/年（92 天均值），但 2026-10-14 即时费率折合约 14%/年。
+- 实现：腿配置 `signal_rule`（`v5` / `sma200`，`strategy/trend_vote.py`），模板仍为 `v5`。
+
 scalp 引擎此前的参数扫描（`scripts/scan_btc_scalp_optimization.py`）结论：vol-target 仓位、ATR 止损钳制、乖离下限门等 4 个候选均被否决，无新 edge；`config/config.candidate.btc-scalp-optimized-20260921.json` 是回撤更低（42%）但收益更低的备选，未上线。
 
 ## 6. 分支与归档

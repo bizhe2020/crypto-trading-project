@@ -1,7 +1,7 @@
 """趋势投票篮子腿：用 BTC scalp 的闲置保证金，在独立合约（XAU / QQQ 永续）上跑日线趋势投票。
 
 设计要点（与 research/time_in_market/explore.py 的 basket2_gld_qqq 口径一致）：
-  * 信号：ETF 日线（GLD / QQQ，Yahoo）的 5 规则投票 strategy.trend_vote.vote_target，只用已收盘日线。
+  * 信号：ETF 日线（GLD / QQQ，Yahoo）按腿配置的规则（strategy.trend_vote.SIGNAL_RULES：v5 投票 / sma200），只用已收盘日线。
   * 执行：每个新的已收盘交易日，把各腿多头名义调到 k × 账户权益 × 腿权重 × 投票比例。
   * 只做多、逐仓、市价单；真实仓位以交易所为准（每次都从交易所读取，本地只存审计和去重）。
   * 与 scalp 隔离：不碰 scalp 的 BTC-USDT-SWAP；篮子保证金上限 max_basket_margin_frac × 权益，
@@ -29,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from bot.okx_client import OkxClient, OkxCredentials  # noqa: E402
 from bot.state_store import StateStore  # noqa: E402
-from strategy.trend_vote import VOTE_RULES, vote_components, vote_target  # noqa: E402
+from strategy.trend_vote import SIGNAL_RULES, signal_target, vote_components  # noqa: E402
 
 NEW_YORK = ZoneInfo("America/New_York")
 STATE_KEY = "trend_basket_state"
@@ -41,6 +41,7 @@ class BasketLeg:
     signal_symbol: str  # Yahoo 代码，如 GLD / QQQ
     execution_symbol: str  # ccxt 统一代码，如 XAU/USDT:USDT
     weight: float = 0.5
+    signal_rule: str = "v5"  # strategy.trend_vote.SIGNAL_RULES：v5（5 规则投票）/ sma200（单均线）
 
 
 @dataclass
@@ -108,6 +109,9 @@ class TrendBasketConfig:
             raise ValueError("max_basket_margin_frac must be in (0, 0.5]")
         if self.margin_mode not in {"isolated", "cross"}:
             raise ValueError("margin_mode must be isolated or cross")
+        for leg in self.legs:
+            if leg.signal_rule not in SIGNAL_RULES:
+                raise ValueError(f"unknown signal_rule for {leg.name}: {leg.signal_rule}")
 
 
 # --------------------------------------------------------------------------- 纯函数（便于测试）
@@ -138,17 +142,18 @@ def latest_expected_signal_day(now_utc: datetime, close_buffer_minutes: int = 15
     return day.isoformat()
 
 
-def leg_signal(df: pd.DataFrame) -> dict[str, Any]:
-    """最新已收盘 bar 的投票结果。"""
+def leg_signal(df: pd.DataFrame, rule: str = "v5") -> dict[str, Any]:
+    """最新已收盘 bar 的目标仓位比例（0~1）及各规则票。"""
     close = pd.Series(df["close"].astype(float).values, index=pd.to_datetime(df["date"], utc=True))
-    target = vote_target(close)
+    target = signal_target(close, rule)
     parts = vote_components(close)
     last_ts = close.index[-1]
     return {
         "signal_date": str(last_ts.tz_convert(NEW_YORK).date()),
         "close": float(close.iloc[-1]),
         "vote": round(float(target.iloc[-1]), 4),
-        "rules": {name: int(parts[name].iloc[-1]) for name in VOTE_RULES},
+        "rule": rule,
+        "rules": {name: int(parts[name].iloc[-1]) for name in SIGNAL_RULES[rule][1]},
         "bars": int(len(close)),
     }
 
@@ -353,7 +358,7 @@ class TrendBasketExecutor:
             df = completed_daily_bars(self._fetch_history(leg, cfg.history_days), now, cfg.ny_close_buffer_minutes)
             if len(df) < 200:
                 return self._log("error", {"reason": "insufficient_history", "leg": leg.name, "bars": len(df)})
-            signals[leg.name] = leg_signal(df)
+            signals[leg.name] = leg_signal(df, leg.signal_rule)
         signal_key = "|".join(f"{n}:{s['signal_date']}" for n, s in sorted(signals.items()))
 
         if not cfg.enabled:

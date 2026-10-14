@@ -28,3 +28,18 @@ def vote_target(close: pd.Series) -> pd.Series:
     """0~1 的目标仓位比例序列（步长 0.2）。"""
     parts = vote_components(close)
     return sum(parts[name] for name in VOTE_RULES) / len(VOTE_RULES)
+
+
+def sma200_target(close: pd.Series) -> pd.Series:
+    """Gayed & Bilello (2016)「Leverage for the Long Run」：收盘 > SMA200 满仓，否则空仓（0/1）。"""
+    return vote_components(close)["sma200_L"]
+
+
+# 每条腿可选的信号规则（实盘配置 legs[].signal_rule）
+SIGNAL_RULES = {"v5": (vote_target, VOTE_RULES), "sma200": (sma200_target, ("sma200_L",))}
+
+
+def signal_target(close: pd.Series, rule: str = "v5") -> pd.Series:
+    if rule not in SIGNAL_RULES:
+        raise ValueError(f"unknown signal rule: {rule}")
+    return SIGNAL_RULES[rule][0](close)

@@ -195,3 +195,25 @@ def test_executor_reduces_with_reduce_only(tmp_path):
     qqq_orders = [o for o in client.exchange.orders if o[0] == "QQQ/USDT:USDT"]
     assert qqq_orders and qqq_orders[0][1] == "sell" and qqq_orders[0][3]["reduceOnly"] is True
     assert out["plan"]["legs"]["qqq"]["target_notional"] < 12_000
+
+
+def test_sma200_rule_matches_research_and_drives_leg_signal():
+    from bot.trend_basket_executor import leg_signal
+    from strategy.trend_vote import signal_target
+
+    d = _daily(400, drift=0.0, seed=3)
+    close = d.set_index("date")["close"]
+    sma = close.rolling(200).mean()
+    expected = (close > sma).astype(float).where(sma.notna(), 0.0)
+    pd.testing.assert_series_equal(signal_target(close, "sma200"), expected, check_names=False)
+    sig = leg_signal(d, "sma200")
+    assert sig["rule"] == "sma200" and set(sig["rules"]) == {"sma200_L"}
+    assert sig["vote"] == float(expected.iloc[-1])
+
+
+def test_config_rejects_unknown_signal_rule():
+    with pytest.raises(ValueError, match="signal_rule"):
+        TrendBasketConfig.from_dict(
+            {"legs": [{"name": "qqq", "signal_symbol": "QQQ", "execution_symbol": "QQQ/USDT:USDT",
+                       "weight": 1.0, "signal_rule": "magic"}]}
+        )
