@@ -46,6 +46,27 @@ def test_completed_daily_bars_drops_live_session_bar():
     assert completed_daily_bars(df, after_close)["date"].iloc[-1].date().isoformat() == "2026-10-13"
 
 
+def test_latest_expected_signal_day():
+    from bot.trend_basket_executor import latest_expected_signal_day
+
+    # 周一 08:00 纽约 → 上周五
+    assert latest_expected_signal_day(datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)) == "2026-10-09"
+    # 周二 16:20 纽约 → 当天
+    assert latest_expected_signal_day(datetime(2026, 10, 13, 20, 20, tzinfo=timezone.utc)) == "2026-10-13"
+    # 周日 → 周五
+    assert latest_expected_signal_day(datetime(2026, 10, 11, 23, 0, tzinfo=timezone.utc)) == "2026-10-09"
+
+
+def test_hold_skips_data_fetch_when_caught_up(tmp_path):
+    now = datetime(2026, 10, 12, 12, 0, tzinfo=timezone.utc)
+    ex, _ = _executor(tmp_path, dry_run=True, now=now)
+    ex.evaluate_once()
+    calls = []
+    ex._fetch_history = lambda leg, days: calls.append(leg) or (_ for _ in ()).throw(AssertionError("fetched"))
+    assert ex.evaluate_once()["event"] == "hold"
+    assert calls == []
+
+
 def _plan(**overrides):
     kwargs = dict(
         equity=10_000.0,

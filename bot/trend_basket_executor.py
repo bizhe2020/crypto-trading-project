@@ -128,6 +128,16 @@ def completed_daily_bars(df: pd.DataFrame, now_utc: datetime, close_buffer_minut
     return df[keep.values].reset_index(drop=True)
 
 
+def latest_expected_signal_day(now_utc: datetime, close_buffer_minutes: int = 15) -> str:
+    """最近一个「收盘 + 缓冲已过」的纽约工作日（不识别交易所假日：假日当天会继续轮询，属预期）。"""
+    now_ny = now_utc.astimezone(NEW_YORK)
+    cutoff = now_ny.replace(hour=16, minute=0, second=0, microsecond=0) + timedelta(minutes=close_buffer_minutes)
+    day = now_ny.date() if now_ny >= cutoff else now_ny.date() - timedelta(days=1)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    return day.isoformat()
+
+
 def leg_signal(df: pd.DataFrame) -> dict[str, Any]:
     """最新已收盘 bar 的投票结果。"""
     close = pd.Series(df["close"].astype(float).values, index=pd.to_datetime(df["date"], utc=True))
@@ -327,6 +337,17 @@ class TrendBasketExecutor:
         cfg = self.config
         state = self._load_state()
         now = self._now()
+        # 已经按最近一个「应已收盘」的交易日执行过 → 不再每 5 分钟去拉 Yahoo（避免限流/403 刷屏）。
+        expected_day = latest_expected_signal_day(now, cfg.ny_close_buffer_minutes)
+        done_days = [str(s.get("signal_date")) for s in (state.get("signals") or {}).values()]
+        if (
+            not force
+            and state.get("last_status") == "ok"
+            and bool(state.get("last_dry_run")) == cfg.dry_run
+            and len(done_days) == len(cfg.legs)
+            and min(done_days) >= expected_day
+        ):
+            return {"event": "hold", "signal_key": state.get("last_signal_key"), "expected_day": expected_day}
         signals: dict[str, dict[str, Any]] = {}
         for leg in cfg.legs:
             df = completed_daily_bars(self._fetch_history(leg, cfg.history_days), now, cfg.ny_close_buffer_minutes)
