@@ -16,13 +16,18 @@ cd "$ROOT"
 TOKYO_HOST="${TOKYO_HOST:-23.106.133.251}"
 TOKYO_USER="${TOKYO_USER:-root}"
 PROJECT_DIR="${PROJECT_DIR:-/root/projects/crypto-trading-releases/router-risk-20260603_1a2a61f}"
-BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
+# 服务器只跟踪 main（部署分支）。上线流程：dev 上提交并测试 → git switch main && git merge --ff-only dev → 本脚本。
+BRANCH="${BRANCH:-main}"
 RESTART="${RESTART:-}"
 SSH=(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes "${TOKYO_USER}@${TOKYO_HOST}")
 
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   echo "本地有未提交的改动，先提交再部署。" >&2
   git status --short --untracked-files=no
+  exit 1
+fi
+if [[ "$BRANCH" == "main" ]] && ! git merge-base --is-ancestor origin/main main 2>/dev/null; then
+  echo "本地 main 不是 origin/main 的快进，拒绝部署（main 只能 ff-only 前进）。" >&2
   exit 1
 fi
 git push -q origin "$BRANCH"

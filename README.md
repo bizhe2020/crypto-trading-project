@@ -85,8 +85,16 @@ ETF 日线本机访问 Yahoo 会 403，需在东京跑 `scripts/fetch_public_etf
 
 scalp 引擎此前的参数扫描（`scripts/scan_btc_scalp_optimization.py`）结论：vol-target 仓位、ATR 止损钳制、乖离下限门等 4 个候选均被否决，无新 edge；`config/config.candidate.btc-scalp-optimized-20260921.json` 是回撤更低（42%）但收益更低的备选，未上线。
 
-## 6. 归档
+## 6. 分支与归档
 
-- 美股/A 股 ETF（QQQ/TQQQ/GOOGL/CN ETF）未提交的研究：分支 `archive/us-equity-wip-20261014`；router 与各腿 executor 的完整代码在 `c4664aa` 及更早提交、分支 `美股专项`。
-- BTC headroom review 会话的未提交工作：分支 `iter/btc-scalp-headroom-review-20261013`。
+只有两个分支：
+- `dev`：开发分支，日常提交、研究都在这里。
+- `main`：部署分支，东京服务器只跟踪它；只允许 `git switch main && git merge --ff-only dev` 前进，然后 `bash scripts/ops/deploy_tokyo.sh`。
+  `main` 上每个提交都上过实盘，回滚即服务器 `git checkout <main 上一提交>` 后重启对应服务。
+
+2026-10-14 之前的所有分支都已转成 `archive/<原分支名>-20261014` 标签（共 24 个，已推送）；
+恢复某个旧分支：`git switch -c <名字> archive/<名字>-20261014`。常用的几个：
+- 美股/A 股 ETF（QQQ/TQQQ/GOOGL/CN ETF）未提交研究：`archive/us-equity-wip-20261014`；router 与各腿 executor 完整代码：`c4664aa` 及更早、`archive/美股专项-20261014`。
+- BTC headroom review 会话未提交工作：`archive/iter/btc-scalp-headroom-review-20261013-20261014`。
+- 旧 `main`（5 月的延迟/拒单修复线）：`archive/main-origin-20261014`、`archive/main-local-20261014`。
 - 与项目无关的文档、18MB 期权报价缓存：`~/Documents/crypto-project-archive/`。
