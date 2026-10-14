@@ -233,7 +233,7 @@ class ExecutorConfig:
     shadow_halt_drawdown_pct: float = 0.0
     # 是否在回测里启用引擎级 shadow gate。
     # 默认 False：`live_readiness_report` 的历史口径里闸门只在执行层生效，
-    # 打开它会改变既有基线数字，故必须显式开启（见 docs/btc_scalp_optimization_20260921.md）。
+    # 打开它会改变既有基线数字，故必须显式开启（见 README.md「研究结论」）。
     enable_shadow_risk_gate_backtest: bool = False
     enable_high_leverage_guard: bool = False
     high_leverage_guard_min_leverage: float = 10.0

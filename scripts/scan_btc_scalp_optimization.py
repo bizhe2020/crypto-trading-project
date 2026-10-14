@@ -5,7 +5,7 @@
 口径加载一次数据，然后对若干候选配置逐一回测，输出跨窗口对比表。
 
 **口径约束**：本脚本不新增任何前视口径开关；所有回测都走
-`build_precomputed_state_confirmed_4h`（见 docs/backtest_lookahead_policy.md）。
+`build_precomputed_state_confirmed_4h`（见 README.md「回测口径」）。
 
 用法::
 
@@ -232,7 +232,7 @@ VARIANT_SETS: dict[str, dict[str, dict[str, Any]]] = {
         "dir_regime_switch_off": {"enable_directional_regime_switch": False},
     },
     # ---- 日线乖离「下限」门（形态级归因发现：深贴水区多头期望≈0） ----
-    # 见 docs/btc_scalp_optimization_20260921.md §11；阈值 -3.6 来自 max-statistic 置换检验
+    # 见 README.md「研究结论」；阈值 -3.6 来自 max-statistic 置换检验
     # （p=0.075，六特征中最好但仍未过 0.05，故必须做引擎级 + 季度切片验证）。
     "devfloor": {
         "df_m36": {"daily_alpha_min_dev_pct": -3.6},

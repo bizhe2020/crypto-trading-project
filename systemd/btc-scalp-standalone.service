@@ -1,0 +1,17 @@
+[Unit]
+Description=BTC scalping standalone bot (30% allocation, fixed notional)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/crypto-trading-releases/router-risk-20260603_1a2a61f
+ExecStart=/root/projects/crypto-trading-releases/router-risk-20260603_1a2a61f/.venv/bin/python /root/projects/crypto-trading-releases/router-risk-20260603_1a2a61f/bot/run_bot.py --config config/config.live.high-leverage-structure.json --run-loop --poll-interval-seconds 15
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/projects/crypto-trading-releases/router-risk-20260603_1a2a61f/var/log/btc_scalp_standalone.log
+StandardError=append:/root/projects/crypto-trading-releases/router-risk-20260603_1a2a61f/var/log/btc_scalp_standalone.log
+
+[Install]
+WantedBy=multi-user.target

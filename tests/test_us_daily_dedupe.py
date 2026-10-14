@@ -3,7 +3,6 @@ from __future__ import annotations
 import pandas as pd
 
 from scripts.fetch_public_etf_history import dedupe_daily_by_us_trade_day, merge_history
-from scripts.tqqq_cash_strict_utils import dedupe_last_by_us_trade_day
 
 
 def test_us_daily_dedupe_keeps_last_timestamp_per_trade_day() -> None:
@@ -26,10 +25,8 @@ def test_us_daily_dedupe_keeps_last_timestamp_per_trade_day() -> None:
     )
 
     fetched = dedupe_daily_by_us_trade_day(frame)
-    strict = dedupe_last_by_us_trade_day(frame)
 
     assert list(fetched["close"]) == [2.0, 3.0]
-    assert list(strict["close"]) == [2.0, 3.0]
 
 
 def test_daily_merge_prefers_refetched_same_trade_day_bar() -> None:

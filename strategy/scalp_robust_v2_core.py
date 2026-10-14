@@ -124,7 +124,7 @@ class StrategyConfig:
     daily_alpha_sma_period: int = 200
     daily_alpha_max_dev_pct: float = 12.0
     # 日线乖离「下限」门（只限多）：最近已完成日收盘 < 日线 SMA(sma_period) ×(1+min_dev%) 时禁新多单。
-    # 用途：形态级归因显示「深度贴水区间的多头」期望≈0（见 docs/btc_scalp_optimization_20260921.md §7）。
+    # 用途：形态级归因显示「深度贴水区间的多头」期望≈0（见 README.md「研究结论」）。
     # None = 关闭（默认，行为不变）。
     daily_alpha_min_dev_pct: float | None = None
     enable_dual_pending_state: bool = False
@@ -723,7 +723,7 @@ def _build_precomputed_state_lookahead(
     唯一合法入口是 `build_precomputed_state_confirmed_4h()`，它在本函数之上
     补写 `*_for_15m` 数组（`mapped_idx - 1`）。
 
-    详见 docs/backtest_lookahead_policy.md。
+    详见 README.md「回测口径」。
     """
     highs_15m, lows_15m = precompute_swings(c15m, n=swing_n, lookback=lookback)
     fvgs_4h = precompute_fvgs_4h(c4h)

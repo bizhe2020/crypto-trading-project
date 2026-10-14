@@ -225,7 +225,7 @@ def load_prepared_data(
     这里只允许一条路径：`build_precomputed_state_confirmed_4h`。
     历史上有过 `confirmed_4h_only` / `informative_asof_from_15m` 开关与一条裸口径
     回退分支，那条裸分支会读到当时尚未收盘的 4h，实测使 2022 至今回测总收益从
-    +396% 虚增到 +8525%。相关开关已全部移除，详见 docs/backtest_lookahead_policy.md。
+    +396% 虚增到 +8525%。相关开关已全部移除，详见 README.md「回测口径」。
     """
     df15 = load_dataframe(data_15m_path, start=start)
     df4 = load_dataframe(data_4h_path)
@@ -769,7 +769,7 @@ def build_report(
             "data_15m": str(data_15m_path.resolve()),
             "data_4h": str(data_4h_path.resolve()),
             "informative_asof_from_15m": False,
-            "confirmed_4h_only": True,  # 唯一口径，不可关闭（见 docs/backtest_lookahead_policy.md）
+            "confirmed_4h_only": True,  # 唯一口径，不可关闭（见 README.md「回测口径」）
             "replay_sync_entry_to_signal_price": bool(replay_sync_entry_to_signal_price),
             "start": str(prepared.start),
             "end": str(prepared.end),
