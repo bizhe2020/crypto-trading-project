@@ -67,7 +67,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-days", type=int, default=30)
     parser.add_argument("--recent-trades", type=int, default=20)
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--send-telegram", action="store_true")
     return parser.parse_args()
 
 
@@ -611,21 +610,6 @@ def format_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def send_telegram(config_path: Path, message: str) -> None:
-    import requests
-
-    config = load_json(config_path)
-    token = config.get("telegram_token")
-    chat_id = config.get("telegram_chat_id")
-    if not token or not chat_id:
-        raise ValueError("telegram_token or telegram_chat_id missing in config")
-    requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": message},
-        timeout=10,
-    ).raise_for_status()
-
-
 def main() -> dict[str, Any]:
     args = parse_args()
     config_path = Path(args.config)
@@ -655,8 +639,6 @@ def main() -> dict[str, Any]:
     else:
         output = format_report(report)
     print(output)
-    if args.send_telegram:
-        send_telegram(config_path, format_report(report))
     return report
 
 

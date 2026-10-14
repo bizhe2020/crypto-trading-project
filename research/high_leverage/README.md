@@ -68,19 +68,4 @@ python3 scripts/live_drift_monitor.py \
   --recent-trades 20
 ```
 
-Telegram push requires the selected config to contain `telegram_token` and `telegram_chat_id`:
-
-```bash
-python3 scripts/live_drift_monitor.py \
-  --config config/config.live.high-leverage-structure.template.json \
-  --window-days 30 \
-  --recent-trades 20 \
-  --send-telegram
-```
-
-The live bot also answers Telegram commands when `telegram_enabled` is true:
-
-- `/drift`, `/health`, `/体检`: drift health report.
-- `/ob`, `/status`, `/状态`: OB status and missing open conditions.
-
-During `run_loop`, the bot pushes OB status hourly and drift status every 24 hours by default.
+The Telegram integration (drift push, `/drift` `/ob` commands, hourly OB status, open/close notifications) was removed from the BTC bot on 2026-10-13; run the monitor locally or on the server when a drift check is needed.

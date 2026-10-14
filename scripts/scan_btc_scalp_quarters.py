@@ -49,6 +49,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-4h", default=str(DEFAULT_DATA_4H))
     parser.add_argument("--set", default="enginegate", help="逗号分隔候选集，或 all")
     parser.add_argument("--only", default="", help="只跑名字包含该子串的候选（逗号分隔）")
+    parser.add_argument("--names", default="", help="只跑这些候选（逗号分隔的完整候选名，精确匹配）")
+    parser.add_argument("--skip-base", action="store_true",
+                        help="不跑 base(live)（并行拆分时用；beat 需事后与 base 的输出合并计算）")
     parser.add_argument("--start-date", default="2023-01-01")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     return parser.parse_args()
@@ -120,6 +123,7 @@ def main() -> None:
             raise SystemExit(f"未知候选集: {token}")
         sets.append(token)
     only = [t.strip() for t in str(args.only).split(",") if t.strip()]
+    names = {t.strip() for t in str(args.names).split(",") if t.strip()}
 
     base_payload = load_base_config(Path(args.config))
     start = pd.Timestamp(args.start_date, tz="UTC")
@@ -132,10 +136,12 @@ def main() -> None:
     )
     print(f"范围={prepared.start} → {prepared.end}", flush=True)
 
-    variants: list[tuple[str, dict[str, Any]]] = [("base(live)", dict(base_payload))]
+    variants: list[tuple[str, dict[str, Any]]] = [] if args.skip_base else [("base(live)", dict(base_payload))]
     for set_name in sets:
         for name, overrides in VARIANT_SETS[set_name].items():
             if only and not any(token in name for token in only):
+                continue
+            if names and name not in names:
                 continue
             payload = dict(base_payload)
             payload.update(overrides)

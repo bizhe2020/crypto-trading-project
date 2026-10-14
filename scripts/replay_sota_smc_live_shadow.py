@@ -79,6 +79,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable-sota-rejected-smc-recall-long", action="store_true", default=None)
     parser.add_argument("--enable-long-score-bucket-sizing", action="store_true", default=None)
     parser.add_argument(
+        "--sota-score-gate-longs-only",
+        action="store_true",
+        help=(
+            "A/B 用（默认关，canonical 口径不变）：score gate 只作用于多头事件；"
+            "structure gate 也只作用于多头（与实盘 _apply_sota_structure_gate_to_open_actions 一致）"
+        ),
+    )
+    parser.add_argument(
         "--long-score-bucket-sizing-rules-json",
         default="",
         help="Optional JSON array/dict for long score bucket sizing rules.",
@@ -844,6 +852,7 @@ def apply_sota_score_gate(
     bull_min: int,
     bear_max: int,
     conflict_mode: str,
+    longs_only: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if not enabled:
         return sota_events, {
@@ -868,6 +877,9 @@ def apply_sota_score_gate(
         snapshot = score_snapshot(prepared, c1h, mapping_1h, entry_idx)
         enriched = dict(event)
         enriched.update(asdict(snapshot))
+        if longs_only and str(event.get("direction") or "") == "BEAR":
+            filtered.append(enriched)
+            continue
         if passes_score_gate(
             enriched,
             net_min=int(net_min),
@@ -890,6 +902,7 @@ def apply_sota_score_gate(
         "filtered_candidates": len(filtered),
         "removed_candidates": removed,
         "candles_1h": len(c1h),
+        "longs_only": bool(longs_only),
     }
 
 
@@ -1006,12 +1019,24 @@ def main() -> None:
         bull_min=int(args.sota_score_bull_min),
         bear_max=int(args.sota_score_bear_max),
         conflict_mode=str(args.sota_score_conflict_mode),
+        longs_only=bool(args.sota_score_gate_longs_only),
     )
     score_gated_base_events = list(base_events)
-    base_events, sota_structure_gate = apply_sota_structure_gate(
-        base_events,
-        enabled=bool(args.require_non_bearish_structure_for_long),
-    )
+    if bool(args.sota_score_gate_longs_only):
+        # 与实盘一致：structure gate 只看 OPEN_LONG；空头事件原样放行
+        bull_events = [event for event in base_events if str(event.get("direction") or "") != "BEAR"]
+        bear_events = [event for event in base_events if str(event.get("direction") or "") == "BEAR"]
+        bull_events, sota_structure_gate = apply_sota_structure_gate(
+            bull_events,
+            enabled=bool(args.require_non_bearish_structure_for_long),
+        )
+        sota_structure_gate["bear_events_passed_through"] = len(bear_events)
+        base_events = sorted(bull_events + bear_events, key=lambda event: int(event.get("entry_idx", 0) or 0))
+    else:
+        base_events, sota_structure_gate = apply_sota_structure_gate(
+            base_events,
+            enabled=bool(args.require_non_bearish_structure_for_long),
+        )
     base_events, sota_rejected_smc_recall_long = apply_sota_rejected_smc_recall_long(
         score_gated_base_events,
         base_events,

@@ -43,6 +43,8 @@ DEFAULT_OUTPUT = ROOT / "var" / "tmp" / "btc_opt" / "scan_result.json"
 
 # 每个候选 = 基线配置上的覆盖键。基线永远是同一份 live 配置。
 VARIANT_SETS: dict[str, dict[str, dict[str, Any]]] = {
+    # ---- 只跑 base(live)：用于在新快照上复现当前实盘配置的基线 ----
+    "baseline": {},
     # ---- 风险预算 / 仓位（不需要新 edge 就能改善的结果） ----
     "risk": {
         "risk_eq_0035": {
@@ -328,6 +330,67 @@ VARIANT_SETS: dict[str, dict[str, dict[str, Any]]] = {
         "filter_alpha_gate_off": {"enable_daily_alpha_gate": False},
         "filter_hfvf_off": {"use_hfvf_filter": False},
     },
+    # ---- 2026-10-13 headroom 复核（FEAT-003）：止盈 R 倍数 ----
+    # 实盘止盈 = 引擎出场模板（多头 loose 5.5 / normal 5.0 / tight 3.0），一旦 stage 追踪触发
+    # （loose/normal 收盘 >=1R、tight >=0.75R）就被 cap 到 loose/normal/tight = 5.0/3.75/2.5。
+    # 三档 cap 按同一比例缩放来扫止盈倍数，保持三档结构；另测去掉 cap（回到模板）与关闭固定止盈。
+    "tp_rr": {
+        "tp_cap_20": {"enable_target_rr_cap": True, "loose_target_rr_cap": 2.0,
+                      "normal_target_rr_cap": 1.5, "tight_target_rr_cap": 1.0},
+        "tp_cap_30": {"enable_target_rr_cap": True, "loose_target_rr_cap": 3.0,
+                      "normal_target_rr_cap": 2.25, "tight_target_rr_cap": 1.5},
+        "tp_cap_40": {"enable_target_rr_cap": True, "loose_target_rr_cap": 4.0,
+                      "normal_target_rr_cap": 3.0, "tight_target_rr_cap": 2.0},
+        "tp_cap_60": {"enable_target_rr_cap": True, "loose_target_rr_cap": 6.0,
+                      "normal_target_rr_cap": 4.5, "tight_target_rr_cap": 3.0},
+        "tp_nocap": {"enable_target_rr_cap": False},
+        "tp_off": {"disable_fixed_target_exit": True},
+    },
+    # ---- 仓位 / 杠杆网格（风险整形，不是 alpha）：统一风险（关闭 regime 方向性风险）× 交易所杠杆 ----
+    # 高杠杆保护相关键保持实盘值；引擎口径不含执行层的高杠杆保护，见 FEAT-003 的强平缓冲统计。
+    "sizing": {
+        **{
+            f"sz_r{int(round(risk * 1000)):03d}_lev{lev}": {
+                "enable_regime_directional_risk": False,
+                "risk_per_trade": risk,
+                "leverage": float(lev),
+            }
+            for risk in (0.02, 0.025, 0.035, 0.05)
+            for lev in (10, 15, 20)
+        },
+        "sz_regime_lev10": {"leverage": 10.0},
+        "sz_regime_lev15": {"leverage": 15.0},
+    },
+    # ---- 波动率目标仓位（只降不升：max_scale 1.0），分别叠在实盘风险与 3.5% 归一风险上 ----
+    "voltarget": {
+        **{
+            f"vt_{int(ref * 100):03d}": {
+                "enable_vol_target_sizing": True,
+                "vol_target_reference_pct": ref,
+                "vol_target_max_scale": 1.0,
+            }
+            for ref in (0.25, 0.30, 0.40)
+        },
+        "rn035": {"enable_regime_directional_risk": False, "risk_per_trade": 0.035},
+        **{
+            f"rn035_vt_{int(ref * 100):03d}": {
+                "enable_regime_directional_risk": False,
+                "risk_per_trade": 0.035,
+                "enable_vol_target_sizing": True,
+                "vol_target_reference_pct": ref,
+                "vol_target_max_scale": 1.0,
+            }
+            for ref in (0.25, 0.30, 0.40)
+        },
+    },
+    # ---- 成本敏感度：taker 0.05% vs 0.02%（maker 级）、滑点 5bp vs 2bp，给 maker 入场的价值定上限 ----
+    "fees": {
+        "fee_taker_0002": {"taker_fee_rate": 0.0002},
+        "fee_slip_2": {"slippage_bps": 2.0},
+        "fee_maker_like": {"taker_fee_rate": 0.0002, "slippage_bps": 2.0},
+        "fee_taker_0007": {"taker_fee_rate": 0.0007},
+        "fee_zero": {"taker_fee_rate": 0.0, "slippage_bps": 0.0},
+    },
 }
 
 
@@ -340,6 +403,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--windows", default="2022-01-01,2025-01-01", help="逗号分隔的回测起始日")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT))
     parser.add_argument("--include-base", action="store_true", default=True)
+    parser.add_argument("--skip-base", action="store_true", help="不跑 base(live)（并行拆分候选时用）")
+    parser.add_argument("--only", default="", help="只跑这些候选（逗号分隔的完整候选名，不含 set 前缀）")
     return parser.parse_args()
 
 
@@ -451,11 +516,14 @@ def main() -> None:
         flush=True,
     )
 
+    only = [token.strip() for token in str(args.only).split(",") if token.strip()]
     variants: list[tuple[str, dict[str, Any]]] = []
-    if args.include_base:
+    if args.include_base and not args.skip_base:
         variants.append(("base(live)", dict(base_payload)))
     for set_name in sets:
         for name, overrides in VARIANT_SETS[set_name].items():
+            if only and name not in only:
+                continue
             payload = dict(base_payload)
             payload.update(overrides)
             variants.append((f"{set_name}.{name}", payload))

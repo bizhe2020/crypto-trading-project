@@ -3989,7 +3989,6 @@ def _monkeypatch_open_confirm_executor(
     )
     monkeypatch.setattr(executor, "load_engine", lambda: (engine, 0))
     monkeypatch.setattr(executor, "_latest_closed_index", lambda engine: 100)
-    monkeypatch.setattr(executor, "_telegram_open_paused", lambda: False)
     monkeypatch.setattr(executor, "_shadow_gate_enabled", lambda: False)
     monkeypatch.setattr(executor, "_live_candidate_arbitration_enabled", lambda: False)
     monkeypatch.setattr(executor, "_dynamic_high_leverage_enabled", lambda: False)

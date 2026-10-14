@@ -214,6 +214,23 @@ def date_string(ts: pd.Timestamp) -> str:
     return ts.strftime("%Y-%m-%d")
 
 
+class _UnionCachedSet(set):
+    """只为回测提速的 set 子类：缓存 `self | other` 的结果。
+
+    引擎在每根空仓 K 线上都会计算 `precomputed.highs_set | precomputed.lows_set`（O(N)），
+    长窗口回测里这是主要耗时。两个集合在预计算后不再变化，所以缓存并集是安全的；
+    成员判定与普通 set 完全一致，不改变任何回测结果（见 FEAT-003 的逐位复核）。
+    """
+
+    def __or__(self, other):  # type: ignore[override]
+        cached = self.__dict__.get("_union_cache")
+        if cached is not None and cached[0] is other:
+            return cached[1]
+        result = frozenset(set.__or__(self, other))
+        self.__dict__["_union_cache"] = (other, result)
+        return result
+
+
 def load_prepared_data(
     data_15m_path: Path,
     data_4h_path: Path,
@@ -239,6 +256,7 @@ def load_prepared_data(
     c15m = dataframe_to_candles(df15)
     mapping = align_timeframes(c4h, c15m)
     precomputed = build_precomputed_state_confirmed_4h(c4h, c15m)
+    precomputed.highs_set = _UnionCachedSet(precomputed.highs_set)
     regime_labels, regime_features = precompute_regime_state(c4h, sorted(set(mapping)), threshold_payload)
     return PreparedData(
         c4h=c4h,
