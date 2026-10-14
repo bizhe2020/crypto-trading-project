@@ -18,7 +18,7 @@
       "signal_symbol": "QQQ",
       "execution_symbol": "QQQ/USDT:USDT",
       "weight": 0.5,
-      "signal_rule": "v5"
+      "signal_rule": "sma200"
     }
   ],
   "basket_multiplier": 2.0,
