@@ -1,0 +1,8 @@
+config,dot-com 00-02,GFC 07-09,FULL 99-26
+A 完整 v5（VIX+RS+修复仓全开）,CAGR -14.5% / MDD -39.6%,CAGR -9.9% / MDD -20.7%,CAGR 6.5% / MDD -48.5%
+B 仅趋势阶梯（默认配置，overlay 全关）,CAGR -25.7% / MDD -59.8%,CAGR -15.2% / MDD -28.0%,CAGR 9.3% / MDD -72.6%
+C 趋势阶梯 + VIX 闸门,CAGR -14.1% / MDD -39.3%,CAGR -12.4% / MDD -23.9%,CAGR 6.6% / MDD -47.9%
+D 趋势阶梯 + RS 闸门,CAGR -21.0% / MDD -51.5%,CAGR -18.2% / MDD -31.8%,CAGR 8.1% / MDD -64.2%
+E 200MA on/off 1.5x（二元开关）,CAGR -18.2% / MDD -47.4%,CAGR -7.8% / MDD -18.3%,CAGR 10.5% / MDD -60.3%
+F 恒定 1.5x,CAGR -29.3% / MDD -65.1%,CAGR -19.1% / MDD -32.8%,CAGR 8.5% / MDD -77.5%
+G 买入持有 1x,CAGR -19.6% / MDD -48.7%,CAGR -12.4% / MDD -22.5%,CAGR 7.4% / MDD -61.7%

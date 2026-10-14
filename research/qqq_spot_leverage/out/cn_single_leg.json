@@ -1,0 +1,41 @@
+{
+  "symbol": "513100.SS",
+  "window": [
+    "2020-01-02",
+    "2026-05-22"
+  ],
+  "n_days": 1545,
+  "assumptions": {
+    "slippage_bps_per_trade": 8.0,
+    "margin_rate": 0.06,
+    "execution": "next A-share open",
+    "stop": true,
+    "stop_params": {
+      "lookback": 25,
+      "drawdown": 0.08,
+      "cooldown": 5
+    }
+  },
+  "strategy": {
+    "total_pct": 367.6,
+    "cagr_pct": 27.33,
+    "mdd_pct": -29.65,
+    "vol_pct": 25.38,
+    "sharpe": 1.11,
+    "calmar": 0.922
+  },
+  "buy_hold_1x": {
+    "total_pct": 231.1,
+    "mdd_pct": -28.57
+  },
+  "constant_1.5x": {
+    "total_pct": 340.1,
+    "cagr_pct": 26.12,
+    "mdd_pct": -42.64,
+    "vol_pct": 37.87,
+    "sharpe": 0.82,
+    "calmar": 0.613
+  },
+  "avg_leverage": 1.031,
+  "rebalances": 182
+}

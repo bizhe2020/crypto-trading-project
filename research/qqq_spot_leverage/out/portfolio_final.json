@@ -1,0 +1,686 @@
+{
+  "window": [
+    "2020-02-03",
+    "2026-08-13"
+  ],
+  "n_days": 1641,
+  "single_leg": {
+    "BTC MA100 过滤": {
+      "cagr_pct": 49.54,
+      "mdd_pct": -39.17,
+      "vol_pct": 41.38,
+      "sharpe": 1.18,
+      "total_pct": 1280.6,
+      "calmar": 1.265
+    },
+    "QQQ 阶梯1.25x": {
+      "cagr_pct": 23.52,
+      "mdd_pct": -28.61,
+      "vol_pct": 23.08,
+      "sharpe": 1.03,
+      "total_pct": 296.8,
+      "calmar": 0.822
+    },
+    "QQQ 阶梯1.5x": {
+      "cagr_pct": 27.07,
+      "mdd_pct": -33.57,
+      "vol_pct": 27.55,
+      "sharpe": 1.01,
+      "total_pct": 377.2,
+      "calmar": 0.806
+    },
+    "QQQ 买入持有1x": {
+      "cagr_pct": 21.94,
+      "mdd_pct": -36.14,
+      "vol_pct": 23.97,
+      "sharpe": 0.95,
+      "total_pct": 264.8,
+      "calmar": 0.607
+    },
+    "BTC MA200 过滤": {
+      "cagr_pct": 34.64,
+      "mdd_pct": -66.44,
+      "vol_pct": 43.84,
+      "sharpe": 0.9,
+      "total_pct": 596.4,
+      "calmar": 0.521
+    },
+    "BTC 买入持有": {
+      "cagr_pct": 33.79,
+      "mdd_pct": -76.29,
+      "vol_pct": 59.34,
+      "sharpe": 0.79,
+      "total_pct": 568.2,
+      "calmar": 0.443
+    },
+    "BTC 波动率目标40%": {
+      "cagr_pct": 16.81,
+      "mdd_pct": -68.06,
+      "vol_pct": 43.13,
+      "sharpe": 0.58,
+      "total_pct": 175.5,
+      "calmar": 0.247
+    }
+  },
+  "correlation": {
+    "QQQ 阶梯1.5x": {
+      "QQQ 阶梯1.5x": 1.0,
+      "QQQ 买入持有1x": 0.767,
+      "QQQ 阶梯1.25x": 1.0,
+      "BTC 买入持有": 0.082,
+      "BTC 波动率目标40%": 0.105,
+      "BTC MA200 过滤": 0.037,
+      "BTC MA100 过滤": 0.036
+    },
+    "QQQ 买入持有1x": {
+      "QQQ 阶梯1.5x": 0.767,
+      "QQQ 买入持有1x": 1.0,
+      "QQQ 阶梯1.25x": 0.769,
+      "BTC 买入持有": 0.046,
+      "BTC 波动率目标40%": 0.068,
+      "BTC MA200 过滤": 0.016,
+      "BTC MA100 过滤": 0.027
+    },
+    "QQQ 阶梯1.25x": {
+      "QQQ 阶梯1.5x": 1.0,
+      "QQQ 买入持有1x": 0.769,
+      "QQQ 阶梯1.25x": 1.0,
+      "BTC 买入持有": 0.082,
+      "BTC 波动率目标40%": 0.104,
+      "BTC MA200 过滤": 0.037,
+      "BTC MA100 过滤": 0.036
+    },
+    "BTC 买入持有": {
+      "QQQ 阶梯1.5x": 0.082,
+      "QQQ 买入持有1x": 0.046,
+      "QQQ 阶梯1.25x": 0.082,
+      "BTC 买入持有": 1.0,
+      "BTC 波动率目标40%": 0.953,
+      "BTC MA200 过滤": 0.738,
+      "BTC MA100 过滤": 0.698
+    },
+    "BTC 波动率目标40%": {
+      "QQQ 阶梯1.5x": 0.105,
+      "QQQ 买入持有1x": 0.068,
+      "QQQ 阶梯1.25x": 0.104,
+      "BTC 买入持有": 0.953,
+      "BTC 波动率目标40%": 1.0,
+      "BTC MA200 过滤": 0.685,
+      "BTC MA100 过滤": 0.685
+    },
+    "BTC MA200 过滤": {
+      "QQQ 阶梯1.5x": 0.037,
+      "QQQ 买入持有1x": 0.016,
+      "QQQ 阶梯1.25x": 0.037,
+      "BTC 买入持有": 0.738,
+      "BTC 波动率目标40%": 0.685,
+      "BTC MA200 过滤": 1.0,
+      "BTC MA100 过滤": 0.823
+    },
+    "BTC MA100 过滤": {
+      "QQQ 阶梯1.5x": 0.036,
+      "QQQ 买入持有1x": 0.027,
+      "QQQ 阶梯1.25x": 0.036,
+      "BTC 买入持有": 0.698,
+      "BTC 波动率目标40%": 0.685,
+      "BTC MA200 过滤": 0.823,
+      "BTC MA100 过滤": 1.0
+    }
+  },
+  "rolling_corr_252d": {
+    "BTC 买入持有": {
+      "mean": 0.054,
+      "min": -0.102,
+      "max": 0.188,
+      "pct_negative": 8.2
+    },
+    "BTC 波动率目标40%": {
+      "mean": 0.065,
+      "min": -0.106,
+      "max": 0.198,
+      "pct_negative": 8.6
+    },
+    "BTC MA200 过滤": {
+      "mean": 0.047,
+      "min": -0.235,
+      "max": 0.205,
+      "pct_negative": 3.1
+    },
+    "BTC MA100 过滤": {
+      "mean": 0.05,
+      "min": -0.025,
+      "max": 0.224,
+      "pct_negative": 7.3
+    }
+  },
+  "weight_sweep": [
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.0,
+      "w_qqq": 1.0,
+      "cagr_pct": 27.07,
+      "mdd_pct": -33.57,
+      "vol_pct": 27.55,
+      "sharpe": 1.01,
+      "total_pct": 377.2,
+      "calmar": 0.806
+    },
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.05,
+      "w_qqq": 0.95,
+      "cagr_pct": 28.63,
+      "mdd_pct": -34.14,
+      "vol_pct": 26.58,
+      "sharpe": 1.08,
+      "total_pct": 416.8,
+      "calmar": 0.838
+    },
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.1,
+      "w_qqq": 0.9,
+      "cagr_pct": 30.08,
+      "mdd_pct": -34.74,
+      "vol_pct": 25.97,
+      "sharpe": 1.15,
+      "total_pct": 456.0,
+      "calmar": 0.866
+    },
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.15,
+      "w_qqq": 0.85,
+      "cagr_pct": 31.41,
+      "mdd_pct": -35.36,
+      "vol_pct": 25.73,
+      "sharpe": 1.19,
+      "total_pct": 494.3,
+      "calmar": 0.888
+    },
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.2,
+      "w_qqq": 0.8,
+      "cagr_pct": 32.62,
+      "mdd_pct": -37.6,
+      "vol_pct": 25.88,
+      "sharpe": 1.22,
+      "total_pct": 531.0,
+      "calmar": 0.868
+    },
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.25,
+      "w_qqq": 0.75,
+      "cagr_pct": 33.71,
+      "mdd_pct": -40.75,
+      "vol_pct": 26.41,
+      "sharpe": 1.24,
+      "total_pct": 565.6,
+      "calmar": 0.827
+    },
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.3,
+      "w_qqq": 0.7,
+      "cagr_pct": 34.67,
+      "mdd_pct": -43.8,
+      "vol_pct": 27.3,
+      "sharpe": 1.23,
+      "total_pct": 597.4,
+      "calmar": 0.792
+    },
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.35,
+      "w_qqq": 0.65,
+      "cagr_pct": 35.5,
+      "mdd_pct": -46.76,
+      "vol_pct": 28.52,
+      "sharpe": 1.21,
+      "total_pct": 626.0,
+      "calmar": 0.759
+    },
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.4,
+      "w_qqq": 0.6,
+      "cagr_pct": 36.2,
+      "mdd_pct": -49.62,
+      "vol_pct": 30.02,
+      "sharpe": 1.18,
+      "total_pct": 650.7,
+      "calmar": 0.73
+    },
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.45,
+      "w_qqq": 0.55,
+      "cagr_pct": 36.77,
+      "mdd_pct": -52.38,
+      "vol_pct": 31.77,
+      "sharpe": 1.15,
+      "total_pct": 671.2,
+      "calmar": 0.702
+    },
+    {
+      "crypto_leg": "BTC 买入持有",
+      "w_crypto": 0.5,
+      "w_qqq": 0.5,
+      "cagr_pct": 37.19,
+      "mdd_pct": -55.04,
+      "vol_pct": 33.73,
+      "sharpe": 1.11,
+      "total_pct": 687.0,
+      "calmar": 0.676
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.0,
+      "w_qqq": 1.0,
+      "cagr_pct": 27.07,
+      "mdd_pct": -33.57,
+      "vol_pct": 27.55,
+      "sharpe": 1.01,
+      "total_pct": 377.2,
+      "calmar": 0.806
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.05,
+      "w_qqq": 0.95,
+      "cagr_pct": 27.26,
+      "mdd_pct": -33.79,
+      "vol_pct": 26.48,
+      "sharpe": 1.05,
+      "total_pct": 381.9,
+      "calmar": 0.807
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.1,
+      "w_qqq": 0.9,
+      "cagr_pct": 27.37,
+      "mdd_pct": -34.03,
+      "vol_pct": 25.61,
+      "sharpe": 1.08,
+      "total_pct": 384.7,
+      "calmar": 0.804
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.15,
+      "w_qqq": 0.85,
+      "cagr_pct": 27.41,
+      "mdd_pct": -34.29,
+      "vol_pct": 24.94,
+      "sharpe": 1.1,
+      "total_pct": 385.6,
+      "calmar": 0.799
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.2,
+      "w_qqq": 0.8,
+      "cagr_pct": 27.37,
+      "mdd_pct": -34.97,
+      "vol_pct": 24.49,
+      "sharpe": 1.11,
+      "total_pct": 384.7,
+      "calmar": 0.783
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.25,
+      "w_qqq": 0.75,
+      "cagr_pct": 27.25,
+      "mdd_pct": -37.4,
+      "vol_pct": 24.29,
+      "sharpe": 1.12,
+      "total_pct": 381.8,
+      "calmar": 0.729
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.3,
+      "w_qqq": 0.7,
+      "cagr_pct": 27.06,
+      "mdd_pct": -39.88,
+      "vol_pct": 24.32,
+      "sharpe": 1.11,
+      "total_pct": 377.1,
+      "calmar": 0.679
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.35,
+      "w_qqq": 0.65,
+      "cagr_pct": 26.8,
+      "mdd_pct": -42.3,
+      "vol_pct": 24.6,
+      "sharpe": 1.09,
+      "total_pct": 370.6,
+      "calmar": 0.634
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.4,
+      "w_qqq": 0.6,
+      "cagr_pct": 26.45,
+      "mdd_pct": -44.65,
+      "vol_pct": 25.11,
+      "sharpe": 1.06,
+      "total_pct": 362.4,
+      "calmar": 0.592
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.45,
+      "w_qqq": 0.55,
+      "cagr_pct": 26.04,
+      "mdd_pct": -46.94,
+      "vol_pct": 25.84,
+      "sharpe": 1.03,
+      "total_pct": 352.6,
+      "calmar": 0.555
+    },
+    {
+      "crypto_leg": "BTC 波动率目标40%",
+      "w_crypto": 0.5,
+      "w_qqq": 0.5,
+      "cagr_pct": 25.55,
+      "mdd_pct": -49.17,
+      "vol_pct": 26.78,
+      "sharpe": 0.99,
+      "total_pct": 341.2,
+      "calmar": 0.52
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.0,
+      "w_qqq": 1.0,
+      "cagr_pct": 27.07,
+      "mdd_pct": -33.57,
+      "vol_pct": 27.55,
+      "sharpe": 1.01,
+      "total_pct": 377.2,
+      "calmar": 0.806
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.05,
+      "w_qqq": 0.95,
+      "cagr_pct": 28.22,
+      "mdd_pct": -32.11,
+      "vol_pct": 26.34,
+      "sharpe": 1.08,
+      "total_pct": 406.1,
+      "calmar": 0.879
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.1,
+      "w_qqq": 0.9,
+      "cagr_pct": 29.29,
+      "mdd_pct": -30.63,
+      "vol_pct": 25.34,
+      "sharpe": 1.14,
+      "total_pct": 434.5,
+      "calmar": 0.956
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.15,
+      "w_qqq": 0.85,
+      "cagr_pct": 30.29,
+      "mdd_pct": -30.42,
+      "vol_pct": 24.56,
+      "sharpe": 1.2,
+      "total_pct": 462.1,
+      "calmar": 0.996
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.2,
+      "w_qqq": 0.8,
+      "cagr_pct": 31.22,
+      "mdd_pct": -31.46,
+      "vol_pct": 24.02,
+      "sharpe": 1.25,
+      "total_pct": 488.6,
+      "calmar": 0.992
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.25,
+      "w_qqq": 0.75,
+      "cagr_pct": 32.06,
+      "mdd_pct": -32.67,
+      "vol_pct": 23.75,
+      "sharpe": 1.29,
+      "total_pct": 513.7,
+      "calmar": 0.981
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.3,
+      "w_qqq": 0.7,
+      "cagr_pct": 32.83,
+      "mdd_pct": -33.87,
+      "vol_pct": 23.74,
+      "sharpe": 1.32,
+      "total_pct": 537.3,
+      "calmar": 0.969
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.35,
+      "w_qqq": 0.65,
+      "cagr_pct": 33.51,
+      "mdd_pct": -35.07,
+      "vol_pct": 24.01,
+      "sharpe": 1.33,
+      "total_pct": 559.0,
+      "calmar": 0.956
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.4,
+      "w_qqq": 0.6,
+      "cagr_pct": 34.11,
+      "mdd_pct": -36.26,
+      "vol_pct": 24.54,
+      "sharpe": 1.32,
+      "total_pct": 578.6,
+      "calmar": 0.941
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.45,
+      "w_qqq": 0.55,
+      "cagr_pct": 34.63,
+      "mdd_pct": -37.44,
+      "vol_pct": 25.32,
+      "sharpe": 1.3,
+      "total_pct": 595.8,
+      "calmar": 0.925
+    },
+    {
+      "crypto_leg": "BTC MA200 过滤",
+      "w_crypto": 0.5,
+      "w_qqq": 0.5,
+      "cagr_pct": 35.06,
+      "mdd_pct": -40.33,
+      "vol_pct": 26.32,
+      "sharpe": 1.28,
+      "total_pct": 610.5,
+      "calmar": 0.869
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.0,
+      "w_qqq": 1.0,
+      "cagr_pct": 27.07,
+      "mdd_pct": -33.57,
+      "vol_pct": 27.55,
+      "sharpe": 1.01,
+      "total_pct": 377.2,
+      "calmar": 0.806
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.05,
+      "w_qqq": 0.95,
+      "cagr_pct": 28.83,
+      "mdd_pct": -32.11,
+      "vol_pct": 26.33,
+      "sharpe": 1.1,
+      "total_pct": 422.1,
+      "calmar": 0.898
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.1,
+      "w_qqq": 0.9,
+      "cagr_pct": 30.54,
+      "mdd_pct": -30.63,
+      "vol_pct": 25.29,
+      "sharpe": 1.18,
+      "total_pct": 468.9,
+      "calmar": 0.997
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.15,
+      "w_qqq": 0.85,
+      "cagr_pct": 32.19,
+      "mdd_pct": -29.13,
+      "vol_pct": 24.44,
+      "sharpe": 1.27,
+      "total_pct": 517.6,
+      "calmar": 1.105
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.2,
+      "w_qqq": 0.8,
+      "cagr_pct": 33.78,
+      "mdd_pct": -27.61,
+      "vol_pct": 23.82,
+      "sharpe": 1.34,
+      "total_pct": 567.7,
+      "calmar": 1.224
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.25,
+      "w_qqq": 0.75,
+      "cagr_pct": 35.31,
+      "mdd_pct": -27.77,
+      "vol_pct": 23.44,
+      "sharpe": 1.41,
+      "total_pct": 619.2,
+      "calmar": 1.272
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.3,
+      "w_qqq": 0.7,
+      "cagr_pct": 36.78,
+      "mdd_pct": -28.51,
+      "vol_pct": 23.31,
+      "sharpe": 1.46,
+      "total_pct": 671.6,
+      "calmar": 1.29
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.35,
+      "w_qqq": 0.65,
+      "cagr_pct": 38.18,
+      "mdd_pct": -29.26,
+      "vol_pct": 23.44,
+      "sharpe": 1.5,
+      "total_pct": 724.7,
+      "calmar": 1.305
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.4,
+      "w_qqq": 0.6,
+      "cagr_pct": 39.51,
+      "mdd_pct": -30.01,
+      "vol_pct": 23.82,
+      "sharpe": 1.52,
+      "total_pct": 778.0,
+      "calmar": 1.317
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.45,
+      "w_qqq": 0.55,
+      "cagr_pct": 40.77,
+      "mdd_pct": -30.76,
+      "vol_pct": 24.43,
+      "sharpe": 1.53,
+      "total_pct": 831.1,
+      "calmar": 1.325
+    },
+    {
+      "crypto_leg": "BTC MA100 过滤",
+      "w_crypto": 0.5,
+      "w_qqq": 0.5,
+      "cagr_pct": 41.96,
+      "mdd_pct": -31.52,
+      "vol_pct": 25.27,
+      "sharpe": 1.52,
+      "total_pct": 883.7,
+      "calmar": 1.331
+    }
+  ],
+  "grid_best_sharpe": {
+    "crypto_leg": "BTC MA100 过滤",
+    "w_crypto": 0.45,
+    "w_qqq": 0.55,
+    "cagr_pct": 40.77,
+    "mdd_pct": -30.76,
+    "vol_pct": 24.43,
+    "sharpe": 1.53,
+    "total_pct": 831.1,
+    "calmar": 1.325
+  },
+  "grid_best_calmar": {
+    "crypto_leg": "BTC MA100 过滤",
+    "w_crypto": 0.5,
+    "w_qqq": 0.5,
+    "cagr_pct": 41.96,
+    "mdd_pct": -31.52,
+    "vol_pct": 25.27,
+    "sharpe": 1.52,
+    "total_pct": 883.7,
+    "calmar": 1.331
+  },
+  "qqq_only": {
+    "crypto_leg": "BTC 买入持有",
+    "w_crypto": 0.0,
+    "w_qqq": 1.0,
+    "cagr_pct": 27.07,
+    "mdd_pct": -33.57,
+    "vol_pct": 27.55,
+    "sharpe": 1.01,
+    "total_pct": 377.2,
+    "calmar": 0.806
+  },
+  "extra_mix": {
+    "QQQ阶梯1.25x + BTC(MA200) 20%": {
+      "cagr_pct": 28.06,
+      "mdd_pct": -29.12,
+      "vol_pct": 20.73,
+      "sharpe": 1.3,
+      "total_pct": 402.2,
+      "calmar": 0.964
+    }
+  },
+  "caveat": "crypto 腿为 BTC 现货代理（买入持有/波动率目标/MA 过滤），不是项目内 SOTA 合约策略的实盘收益；接入真实策略收益需替换 btc_variants()。"
+}

@@ -1,0 +1,258 @@
+{
+  "scenarios": {
+    "S0 理想 (1bp 固定)": {
+      "cost_bps": 1.0,
+      "slip_vix_coef": 0.0,
+      "slip_move_frac": 0.0
+    },
+    "S0b 推荐现实 (7bp 固定)": {
+      "cost_bps": 7.0,
+      "slip_vix_coef": 0.0,
+      "slip_move_frac": 0.0
+    },
+    "S1 乐观 (3bp 固定)": {
+      "cost_bps": 3.0,
+      "slip_vix_coef": 0.0,
+      "slip_move_frac": 0.0
+    },
+    "S2 现实 (7bp 折算: VIX系数0.1 + 1bp)": {
+      "cost_bps": 1.0,
+      "slip_vix_coef": 0.1,
+      "slip_move_frac": 0.0
+    },
+    "S3 保守 (0.1×当日振幅)": {
+      "cost_bps": 1.0,
+      "slip_vix_coef": 0.05,
+      "slip_move_frac": 0.1
+    },
+    "S4 悲观 (0.3×当日振幅)": {
+      "cost_bps": 2.0,
+      "slip_vix_coef": 0.1,
+      "slip_move_frac": 0.3
+    }
+  },
+  "rows": [
+    {
+      "scenario": "S0 理想 (1bp 固定)",
+      "main_2020_26_cagr": 27.28,
+      "main_2020_26_mdd": -33.57,
+      "main_2020_26_calmar": 0.813,
+      "main_cost_yr": 1.79,
+      "oos_2011_19_cagr": 17.43,
+      "long_1999_26_cagr": 9.3,
+      "long_cost_yr": 1.76
+    },
+    {
+      "scenario": "S0b 推荐现实 (7bp 固定)",
+      "main_2020_26_cagr": 26.8,
+      "main_2020_26_mdd": -33.85,
+      "main_2020_26_calmar": 0.792,
+      "main_cost_yr": 2.13,
+      "oos_2011_19_cagr": 16.77,
+      "long_1999_26_cagr": 8.69,
+      "long_cost_yr": 2.16
+    },
+    {
+      "scenario": "S1 乐观 (3bp 固定)",
+      "main_2020_26_cagr": 27.12,
+      "main_2020_26_mdd": -33.66,
+      "main_2020_26_calmar": 0.806,
+      "main_cost_yr": 1.91,
+      "oos_2011_19_cagr": 17.21,
+      "long_1999_26_cagr": 9.1,
+      "long_cost_yr": 1.89
+    },
+    {
+      "scenario": "S2 现实 (7bp 折算: VIX系数0.1 + 1bp)",
+      "main_2020_26_cagr": 27.08,
+      "main_2020_26_mdd": -33.78,
+      "main_2020_26_calmar": 0.802,
+      "main_cost_yr": 1.92,
+      "oos_2011_19_cagr": 17.22,
+      "long_1999_26_cagr": 9.08,
+      "long_cost_yr": 1.9
+    },
+    {
+      "scenario": "S3 保守 (0.1×当日振幅)",
+      "main_2020_26_cagr": 26.36,
+      "main_2020_26_mdd": -34.22,
+      "main_2020_26_calmar": 0.77,
+      "main_cost_yr": 2.42,
+      "oos_2011_19_cagr": 16.21,
+      "long_1999_26_cagr": 8.02,
+      "long_cost_yr": 2.55
+    },
+    {
+      "scenario": "S4 悲观 (0.3×当日振幅)",
+      "main_2020_26_cagr": 24.52,
+      "main_2020_26_mdd": -35.45,
+      "main_2020_26_calmar": 0.692,
+      "main_cost_yr": 3.69,
+      "oos_2011_19_cagr": 13.78,
+      "long_1999_26_cagr": 5.47,
+      "long_cost_yr": 4.34
+    }
+  ],
+  "sweep": [
+    {
+      "vix_coef": 0.0,
+      "move_frac": 0.0,
+      "main_cagr": 27.28,
+      "main_calmar": 0.813,
+      "long_cagr": 9.3,
+      "main_cost_yr": 1.79
+    },
+    {
+      "vix_coef": 0.0,
+      "move_frac": 0.05,
+      "main_cagr": 26.87,
+      "main_calmar": 0.794,
+      "long_cagr": 8.71,
+      "main_cost_yr": 2.07
+    },
+    {
+      "vix_coef": 0.0,
+      "move_frac": 0.1,
+      "main_cagr": 26.46,
+      "main_calmar": 0.776,
+      "long_cagr": 8.13,
+      "main_cost_yr": 2.36
+    },
+    {
+      "vix_coef": 0.0,
+      "move_frac": 0.2,
+      "main_cagr": 25.63,
+      "main_calmar": 0.74,
+      "long_cagr": 6.96,
+      "main_cost_yr": 2.93
+    },
+    {
+      "vix_coef": 0.0,
+      "move_frac": 0.3,
+      "main_cagr": 24.81,
+      "main_calmar": 0.705,
+      "long_cagr": 5.79,
+      "main_cost_yr": 3.5
+    },
+    {
+      "vix_coef": 0.05,
+      "move_frac": 0.0,
+      "main_cagr": 27.18,
+      "main_calmar": 0.807,
+      "long_cagr": 9.19,
+      "main_cost_yr": 1.86
+    },
+    {
+      "vix_coef": 0.05,
+      "move_frac": 0.05,
+      "main_cagr": 26.77,
+      "main_calmar": 0.789,
+      "long_cagr": 8.6,
+      "main_cost_yr": 2.14
+    },
+    {
+      "vix_coef": 0.05,
+      "move_frac": 0.1,
+      "main_cagr": 26.36,
+      "main_calmar": 0.77,
+      "long_cagr": 8.02,
+      "main_cost_yr": 2.42
+    },
+    {
+      "vix_coef": 0.05,
+      "move_frac": 0.2,
+      "main_cagr": 25.53,
+      "main_calmar": 0.735,
+      "long_cagr": 6.85,
+      "main_cost_yr": 2.99
+    },
+    {
+      "vix_coef": 0.05,
+      "move_frac": 0.3,
+      "main_cagr": 24.71,
+      "main_calmar": 0.7,
+      "long_cagr": 5.68,
+      "main_cost_yr": 3.57
+    },
+    {
+      "vix_coef": 0.1,
+      "move_frac": 0.0,
+      "main_cagr": 27.08,
+      "main_calmar": 0.802,
+      "long_cagr": 9.08,
+      "main_cost_yr": 1.92
+    },
+    {
+      "vix_coef": 0.1,
+      "move_frac": 0.05,
+      "main_cagr": 26.67,
+      "main_calmar": 0.783,
+      "long_cagr": 8.49,
+      "main_cost_yr": 2.2
+    },
+    {
+      "vix_coef": 0.1,
+      "move_frac": 0.1,
+      "main_cagr": 26.26,
+      "main_calmar": 0.765,
+      "long_cagr": 7.91,
+      "main_cost_yr": 2.48
+    },
+    {
+      "vix_coef": 0.1,
+      "move_frac": 0.2,
+      "main_cagr": 25.43,
+      "main_calmar": 0.729,
+      "long_cagr": 6.74,
+      "main_cost_yr": 3.06
+    },
+    {
+      "vix_coef": 0.1,
+      "move_frac": 0.3,
+      "main_cagr": 24.6,
+      "main_calmar": 0.695,
+      "long_cagr": 5.57,
+      "main_cost_yr": 3.64
+    },
+    {
+      "vix_coef": 0.2,
+      "move_frac": 0.0,
+      "main_cagr": 26.88,
+      "main_calmar": 0.79,
+      "long_cagr": 8.86,
+      "main_cost_yr": 2.05
+    },
+    {
+      "vix_coef": 0.2,
+      "move_frac": 0.05,
+      "main_cagr": 26.46,
+      "main_calmar": 0.772,
+      "long_cagr": 8.27,
+      "main_cost_yr": 2.33
+    },
+    {
+      "vix_coef": 0.2,
+      "move_frac": 0.1,
+      "main_cagr": 26.05,
+      "main_calmar": 0.754,
+      "long_cagr": 7.68,
+      "main_cost_yr": 2.61
+    },
+    {
+      "vix_coef": 0.2,
+      "move_frac": 0.2,
+      "main_cagr": 25.23,
+      "main_calmar": 0.719,
+      "long_cagr": 6.51,
+      "main_cost_yr": 3.19
+    },
+    {
+      "vix_coef": 0.2,
+      "move_frac": 0.3,
+      "main_cagr": 24.4,
+      "main_calmar": 0.685,
+      "long_cagr": 5.35,
+      "main_cost_yr": 3.77
+    }
+  ]
+}

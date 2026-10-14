@@ -1,0 +1,35 @@
+{
+  "range": [
+    "2022-01-03",
+    "2026-05-29"
+  ],
+  "A_same_day_gate": {
+    "final_equity": 35406.8,
+    "total_pct": 3440.7,
+    "cagr_pct": 125.06,
+    "mdd_pct": -16.33,
+    "vol_pct": 32.61,
+    "sharpe": 2.66
+  },
+  "B_lagged": {
+    "final_equity": 2437.0,
+    "total_pct": 143.7,
+    "cagr_pct": 22.46,
+    "mdd_pct": -43.96,
+    "vol_pct": 34.2,
+    "sharpe": 0.77
+  },
+  "B_yearly_pct": {
+    "2022": 0.7,
+    "2023": 38.8,
+    "2024": 15.5,
+    "2025": 18.5,
+    "2026": 35.2
+  },
+  "B_position_mix": {
+    "TQQQ": 0.521,
+    "CASH": 0.477,
+    "SQQQ": 0.002
+  },
+  "note": "A 用于对齐项目原口径；B 按 docs/backtest_lookahead_policy.md 全部滞后，是可用于实盘的版本。"
+}

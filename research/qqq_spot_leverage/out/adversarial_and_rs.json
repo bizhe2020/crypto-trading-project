@@ -1,0 +1,164 @@
+{
+  "A_adversarial": {
+    "shift_test": [
+      {
+        "shift_days": -3,
+        "cagr": 45.37,
+        "mdd": -20.65,
+        "calmar": 2.197
+      },
+      {
+        "shift_days": -2,
+        "cagr": 40.64,
+        "mdd": -26.56,
+        "calmar": 1.53
+      },
+      {
+        "shift_days": -1,
+        "cagr": 44.03,
+        "mdd": -20.65,
+        "calmar": 2.132
+      },
+      {
+        "shift_days": 0,
+        "cagr": 27.28,
+        "mdd": -33.57,
+        "calmar": 0.813
+      },
+      {
+        "shift_days": 1,
+        "cagr": 28.62,
+        "mdd": -33.0,
+        "calmar": 0.867
+      },
+      {
+        "shift_days": 2,
+        "cagr": 28.3,
+        "mdd": -28.47,
+        "calmar": 0.994
+      },
+      {
+        "shift_days": 3,
+        "cagr": 29.42,
+        "mdd": -28.47,
+        "calmar": 1.033
+      }
+    ],
+    "random_timing": {
+      "real_calmar": 0.813,
+      "real_cagr": 27.28,
+      "random_calmar_mean": 0.459,
+      "random_calmar_p95": 0.869,
+      "random_cagr_mean": 20.97,
+      "percentile_vs_random": 0.9333,
+      "n_random": 300
+    },
+    "shuffled_returns": {
+      "real_calmar": 0.813,
+      "shuffled_mean": 0.536,
+      "shuffled_p95": 0.91,
+      "percentile": 0.89
+    }
+  },
+  "B_relative_strength": [
+    {
+      "variant": "baseline (no RS)",
+      "main_cagr": 27.28,
+      "main_mdd": -33.57,
+      "main_calmar": 0.813,
+      "train_calmar": 0.529,
+      "test_calmar": 1.772,
+      "oos_calmar": 0.469,
+      "long_calmar": 0.128,
+      "main_reb": 28
+    },
+    {
+      "variant": "RS20 >= -0.03",
+      "main_cagr": 27.14,
+      "main_mdd": -33.57,
+      "main_calmar": 0.809,
+      "train_calmar": 0.53,
+      "test_calmar": 1.986,
+      "oos_calmar": 0.465,
+      "long_calmar": 0.152,
+      "main_reb": 51
+    },
+    {
+      "variant": "RS20 >= -0.01",
+      "main_cagr": 23.47,
+      "main_mdd": -33.57,
+      "main_calmar": 0.699,
+      "train_calmar": 0.481,
+      "test_calmar": 1.656,
+      "oos_calmar": 0.446,
+      "long_calmar": 0.147,
+      "main_reb": 138
+    },
+    {
+      "variant": "RS20 >= +0.00",
+      "main_cagr": 21.45,
+      "main_mdd": -33.57,
+      "main_calmar": 0.639,
+      "train_calmar": 0.434,
+      "test_calmar": 1.408,
+      "oos_calmar": 0.471,
+      "long_calmar": 0.126,
+      "main_reb": 158
+    },
+    {
+      "variant": "RS20 >= +0.01",
+      "main_cagr": 22.73,
+      "main_mdd": -27.77,
+      "main_calmar": 0.818,
+      "train_calmar": 0.589,
+      "test_calmar": 1.767,
+      "oos_calmar": 0.463,
+      "long_calmar": 0.123,
+      "main_reb": 155
+    },
+    {
+      "variant": "RS20 >= +0.03",
+      "main_cagr": 21.67,
+      "main_mdd": -24.6,
+      "main_calmar": 0.881,
+      "train_calmar": 0.621,
+      "test_calmar": 1.773,
+      "oos_calmar": 0.464,
+      "long_calmar": 0.121,
+      "main_reb": 91
+    },
+    {
+      "variant": "RS60 >= -0.03",
+      "main_cagr": 25.74,
+      "main_mdd": -33.57,
+      "main_calmar": 0.767,
+      "train_calmar": 0.493,
+      "test_calmar": 1.68,
+      "oos_calmar": 0.415,
+      "long_calmar": 0.133,
+      "main_reb": 56
+    },
+    {
+      "variant": "RS60 >= +0.00",
+      "main_cagr": 24.77,
+      "main_mdd": -33.57,
+      "main_calmar": 0.738,
+      "train_calmar": 0.438,
+      "test_calmar": 1.894,
+      "oos_calmar": 0.425,
+      "long_calmar": 0.134,
+      "main_reb": 112
+    },
+    {
+      "variant": "RS60 >= +0.03",
+      "main_cagr": 22.28,
+      "main_mdd": -33.57,
+      "main_calmar": 0.664,
+      "train_calmar": 0.394,
+      "test_calmar": 1.746,
+      "oos_calmar": 0.486,
+      "long_calmar": 0.122,
+      "main_reb": 109
+    }
+  ]
+}

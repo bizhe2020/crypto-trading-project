@@ -89,7 +89,12 @@ def summarize_equity(equity: pd.Series) -> dict[str, Any]:
 
 
 def load_enriched_bars(config: dict[str, Any], data_path: Path, *, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    _, signal_path = load_signal_path(ROOT / str(config["signal_source"]))
+    overrides = config.get("signal_overrides", {})
+    if overrides is None:
+        overrides = {}
+    if not isinstance(overrides, dict):
+        raise TypeError("signal_overrides must be an object")
+    _, signal_path = load_signal_path(ROOT / str(config["signal_source"]), overrides=dict(overrides))
     bars = enrich_bars(attach_daily_state(load_okx_4h(data_path), signal_path))
     return bars.loc[(bars["date"] >= start) & (bars["date"] <= end)].copy()
 

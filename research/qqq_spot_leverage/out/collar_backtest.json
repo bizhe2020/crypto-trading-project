@@ -1,0 +1,506 @@
+{
+  "summary": {
+    "window": [
+      "2023-07-03",
+      "2026-08-07"
+    ],
+    "unhedged": {
+      "total_pct": 99.99,
+      "cagr_pct": 25.09,
+      "mdd_pct": -22.94,
+      "vol_pct": 20.59,
+      "sharpe": 1.19
+    },
+    "collar": {
+      "total_pct": 83.59,
+      "cagr_pct": 21.68,
+      "mdd_pct": -20.49,
+      "vol_pct": 16.68,
+      "sharpe": 1.26
+    },
+    "n_rolls": 19,
+    "total_net_credit_pct_of_spot": 33.1
+  },
+  "events": [
+    {
+      "date": "2023-07-03",
+      "type": "open_collar",
+      "spot": 361.54,
+      "put_strike": 330.0,
+      "put_ask": 0.66,
+      "call_strike": 372.5,
+      "call_bid": 7.41,
+      "net_credit": 6.75,
+      "expiry": "2023-08-04",
+      "vix": 13.6
+    },
+    {
+      "date": "2023-08-04",
+      "type": "put_settle",
+      "strike": 330.0,
+      "spot": 363.29,
+      "payoff": 0.0
+    },
+    {
+      "date": "2023-08-04",
+      "type": "call_settle",
+      "strike": 372.5,
+      "spot": 363.29,
+      "payoff": -0.0
+    },
+    {
+      "date": "2023-08-31",
+      "type": "open_collar",
+      "spot": 369.24,
+      "put_strike": 336.0,
+      "put_ask": 0.67,
+      "call_strike": 380.0,
+      "call_bid": 8.37,
+      "net_credit": 7.7,
+      "expiry": "2023-10-06",
+      "vix": 13.6
+    },
+    {
+      "date": "2023-10-06",
+      "type": "put_settle",
+      "strike": 336.0,
+      "spot": 356.49,
+      "payoff": 0.0
+    },
+    {
+      "date": "2023-10-06",
+      "type": "call_settle",
+      "strike": 380.0,
+      "spot": 356.49,
+      "payoff": -0.0
+    },
+    {
+      "date": "2023-10-31",
+      "type": "open_collar",
+      "spot": 342.66,
+      "put_strike": 310.0,
+      "put_ask": 1.13,
+      "call_strike": 353.0,
+      "call_bid": 9.3,
+      "net_credit": 8.17,
+      "expiry": "2023-12-08",
+      "vix": 18.1
+    },
+    {
+      "date": "2023-12-08",
+      "type": "put_settle",
+      "strike": 310.0,
+      "spot": 383.96,
+      "payoff": 0.0
+    },
+    {
+      "date": "2023-12-08",
+      "type": "call_settle",
+      "strike": 353.0,
+      "spot": 383.96,
+      "payoff": -30.96
+    },
+    {
+      "date": "2024-01-02",
+      "type": "open_collar",
+      "spot": 395.4,
+      "put_strike": 360.0,
+      "put_ask": 0.85,
+      "call_strike": 407.5,
+      "call_bid": 6.4,
+      "net_credit": 5.55,
+      "expiry": "2024-02-09",
+      "vix": 13.2
+    },
+    {
+      "date": "2024-02-09",
+      "type": "put_settle",
+      "strike": 360.0,
+      "spot": 429.86,
+      "payoff": 0.0
+    },
+    {
+      "date": "2024-02-09",
+      "type": "call_settle",
+      "strike": 407.5,
+      "spot": 429.86,
+      "payoff": -22.36
+    },
+    {
+      "date": "2024-03-04",
+      "type": "open_collar",
+      "spot": 436.83,
+      "put_strike": 400.0,
+      "put_ask": 0.66,
+      "call_strike": 450.0,
+      "call_bid": 6.55,
+      "net_credit": 5.89,
+      "expiry": "2024-04-05",
+      "vix": 13.5
+    },
+    {
+      "date": "2024-04-05",
+      "type": "put_settle",
+      "strike": 400.0,
+      "spot": 433.86,
+      "payoff": 0.0
+    },
+    {
+      "date": "2024-04-05",
+      "type": "call_settle",
+      "strike": 450.0,
+      "spot": 433.86,
+      "payoff": -0.0
+    },
+    {
+      "date": "2024-05-02",
+      "type": "open_collar",
+      "spot": 420.29,
+      "put_strike": 380.0,
+      "put_ask": 0.65,
+      "call_strike": 433.0,
+      "call_bid": 7.48,
+      "net_credit": 6.83,
+      "expiry": "2024-06-07",
+      "vix": 14.7
+    },
+    {
+      "date": "2024-06-07",
+      "type": "put_settle",
+      "strike": 380.0,
+      "spot": 456.35,
+      "payoff": 0.0
+    },
+    {
+      "date": "2024-06-07",
+      "type": "call_settle",
+      "strike": 433.0,
+      "spot": 456.35,
+      "payoff": -23.35
+    },
+    {
+      "date": "2024-07-03",
+      "type": "open_collar",
+      "spot": 485.19,
+      "put_strike": 440.0,
+      "put_ask": 0.74,
+      "call_strike": 500.0,
+      "call_bid": 5.98,
+      "net_credit": 5.24,
+      "expiry": "2024-08-09",
+      "vix": 12.1
+    },
+    {
+      "date": "2024-08-09",
+      "type": "put_settle",
+      "strike": 440.0,
+      "spot": 444.56,
+      "payoff": 0.0
+    },
+    {
+      "date": "2024-08-09",
+      "type": "call_settle",
+      "strike": 500.0,
+      "spot": 444.56,
+      "payoff": -0.0
+    },
+    {
+      "date": "2024-09-03",
+      "type": "open_collar",
+      "spot": 455.96,
+      "put_strike": 415.0,
+      "put_ask": 2.93,
+      "call_strike": 470.0,
+      "call_bid": 8.94,
+      "net_credit": 6.01,
+      "expiry": "2024-10-11",
+      "vix": 20.7
+    },
+    {
+      "date": "2024-10-11",
+      "type": "put_settle",
+      "strike": 415.0,
+      "spot": 488.18,
+      "payoff": 0.0
+    },
+    {
+      "date": "2024-10-11",
+      "type": "call_settle",
+      "strike": 470.0,
+      "spot": 488.18,
+      "payoff": -18.18
+    },
+    {
+      "date": "2024-10-31",
+      "type": "open_collar",
+      "spot": 478.67,
+      "put_strike": 435.0,
+      "put_ask": 2.64,
+      "call_strike": 493.0,
+      "call_bid": 11.44,
+      "net_credit": 8.8,
+      "expiry": "2024-12-06",
+      "vix": 23.2
+    },
+    {
+      "date": "2024-12-06",
+      "type": "put_settle",
+      "strike": 435.0,
+      "spot": 521.3,
+      "payoff": 0.0
+    },
+    {
+      "date": "2024-12-06",
+      "type": "call_settle",
+      "strike": 493.0,
+      "spot": 521.3,
+      "payoff": -28.3
+    },
+    {
+      "date": "2025-01-02",
+      "type": "open_collar",
+      "spot": 505.89,
+      "put_strike": 460.0,
+      "put_ask": 1.98,
+      "call_strike": 521.0,
+      "call_bid": 7.96,
+      "net_credit": 5.98,
+      "expiry": "2025-02-07",
+      "vix": 17.9
+    },
+    {
+      "date": "2025-02-07",
+      "type": "put_settle",
+      "strike": 460.0,
+      "spot": 518.58,
+      "payoff": 0.0
+    },
+    {
+      "date": "2025-02-07",
+      "type": "call_settle",
+      "strike": 521.0,
+      "spot": 518.58,
+      "payoff": -0.0
+    },
+    {
+      "date": "2025-03-06",
+      "type": "open_collar",
+      "spot": 483.86,
+      "put_strike": 440.0,
+      "put_ask": 3.95,
+      "call_strike": 498.0,
+      "call_bid": 11.5,
+      "net_credit": 7.55,
+      "expiry": "2025-04-11",
+      "vix": 24.9
+    },
+    {
+      "date": "2025-04-11",
+      "type": "put_settle",
+      "strike": 440.0,
+      "spot": 450.77,
+      "payoff": 0.0
+    },
+    {
+      "date": "2025-04-11",
+      "type": "call_settle",
+      "strike": 498.0,
+      "spot": 450.77,
+      "payoff": -0.0
+    },
+    {
+      "date": "2025-05-06",
+      "type": "open_collar",
+      "spot": 477.78,
+      "put_strike": 435.0,
+      "put_ask": 3.48,
+      "call_strike": 492.0,
+      "call_bid": 11.82,
+      "net_credit": 8.34,
+      "expiry": "2025-06-13",
+      "vix": 24.8
+    },
+    {
+      "date": "2025-06-13",
+      "type": "put_settle",
+      "strike": 435.0,
+      "spot": 523.33,
+      "payoff": 0.0
+    },
+    {
+      "date": "2025-06-13",
+      "type": "call_settle",
+      "strike": 492.0,
+      "spot": 523.33,
+      "payoff": -31.33
+    },
+    {
+      "date": "2025-07-08",
+      "type": "open_collar",
+      "spot": 549.31,
+      "put_strike": 500.0,
+      "put_ask": 2.01,
+      "call_strike": 565.0,
+      "call_bid": 7.51,
+      "net_credit": 5.5,
+      "expiry": "2025-08-15",
+      "vix": 16.8
+    },
+    {
+      "date": "2025-08-15",
+      "type": "put_settle",
+      "strike": 500.0,
+      "spot": 574.31,
+      "payoff": 0.0
+    },
+    {
+      "date": "2025-08-15",
+      "type": "call_settle",
+      "strike": 565.0,
+      "spot": 574.31,
+      "payoff": -9.31
+    },
+    {
+      "date": "2025-09-05",
+      "type": "open_collar",
+      "spot": 573.03,
+      "put_strike": 520.0,
+      "put_ask": 1.85,
+      "call_strike": 590.0,
+      "call_bid": 5.02,
+      "net_credit": 3.17,
+      "expiry": "2025-10-10",
+      "vix": 15.2
+    },
+    {
+      "date": "2025-10-10",
+      "type": "put_settle",
+      "strike": 520.0,
+      "spot": 587.16,
+      "payoff": 0.0
+    },
+    {
+      "date": "2025-10-10",
+      "type": "call_settle",
+      "strike": 590.0,
+      "spot": 587.16,
+      "payoff": -0.0
+    },
+    {
+      "date": "2025-11-04",
+      "type": "open_collar",
+      "spot": 616.91,
+      "put_strike": 560.0,
+      "put_ask": 3.3,
+      "call_strike": 635.0,
+      "call_bid": 10.79,
+      "net_credit": 7.49,
+      "expiry": "2025-12-12",
+      "vix": 19.0
+    },
+    {
+      "date": "2025-12-12",
+      "type": "put_settle",
+      "strike": 560.0,
+      "spot": 611.28,
+      "payoff": 0.0
+    },
+    {
+      "date": "2025-12-12",
+      "type": "call_settle",
+      "strike": 635.0,
+      "spot": 611.28,
+      "payoff": -0.0
+    },
+    {
+      "date": "2026-01-06",
+      "type": "open_collar",
+      "spot": 621.87,
+      "put_strike": 565.0,
+      "put_ask": 2.12,
+      "call_strike": 641.0,
+      "call_bid": 6.95,
+      "net_credit": 4.83,
+      "expiry": "2026-02-13",
+      "vix": 14.8
+    },
+    {
+      "date": "2026-02-13",
+      "type": "put_settle",
+      "strike": 565.0,
+      "spot": 600.37,
+      "payoff": 0.0
+    },
+    {
+      "date": "2026-02-13",
+      "type": "call_settle",
+      "strike": 641.0,
+      "spot": 600.37,
+      "payoff": -0.0
+    },
+    {
+      "date": "2026-03-09",
+      "type": "open_collar",
+      "spot": 606.21,
+      "put_strike": 550.0,
+      "put_ask": 4.69,
+      "call_strike": 624.0,
+      "call_bid": 7.76,
+      "net_credit": 3.07,
+      "expiry": "2026-04-10",
+      "vix": 25.5
+    },
+    {
+      "date": "2026-04-10",
+      "type": "put_settle",
+      "strike": 550.0,
+      "spot": 610.26,
+      "payoff": 0.0
+    },
+    {
+      "date": "2026-04-10",
+      "type": "call_settle",
+      "strike": 624.0,
+      "spot": 610.26,
+      "payoff": -0.0
+    },
+    {
+      "date": "2026-05-07",
+      "type": "open_collar",
+      "spot": 694.13,
+      "put_strike": 632.0,
+      "put_ask": 3.49,
+      "call_strike": 715.0,
+      "call_bid": 9.36,
+      "net_credit": 5.87,
+      "expiry": "2026-06-12",
+      "vix": 17.1
+    },
+    {
+      "date": "2026-06-12",
+      "type": "put_settle",
+      "strike": 632.0,
+      "spot": 720.53,
+      "payoff": 0.0
+    },
+    {
+      "date": "2026-06-12",
+      "type": "call_settle",
+      "strike": 715.0,
+      "spot": 720.53,
+      "payoff": -5.53
+    },
+    {
+      "date": "2026-07-09",
+      "type": "open_collar",
+      "spot": 723.28,
+      "put_strike": 658.0,
+      "put_ask": 5.21,
+      "call_strike": 745.0,
+      "call_bid": 12.14,
+      "net_credit": 6.93,
+      "expiry": "2026-08-14",
+      "vix": 15.8
+    }
+  ]
+}

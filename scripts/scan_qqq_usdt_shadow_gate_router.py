@@ -383,7 +383,12 @@ def main() -> None:
     args = parser.parse_args()
 
     config = json.loads(Path(args.config).read_text())
-    _, signal_path = load_signal_path(ROOT / str(config["signal_source"]))
+    signal_overrides = config.get("signal_overrides", {})
+    if signal_overrides is None:
+        signal_overrides = {}
+    if not isinstance(signal_overrides, dict):
+        raise TypeError("signal_overrides must be an object")
+    _, signal_path = load_signal_path(ROOT / str(config["signal_source"]), overrides=dict(signal_overrides))
     bars = enrich_bars(attach_daily_state(load_okx_4h(Path(args.data_4h)), signal_path))
     start = pd.Timestamp(args.start_date, tz="UTC")
     end = pd.Timestamp(args.end_date, tz="UTC") + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)

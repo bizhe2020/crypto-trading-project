@@ -1,0 +1,4 @@
+event,entry,expiry,dte,spot_entry,put_strike,put_ask,put_iv,put_delta,call_strike,call_bid,call_iv,call_delta,collar_net_cost_pct,unhedged_at_trough_pct,collar_pnl_at_trough_pct,hedged_at_trough_pct,unhedged_at_end_pct,hedged_at_end_pct
+E1 2024-07~10 套息平仓,2024-07-11,2024-08-16,36,486.08,440.0,0.78,0.2342,0.235,500.0,7.88,0.1588,0.159,-1.461,-11.64,3.62,-8.02,1.05,2.52
+E2 2025-03~05 关税冲击,2025-03-25,2025-04-30,36,489.83,446.0,1.77,0.2563,0.258,505.0,6.89,0.1779,0.179,-1.045,-15.8,7.9,-7.9,2.94,3.98
+E3 2026-06~08 调整,2026-06-03,2026-07-10,37,743.4,675.0,3.97,0.2802,0.281,766.0,11.6,0.2023,0.203,-1.026,-8.05,1.03,-7.02,-2.74,-1.71

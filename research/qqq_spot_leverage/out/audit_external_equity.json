@@ -1,0 +1,21 @@
+{
+  "target": "var/reports/strategy_equity_return_comparison.csv :: tqqq_equity (tqqq_sqqq strategy)",
+  "generator": "scripts/plot_strategy_comparison.py::tqqq_sqqq_curve()",
+  "variant_A": {
+    "label": "A 原口径（当日闸门）",
+    "final_equity": 67816.8,
+    "total_pct": 6681.7,
+    "cagr_pct": 201.41,
+    "mdd_pct": -16.33
+  },
+  "variant_B": {
+    "label": "B 闸门滞后1日",
+    "final_equity": 1108.0,
+    "total_pct": 10.8,
+    "cagr_pct": 2.72,
+    "mdd_pct": -55.85
+  },
+  "diff_days_gt_50bp": 77,
+  "n_days": 959,
+  "interpretation": "该曲线把'当日收盘才能确定的 vix_label/ixic_trend_label 闸门'用于当日的 TQQQ/SQQQ 收益，因此含有前视；把闸门滞后一日后 CAGR 从 201% 掉到 2.7%、回撤从 −16% 扩大到 −56%。"
+}

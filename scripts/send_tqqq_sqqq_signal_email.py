@@ -40,9 +40,11 @@ def frozen_tqqq_strict_config(signal_config: dict[str, Any]) -> dict[str, Any]:
         "de_risk_signal_name": "breakout_fail_score_le3_flat",
         "recovery_reentry_rule": "score_ge3",
         "recovery_reentry_cooldown_days": 0,
+        "hard_exit_reset_signal": str(signal_config.get("hard_exit_reset_signal", "main_desired")),
+        "hard_exit_reset_reentry_delay_bars": int(signal_config.get("hard_exit_reset_reentry_delay_bars", 0)),
         "switch_cost_bps": float(signal_config.get("switch_cost_bps", 10.0)),
         "initial_capital": 1000.0,
-        "frozen_label": "tqqq_only_strict_recovery_frozen_20260526",
+        "frozen_label": str(signal_config.get("frozen_label", "tqqq_only_strict_hard_exit_reset_20260616")),
     }
 
 
@@ -211,6 +213,8 @@ def build_payload(mode: str, signal_config: dict[str, Any], principal: float, *,
         de_risk_signal_name=str(strict_cfg.get("de_risk_signal_name", "off")),
         recovery_reentry_rule=str(strict_cfg.get("recovery_reentry_rule", "off")),
         recovery_reentry_cooldown_days=int(strict_cfg.get("recovery_reentry_cooldown_days", 0)),
+        hard_exit_reset_signal=str(strict_cfg.get("hard_exit_reset_signal", "main_desired")),
+        hard_exit_reset_reentry_delay_bars=int(strict_cfg.get("hard_exit_reset_reentry_delay_bars", 0)),
     )
     path = result["path"].reset_index(drop=True)
     latest = path.iloc[-1]
@@ -286,6 +290,9 @@ def build_payload(mode: str, signal_config: dict[str, Any], principal: float, *,
         "client_paper_return_pct": paper_return_pct,
         "anchor_fill_price": round(float(state.anchor_fill_price or 0.0), 4),
         "frozen_label": str(strict_cfg["frozen_label"]),
+        "hard_exit_reset_signal": str(strict_cfg.get("hard_exit_reset_signal", "main_desired")),
+        "hard_exit_reset_reentry_delay_bars": int(strict_cfg.get("hard_exit_reset_reentry_delay_bars", 0)),
+        "hard_exit_locked": bool(result["summary"].get("hard_exit_locked", False)),
     }
 
 
@@ -299,6 +306,8 @@ def build_body(payload: dict[str, Any]) -> str:
         f"生成时间: {payload['generated_at']}",
         f"信号类型: {payload['subject_prefix']}信号",
         "执行标的: TQQQ",
+        f"策略版本: {payload['frozen_label']}",
+        f"hard-exit reset: {payload['hard_exit_reset_signal']} / delay={payload['hard_exit_reset_reentry_delay_bars']}",
         f"{payload['trade_day_label']}: {payload['action_day']}",
         "",
         f"当前策略动作: {payload['action_text']}",

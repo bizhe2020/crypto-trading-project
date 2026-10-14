@@ -1,0 +1,355 @@
+{
+  "note": "feather price series is dividend-unadjusted; treat as price index",
+  "segments": {
+    "dot-com 2000-2002": [
+      "2000-03-10",
+      "2002-12-31"
+    ],
+    "recovery 2003-2007": [
+      "2003-01-01",
+      "2007-10-31"
+    ],
+    "GFC 2007-10~2009-03": [
+      "2007-10-01",
+      "2009-03-31"
+    ],
+    "post-GFC 2009-2013": [
+      "2009-04-01",
+      "2013-12-31"
+    ],
+    "2011-2019": [
+      "2011-04-26",
+      "2019-12-31"
+    ],
+    "2020-2026(with div-free)": [
+      "2020-01-02",
+      "2026-05-29"
+    ]
+  },
+  "results": [
+    {
+      "variant": "v3 (default)",
+      "segment": "dot-com 2000-2002",
+      "total_pct": -67.7,
+      "cagr_pct": -33.13,
+      "mdd_pct": -68.89,
+      "sharpe": -1.38,
+      "avg_lev": 0.24,
+      "exposure_pct": 16.9
+    },
+    {
+      "variant": "v3 (default)",
+      "segment": "recovery 2003-2007",
+      "total_pct": 88.3,
+      "cagr_pct": 14.01,
+      "mdd_pct": -25.63,
+      "sharpe": 0.7,
+      "avg_lev": 1.14,
+      "exposure_pct": 78.5
+    },
+    {
+      "variant": "v3 (default)",
+      "segment": "GFC 2007-10~2009-03",
+      "total_pct": -21.9,
+      "cagr_pct": -15.18,
+      "mdd_pct": -27.97,
+      "sharpe": -0.81,
+      "avg_lev": 0.37,
+      "exposure_pct": 28.3
+    },
+    {
+      "variant": "v3 (default)",
+      "segment": "post-GFC 2009-2013",
+      "total_pct": 89.0,
+      "cagr_pct": 14.35,
+      "mdd_pct": -27.99,
+      "sharpe": 0.72,
+      "avg_lev": 1.26,
+      "exposure_pct": 86.7
+    },
+    {
+      "variant": "v3 (default)",
+      "segment": "2011-2019",
+      "total_pct": 136.2,
+      "cagr_pct": 10.41,
+      "mdd_pct": -27.75,
+      "sharpe": 0.6,
+      "avg_lev": 1.26,
+      "exposure_pct": 86.2
+    },
+    {
+      "variant": "v3 (default)",
+      "segment": "2020-2026(with div-free)",
+      "total_pct": 374.6,
+      "cagr_pct": 27.53,
+      "mdd_pct": -31.53,
+      "sharpe": 1.09,
+      "avg_lev": 1.17,
+      "exposure_pct": 79.4
+    },
+    {
+      "variant": "v3 (default)",
+      "segment": "FULL 1999-2026",
+      "total_pct": 1026.4,
+      "cagr_pct": 9.3,
+      "mdd_pct": -72.63,
+      "sharpe": 0.49,
+      "avg_lev": 1.03,
+      "exposure_pct": 70.6
+    },
+    {
+      "variant": "v2 (no decline-confirm, hyst4)",
+      "segment": "dot-com 2000-2002",
+      "total_pct": -67.7,
+      "cagr_pct": -33.13,
+      "mdd_pct": -68.89,
+      "sharpe": -1.38,
+      "avg_lev": 0.24,
+      "exposure_pct": 16.9
+    },
+    {
+      "variant": "v2 (no decline-confirm, hyst4)",
+      "segment": "recovery 2003-2007",
+      "total_pct": 88.3,
+      "cagr_pct": 14.01,
+      "mdd_pct": -25.63,
+      "sharpe": 0.7,
+      "avg_lev": 1.14,
+      "exposure_pct": 78.5
+    },
+    {
+      "variant": "v2 (no decline-confirm, hyst4)",
+      "segment": "GFC 2007-10~2009-03",
+      "total_pct": -21.9,
+      "cagr_pct": -15.18,
+      "mdd_pct": -27.97,
+      "sharpe": -0.81,
+      "avg_lev": 0.37,
+      "exposure_pct": 28.3
+    },
+    {
+      "variant": "v2 (no decline-confirm, hyst4)",
+      "segment": "post-GFC 2009-2013",
+      "total_pct": 89.0,
+      "cagr_pct": 14.35,
+      "mdd_pct": -27.99,
+      "sharpe": 0.72,
+      "avg_lev": 1.26,
+      "exposure_pct": 86.7
+    },
+    {
+      "variant": "v2 (no decline-confirm, hyst4)",
+      "segment": "2011-2019",
+      "total_pct": 136.2,
+      "cagr_pct": 10.41,
+      "mdd_pct": -27.75,
+      "sharpe": 0.6,
+      "avg_lev": 1.26,
+      "exposure_pct": 86.2
+    },
+    {
+      "variant": "v2 (no decline-confirm, hyst4)",
+      "segment": "2020-2026(with div-free)",
+      "total_pct": 374.6,
+      "cagr_pct": 27.53,
+      "mdd_pct": -31.53,
+      "sharpe": 1.09,
+      "avg_lev": 1.17,
+      "exposure_pct": 79.4
+    },
+    {
+      "variant": "v2 (no decline-confirm, hyst4)",
+      "segment": "FULL 1999-2026",
+      "total_pct": 1026.4,
+      "cagr_pct": 9.3,
+      "mdd_pct": -72.63,
+      "sharpe": 0.49,
+      "avg_lev": 1.03,
+      "exposure_pct": 70.6
+    },
+    {
+      "variant": "no VIX gate",
+      "segment": "dot-com 2000-2002",
+      "total_pct": -67.7,
+      "cagr_pct": -33.13,
+      "mdd_pct": -68.89,
+      "sharpe": -1.38,
+      "avg_lev": 0.24,
+      "exposure_pct": 16.9
+    },
+    {
+      "variant": "no VIX gate",
+      "segment": "recovery 2003-2007",
+      "total_pct": 88.3,
+      "cagr_pct": 14.01,
+      "mdd_pct": -25.63,
+      "sharpe": 0.7,
+      "avg_lev": 1.14,
+      "exposure_pct": 78.5
+    },
+    {
+      "variant": "no VIX gate",
+      "segment": "GFC 2007-10~2009-03",
+      "total_pct": -21.9,
+      "cagr_pct": -15.18,
+      "mdd_pct": -27.97,
+      "sharpe": -0.81,
+      "avg_lev": 0.37,
+      "exposure_pct": 28.3
+    },
+    {
+      "variant": "no VIX gate",
+      "segment": "post-GFC 2009-2013",
+      "total_pct": 89.0,
+      "cagr_pct": 14.35,
+      "mdd_pct": -27.99,
+      "sharpe": 0.72,
+      "avg_lev": 1.26,
+      "exposure_pct": 86.7
+    },
+    {
+      "variant": "no VIX gate",
+      "segment": "2011-2019",
+      "total_pct": 136.2,
+      "cagr_pct": 10.41,
+      "mdd_pct": -27.75,
+      "sharpe": 0.6,
+      "avg_lev": 1.26,
+      "exposure_pct": 86.2
+    },
+    {
+      "variant": "no VIX gate",
+      "segment": "2020-2026(with div-free)",
+      "total_pct": 374.6,
+      "cagr_pct": 27.53,
+      "mdd_pct": -31.53,
+      "sharpe": 1.09,
+      "avg_lev": 1.17,
+      "exposure_pct": 79.4
+    },
+    {
+      "variant": "no VIX gate",
+      "segment": "FULL 1999-2026",
+      "total_pct": 1026.4,
+      "cagr_pct": 9.3,
+      "mdd_pct": -72.63,
+      "sharpe": 0.49,
+      "avg_lev": 1.03,
+      "exposure_pct": 70.6
+    },
+    {
+      "variant": "1.0x cap",
+      "segment": "dot-com 2000-2002",
+      "total_pct": -55.7,
+      "cagr_pct": -25.18,
+      "mdd_pct": -56.94,
+      "sharpe": -1.5,
+      "avg_lev": 0.17,
+      "exposure_pct": 16.9
+    },
+    {
+      "variant": "1.0x cap",
+      "segment": "recovery 2003-2007",
+      "total_pct": 64.0,
+      "cagr_pct": 10.79,
+      "mdd_pct": -14.58,
+      "sharpe": 0.74,
+      "avg_lev": 0.78,
+      "exposure_pct": 78.5
+    },
+    {
+      "variant": "1.0x cap",
+      "segment": "GFC 2007-10~2009-03",
+      "total_pct": -17.9,
+      "cagr_pct": -12.37,
+      "mdd_pct": -22.46,
+      "sharpe": -0.93,
+      "avg_lev": 0.28,
+      "exposure_pct": 28.3
+    },
+    {
+      "variant": "1.0x cap",
+      "segment": "post-GFC 2009-2013",
+      "total_pct": 67.4,
+      "cagr_pct": 11.46,
+      "mdd_pct": -19.56,
+      "sharpe": 0.79,
+      "avg_lev": 0.87,
+      "exposure_pct": 86.7
+    },
+    {
+      "variant": "1.0x cap",
+      "segment": "2011-2019",
+      "total_pct": 108.1,
+      "cagr_pct": 8.81,
+      "mdd_pct": -18.62,
+      "sharpe": 0.69,
+      "avg_lev": 0.86,
+      "exposure_pct": 86.2
+    },
+    {
+      "variant": "1.0x cap",
+      "segment": "2020-2026(with div-free)",
+      "total_pct": 217.6,
+      "cagr_pct": 19.78,
+      "mdd_pct": -21.91,
+      "sharpe": 1.13,
+      "avg_lev": 0.79,
+      "exposure_pct": 79.4
+    },
+    {
+      "variant": "1.0x cap",
+      "segment": "FULL 1999-2026",
+      "total_pct": 603.9,
+      "cagr_pct": 7.43,
+      "mdd_pct": -61.73,
+      "sharpe": 0.52,
+      "avg_lev": 0.71,
+      "exposure_pct": 70.6
+    }
+  ],
+  "buy_hold": [
+    {
+      "segment": "dot-com 2000-2002",
+      "bh_cagr_pct": -41.81,
+      "bh_mdd_pct": -82.97,
+      "bh_calmar": -0.504
+    },
+    {
+      "segment": "recovery 2003-2007",
+      "bh_cagr_pct": 17.1,
+      "bh_mdd_pct": -17.38,
+      "bh_calmar": 0.984
+    },
+    {
+      "segment": "GFC 2007-10~2009-03",
+      "bh_cagr_pct": -30.26,
+      "bh_mdd_pct": -53.56,
+      "bh_calmar": -0.565
+    },
+    {
+      "segment": "post-GFC 2009-2013",
+      "bh_cagr_pct": 23.92,
+      "bh_mdd_pct": -16.1,
+      "bh_calmar": 1.485
+    },
+    {
+      "segment": "2011-2019",
+      "bh_cagr_pct": 15.86,
+      "bh_mdd_pct": -23.16,
+      "bh_calmar": 0.685
+    },
+    {
+      "segment": "2020-2026(with div-free)",
+      "bh_cagr_pct": 21.32,
+      "bh_mdd_pct": -35.62,
+      "bh_calmar": 0.598
+    },
+    {
+      "segment": "FULL 1999-2026",
+      "bh_cagr_pct": 10.29,
+      "bh_mdd_pct": -82.97,
+      "bh_calmar": 0.124
+    }
+  ]
+}

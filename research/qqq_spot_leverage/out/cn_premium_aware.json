@@ -1,0 +1,61 @@
+[
+  {
+    "code": "159501",
+    "name": "纳指ETF嘉实",
+    "window": [
+      "2023-06-14",
+      "2026-09-21"
+    ],
+    "n_days": 795,
+    "premium_now": 11.94,
+    "premium_median": 1.17,
+    "premium_p95": 11.02,
+    "gate": 0.06,
+    "cap": 1.5,
+    "margin_rate": 0.05,
+    "slippage_bps": 8.0,
+    "strategy_gated": {
+      "total_pct": 64.9,
+      "cagr_pct": 16.52,
+      "mdd_pct": -21.95,
+      "vol_pct": 21.83,
+      "sharpe": 0.84,
+      "calmar": 0.753
+    },
+    "strategy_no_gate": {
+      "total_pct": 69.0,
+      "cagr_pct": 17.39,
+      "mdd_pct": -20.81,
+      "vol_pct": 22.09,
+      "sharpe": 0.87,
+      "calmar": 0.836
+    },
+    "buy_hold_price": {
+      "total_pct": 111.4,
+      "cagr_pct": 25.7,
+      "mdd_pct": -24.84,
+      "vol_pct": 21.37,
+      "sharpe": 1.22,
+      "calmar": 1.035
+    },
+    "buy_hold_nav": {
+      "total_pct": 85.5,
+      "cagr_pct": 20.79,
+      "mdd_pct": -22.59,
+      "vol_pct": 20.47,
+      "sharpe": 1.06,
+      "calmar": 0.92
+    },
+    "constant_1.5x": {
+      "total_pct": 167.8,
+      "cagr_pct": 35.13,
+      "mdd_pct": -35.82,
+      "vol_pct": 32.05,
+      "sharpe": 1.14,
+      "calmar": 0.981
+    },
+    "avg_lev": 1.161,
+    "blocked_days": 69,
+    "rebalances": 44
+  }
+]

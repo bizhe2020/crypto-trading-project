@@ -1,0 +1,32 @@
+{
+  "leverage_etf_validation": [
+    {
+      "etf": "TQQQ",
+      "target_leverage": 3.0,
+      "days": 4098,
+      "start": "2010-02-12",
+      "end": "2026-05-29",
+      "etf_actual_pct": 38838.9,
+      "theory_cumprod_pct": 59016.4,
+      "daily_corr": 0.9987,
+      "annual_gap_pp": -3.75
+    },
+    {
+      "etf": "SQQQ",
+      "target_leverage": -3.0,
+      "days": 1104,
+      "start": "2022-01-04",
+      "end": "2026-05-29",
+      "etf_actual_pct": -94.9,
+      "theory_cumprod_pct": -96.2,
+      "daily_corr": 0.9985,
+      "annual_gap_pp": 3.23
+    }
+  ],
+  "buy_hold_sanity": {
+    "engine_1x_pct": 273.21,
+    "asset_pct": 264.0,
+    "diff_pp": 9.21
+  },
+  "note": "ETF 净值 ≈ cumprod(1+L×r)；annual_gap 反映 ETF 管理费+掉期成本+跟踪误差"
+}
