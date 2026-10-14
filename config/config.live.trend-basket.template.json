@@ -6,14 +6,24 @@
   "state_db_path": "state/trend_basket_live.db",
   "signal_data_dir": "var/trend_basket/etf",
   "legs": [
-    {"name": "gold", "signal_symbol": "GLD", "execution_symbol": "XAU/USDT:USDT", "weight": 0.5},
-    {"name": "qqq", "signal_symbol": "QQQ", "execution_symbol": "QQQ/USDT:USDT", "weight": 0.5}
+    {
+      "name": "gold",
+      "signal_symbol": "GLD",
+      "execution_symbol": "XAU/USDT:USDT",
+      "weight": 0.5
+    },
+    {
+      "name": "qqq",
+      "signal_symbol": "QQQ",
+      "execution_symbol": "QQQ/USDT:USDT",
+      "weight": 0.5
+    }
   ],
-  "basket_multiplier": 1.0,
-  "leverage": 6,
+  "basket_multiplier": 2.0,
+  "leverage": 10,
   "margin_mode": "isolated",
   "rebalance_band_frac": 0.1,
-  "max_basket_margin_frac": 0.2,
+  "max_basket_margin_frac": 0.25,
   "min_order_notional_usdt": 20.0,
   "ny_close_buffer_minutes": 15,
   "history_days": 500,
