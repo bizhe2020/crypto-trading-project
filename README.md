@@ -5,7 +5,7 @@
 | 服务（systemd） | 代码入口 | 交易品种 | 运行配置（服务器，含密钥，不进 git） | 模板 |
 |---|---|---|---|---|
 | `btc-scalp-standalone` | `bot/run_bot.py` → `bot/okx_executor.py` | BTC-USDT-SWAP，逐仓 20x，多空 | `config/config.live.high-leverage-structure.json` | `config/config.live.high-leverage-structure.template.json` |
-| `trend-basket` | `bot/trend_basket_executor.py` | XAU-USDT-SWAP、QQQ-USDT-SWAP，逐仓 10x，只做多 | `config/config.live.trend-basket.json`（不含密钥，复用上一份的 API key） | `config/config.live.trend-basket.template.json` |
+| `trend-basket` | `bot/trend_basket_executor.py` | XAU-USDT-SWAP、QQQ-USDT-SWAP，逐仓 5x，只做多 | `config/config.live.trend-basket.json`（不含密钥，复用上一份的 API key） | `config/config.live.trend-basket.template.json` |
 
 两者互不碰对方合约：scalp 只按 `symbol` 查自己的仓位，篮子在配置校验里禁止任何 BTC 合约。
 旧的 router（BTC/QQQ/GOOGL/黄金切换）已停用、开机自启已关，代码已从主分支删除（见文末「归档」）。
@@ -40,7 +40,8 @@ tests/      pytest（python3 -m pytest -q）
 ### BTC scalp
 - 引擎 `scalp_robust_v2`，日线乖离 alpha 门 **cap12**（`enable_daily_alpha_gate`、`daily_alpha_max_dev_pct=12`：日收盘高于 SMA200 超过 12% 禁新多）。
 - **shadow 风控闸门**（执行层）：单日亏 6% / 权益回撤 12%（冷却 2 天）/ 连亏 4 笔 → 暂停开仓。
-- 实盘口径重放（cap12 + 闸门，2022-01 → 2026-10）：+487%，最大回撤 68.7%；2025 起 +56%，近 12 月 +13%，近 6 月 +69%，近 3 月 +79%。
+- **2026-11-02 起风险预算 ×0.25**：`risk_per_trade 0.035 → 0.00875`，6 个 regime 字段同比例缩放（9 个风险字段全部 ×0.25）；交易所杠杆仍 20x，最大有效杠杆约 3.8x、保证金约 19%。
+- 实盘口径重放（cap12 + 闸门，2022-01 → 2026-10，**缩放前 1.0 倍风险**）：+487%，最大回撤 68.7%；2025 起 +56%，近 12 月 +13%，近 6 月 +69%，近 3 月 +79%。
   重放时必须加 `--shadow-gate-backtest`，否则逐笔流会多出实盘被闸门挡掉的单（曾因此误判为 +327% / 回撤 92%）。
 - K 线处理延迟（2026-10 修复）：唤醒时间与「最新收盘」用同一时钟、向上取整；`dataframe_to_candles` 改按列转换（23.8 万根从 44s → 约 1.7s）。实测收盘后约 12 秒处理完。
 
@@ -48,10 +49,11 @@ tests/      pytest（python3 -m pytest -q）
 - 信号：GLD / QQQ ETF **已收盘**日线（Yahoo，纽约 16:15 后才认当日 bar）。黄金腿 = 5 规则投票
   `sma50/100/200（收盘>均线）+ tsmom30/90（动量>0）` 的平均（0~1）；QQQ 腿 = SMA200 单规则（收盘>SMA200 满仓，否则空仓，见 §5 QQQ 腿研究）。
 - 执行：每个新交易日把各腿多头名义调到 `k × 账户权益 × 0.5 × 投票`；偏离 < 10% 满仓名义不调；先减后加；按信号日去重，失败 15 分钟后重试。
-- 参数：`basket_multiplier k=2`、交易所杠杆 `10x` 逐仓、篮子保证金上限 `0.25 × 权益`（满票时约占 20%）。
-- 依据（同账户逐日模拟，含逐仓强平与 scalp 拒单，2022 起）：scalp 单跑 +496% / 回撤 67%；+ 篮子 k=1 +900%；**k=2 +1481%，回撤 65.9%**，日盈亏比 1.184（单跑 1.197）。
-- 代价：篮子自身历史回撤约 41%（2006 起，主要是 2008）；10x 下 2006 起被强平 3 次（2008-10 黄金、2011-10 QQQ），2022 起 0 次；强平不自动补保证金。
-- 与 scalp 的保证金关系：scalp 实盘最高约 12x 有效杠杆（重放最高 16x，需 80% 保证金）；篮子满票约占 20%，极端同时满载会挤占 scalp。
+- 参数：`basket_multiplier k=2.5`、交易所杠杆 `5x` 逐仓、篮子保证金上限 `0.5 × 权益`（满票两条腿约占 50%）。
+  **注意**：5x 下 k=2.5 需要 2.5x 名义；若沿用旧上限 0.25，`plan_leg_orders` 会把名义砍到 1.25x，回测的 57.6% 不成立。上限提到 0.5 是为了保住研究口径，不是加杠杆。
+- 依据（同账户逐日模拟，2022-01 → 2026-10，含 6% 资金费/8bp 成本）：当前 **k=2.5 + 5x + scalp×0.25** 历史年化 **57.6%**、最大回撤 **46.5%**、Calmar 1.24；h50（只把 scalp edge 打五折）5 年中位年化 **21.3%**、腰斩概率 **2%**。对照：旧 **k=2 + scalp 1.0 + 10x** 历史年化 75.0%、回撤 87.4%，h50 中位约 2.5%、腰斩 36%。
+- 代价：篮子自身历史回撤约 41%（2006 起，主要是 2008）；10x 下 2006 起被强平 3 次（2008-10 黄金、2011-10 QQQ）；5x 强平线约翻倍，2022 起 0 次。强平不自动补保证金。
+- 与 scalp 的保证金关系：scalp 0.25 倍风险最大约 3.8x 有效杠杆（保证金约 19%）；篮子满票两条腿约 50%，合计约 69%，留约 31% 缓冲。
 - 资金费实测（2026-07~10）：XAU 7.9%/年，QQQ 3.7%/年（研究里按 6%/年，压力测试 2 倍）。
 
 ## 4. 回测口径（硬规则）
