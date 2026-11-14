@@ -41,7 +41,8 @@ class BasketLeg:
     signal_symbol: str  # Yahoo 代码，如 GLD / QQQ
     execution_symbol: str  # ccxt 统一代码，如 XAU/USDT:USDT
     weight: float = 0.5
-    signal_rule: str = "v5"  # strategy.trend_vote.SIGNAL_RULES：v5（5 规则投票）/ sma200（单均线）
+    signal_rule: str = "v5"  # strategy.trend_vote.SIGNAL_RULES：v5（5 规则投票）/ sma200（单均线）/ sma200_buf1
+    min_vote: float = 0.0  # 可选：原始投票低于该阈值时目标仓位归零
 
 
 @dataclass
@@ -112,6 +113,8 @@ class TrendBasketConfig:
         for leg in self.legs:
             if leg.signal_rule not in SIGNAL_RULES:
                 raise ValueError(f"unknown signal_rule for {leg.name}: {leg.signal_rule}")
+            if not (0.0 <= float(leg.min_vote) <= 1.0):
+                raise ValueError(f"min_vote must be in [0, 1] for {leg.name}: {leg.min_vote}")
 
 
 # --------------------------------------------------------------------------- 纯函数（便于测试）
@@ -142,16 +145,23 @@ def latest_expected_signal_day(now_utc: datetime, close_buffer_minutes: int = 15
     return day.isoformat()
 
 
-def leg_signal(df: pd.DataFrame, rule: str = "v5") -> dict[str, Any]:
-    """最新已收盘 bar 的目标仓位比例（0~1）及各规则票。"""
+def leg_signal(df: pd.DataFrame, rule: str = "v5", min_vote: float = 0.0) -> dict[str, Any]:
+    """最新已收盘 bar 的目标仓位比例（0~1）及各规则票。
+
+    min_vote > 0 时，原始投票低于阈值的目标仓位归零（例如黄金腿 0.4 过滤 0.2 弱票）。
+    """
     close = pd.Series(df["close"].astype(float).values, index=pd.to_datetime(df["date"], utc=True))
     target = signal_target(close, rule)
     parts = vote_components(close)
     last_ts = close.index[-1]
+    raw_vote = float(target.iloc[-1])
+    vote = raw_vote if raw_vote >= float(min_vote) - 1e-9 else 0.0
     return {
         "signal_date": str(last_ts.tz_convert(NEW_YORK).date()),
         "close": float(close.iloc[-1]),
-        "vote": round(float(target.iloc[-1]), 4),
+        "vote": round(vote, 4),
+        "raw_vote": round(raw_vote, 4),
+        "min_vote": float(min_vote),
         "rule": rule,
         "rules": {name: int(parts[name].iloc[-1]) for name in SIGNAL_RULES[rule][1]},
         "bars": int(len(close)),
@@ -358,7 +368,7 @@ class TrendBasketExecutor:
             df = completed_daily_bars(self._fetch_history(leg, cfg.history_days), now, cfg.ny_close_buffer_minutes)
             if len(df) < 200:
                 return self._log("error", {"reason": "insufficient_history", "leg": leg.name, "bars": len(df)})
-            signals[leg.name] = leg_signal(df, leg.signal_rule)
+            signals[leg.name] = leg_signal(df, leg.signal_rule, leg.min_vote)
         signal_key = "|".join(f"{n}:{s['signal_date']}" for n, s in sorted(signals.items()))
 
         if not cfg.enabled:

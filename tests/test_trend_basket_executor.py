@@ -217,3 +217,45 @@ def test_config_rejects_unknown_signal_rule():
             {"legs": [{"name": "qqq", "signal_symbol": "QQQ", "execution_symbol": "QQQ/USDT:USDT",
                        "weight": 1.0, "signal_rule": "magic"}]}
         )
+
+
+def test_sma200_buffer_holds_small_break_and_exits_large_break():
+    from bot.trend_basket_executor import leg_signal
+    from strategy.trend_vote import sma200_buffer_target, sma200_target
+
+    close = pd.Series(
+        [100.0] * 250 + [101.5, 99.5, 98.8, 100.5, 101.2],
+        index=pd.bdate_range("2020-01-01", periods=255, tz="UTC"),
+    )
+    raw = sma200_target(close)
+    buf = sma200_buffer_target(close, buffer=0.01)
+    # 99.5 只跌破 0.5%，raw 已出场，1% buffer 仍持有；98.8 跌破 1%，buffer 才出场
+    assert raw.iloc[-4] == 0.0
+    assert buf.iloc[-4] == 1.0
+    assert buf.iloc[-3] == 0.0
+    assert buf.iloc[-1] == 1.0
+
+
+def test_leg_signal_min_vote_floors_weak_vote():
+    from unittest.mock import patch
+    from bot.trend_basket_executor import leg_signal
+
+    d = _daily(400, drift=0.0, seed=4)
+    idx = pd.to_datetime(d["date"], utc=True)
+    with patch("bot.trend_basket_executor.signal_target", return_value=pd.Series([0.2] * len(idx), index=idx)):
+        sig = leg_signal(d, "v5", min_vote=0.4)
+    assert sig["raw_vote"] == 0.2
+    assert sig["vote"] == 0.0
+    assert sig["min_vote"] == 0.4
+
+    with patch("bot.trend_basket_executor.signal_target", return_value=pd.Series([0.4] * len(idx), index=idx)):
+        sig = leg_signal(d, "v5", min_vote=0.4)
+    assert sig["vote"] == 0.4
+
+
+def test_config_rejects_invalid_min_vote():
+    with pytest.raises(ValueError, match="min_vote"):
+        TrendBasketConfig.from_dict(
+            {"legs": [{"name": "gold", "signal_symbol": "GLD", "execution_symbol": "XAU/USDT:USDT",
+                       "weight": 1.0, "signal_rule": "v5", "min_vote": 1.5}]}
+        )

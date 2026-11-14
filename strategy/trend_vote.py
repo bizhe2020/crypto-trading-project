@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 VOTE_RULES: tuple[str, ...] = ("sma50_L", "sma100_L", "sma200_L", "tsmom30_L", "tsmom90_L")
@@ -35,8 +36,45 @@ def sma200_target(close: pd.Series) -> pd.Series:
     return vote_components(close)["sma200_L"]
 
 
+def sma200_buffer_target(close: pd.Series, buffer: float = 0.01) -> pd.Series:
+    """带对称缓冲的 SMA200 状态机（0/1）。
+
+    buffer=0 时与 sma200_target 等价；buffer=0.01 表示：
+      * 空仓 → 收盘 > SMA200 × 1.01 才进场
+      * 满仓 → 收盘 < SMA200 × 0.99 才出场
+    只用已收盘日线；t 收盘的状态在 t+1 执行。
+    """
+    if buffer < 0:
+        raise ValueError("buffer must be non-negative")
+    sma = close.rolling(200).mean()
+    c = close.to_numpy(dtype=float)
+    s = sma.to_numpy(dtype=float)
+    state = 0
+    out = np.zeros(len(c), dtype=float)
+    for i in range(len(c)):
+        if np.isnan(s[i]):
+            out[i] = 0.0
+            continue
+        if state == 0:
+            if c[i] > s[i] * (1.0 + buffer):
+                state = 1
+        elif c[i] < s[i] * (1.0 - buffer):
+            state = 0
+        out[i] = float(state)
+    return pd.Series(out, index=close.index, name="sma200_buffer")
+
+
+def sma200_buf1_target(close: pd.Series) -> pd.Series:
+    """研究候选规则：SMA200 对称 1% 缓冲（走步验证未确认，默认不启用）。"""
+    return sma200_buffer_target(close, buffer=0.01)
+
+
 # 每条腿可选的信号规则（实盘配置 legs[].signal_rule）
-SIGNAL_RULES = {"v5": (vote_target, VOTE_RULES), "sma200": (sma200_target, ("sma200_L",))}
+SIGNAL_RULES = {
+    "v5": (vote_target, VOTE_RULES),
+    "sma200": (sma200_target, ("sma200_L",)),
+    "sma200_buf1": (sma200_buf1_target, ("sma200_L",)),
+}
 
 
 def signal_target(close: pd.Series, rule: str = "v5") -> pd.Series:
