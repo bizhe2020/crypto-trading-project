@@ -1,0 +1,10 @@
+{
+  "webhook_url": "",
+  "keyword": "东京实盘",
+  "expected_active": [],
+  "scalp_log_max_age_min": 45,
+  "drawdown_alert_pct": [15, 25, 35],
+  "liq_distance_alert_pct": 8.0,
+  "renotify_hours": 6,
+  "summary_hour_utc": 1
+}
