@@ -4,7 +4,7 @@
 
 | 服务（systemd） | 代码入口 | 交易品种 | 运行配置（服务器，含密钥，不进 git） | 模板 |
 |---|---|---|---|---|
-| `btc-scalp-standalone` | `bot/run_bot.py` → `bot/okx_executor.py` | BTC-USDT-SWAP，逐仓 20x，多空 | `config/config.live.high-leverage-structure.json` | `config/config.live.high-leverage-structure.template.json` |
+| `btc-scalp-standalone`（2026-11-13 起停用，见 §3） | `bot/run_bot.py` → `bot/okx_executor.py` | BTC-USDT-SWAP，逐仓 20x，多空 | `config/config.live.high-leverage-structure.json` | `config/config.live.high-leverage-structure.template.json` |
 | `trend-basket` | `bot/trend_basket_executor.py` | XAU-USDT-SWAP、QQQ-USDT-SWAP，逐仓 5x，只做多 | `config/config.live.trend-basket.json`（不含密钥，复用上一份的 API key） | `config/config.live.trend-basket.template.json` |
 
 两者互不碰对方合约：scalp 只按 `symbol` 查自己的仓位，篮子在配置校验里禁止任何 BTC 合约。
@@ -18,6 +18,11 @@ strategy/   scalp_robust_v2_core（scalp 引擎）、trend_vote（篮子 5 规�
 scripts/    scalp 回测/重放/审计模块（被 okx_executor 和研究脚本 import）+ fetch_public_etf_history
 scripts/ops deploy_tokyo.sh（部署）、tokyo_status.sh（只读巡检）
 research/time_in_market/  在场率 / 篮子研究脚本（第 1~5 步，见 §5）
+research/basket_legs/     加腿、资金费、腿权重研究
+research/execution/       scalp 执行成本（maker 入场）、留存判定、前向测试
+research/live_path/       scalp 完整实盘链路重放、闸门/仓位结构、QQQ buffer 走步
+research/monte_carlo/     自有资金 / 资金配比 / 家庭资产蒙特卡洛
+scripts/ops/health_check.py  飞书巡检告警（服务器 cron 每 5 分钟）
 systemd/    两个服务的 unit 文件（与服务器 /etc/systemd/system 一致）
 tests/      pytest（python3 -m pytest -q）
 ```
@@ -38,6 +43,12 @@ tests/      pytest（python3 -m pytest -q）
 ## 3. 当前实盘参数与依据
 
 ### BTC scalp
+- **2026-11-13 起停止实盘（服务 stopped + disabled），2026-11-20 决定不恢复，改为前向测试。**
+  依据（`research/execution/scalp_keep_or_retire.py`，真实执行口径）：edge 几乎全部来自 2023（+0.66R）和 2024（+0.38R）；
+  2020-21 样本外 −0.10R、2022 −0.09R、2025 +0.09R、2026 +0.10R、实盘 22 笔 −0.10R（8/22 定参后 10 笔 −0.54R）；
+  去掉 2023–24 共 280 笔 −0.03R，P(mean R ≤ 0) ≈ 68%。0.25 倍风险下若真实 R = 0，年化约 −3%（纯波动拖累）。
+  前向测试：每月跑 `python3 research/execution/scalp_forward_test.py`（参数冻结在 2026-11-20 的模板，只统计之后开仓的单；
+  ≥50 笔且 mean R ≥ +0.10 才考虑带 maker 入场重新上线）。
 - 引擎 `scalp_robust_v2`，日线乖离 alpha 门 **cap12**（`enable_daily_alpha_gate`、`daily_alpha_max_dev_pct=12`：日收盘高于 SMA200 超过 12% 禁新多）。
 - **shadow 风控闸门**（执行层）：单日亏 6% / 权益回撤 12%（冷却 2 天）/ 连亏 4 笔 → 暂停开仓。
 - **2026-11-02 起风险预算 ×0.25**：`risk_per_trade 0.035 → 0.00875`，6 个 regime 字段同比例缩放（9 个风险字段全部 ×0.25）；交易所杠杆仍 20x，最大有效杠杆约 3.8x、保证金约 19%。
@@ -49,12 +60,18 @@ tests/      pytest（python3 -m pytest -q）
 - 信号：GLD / QQQ ETF **已收盘**日线（Yahoo，纽约 16:15 后才认当日 bar）。黄金腿 = 5 规则投票
   `sma50/100/200（收盘>均线）+ tsmom30/90（动量>0）` 的平均（0~1）；QQQ 腿 = SMA200 单规则（收盘>SMA200 满仓，否则空仓，见 §5 QQQ 腿研究）。
 - 执行：每个新交易日把各腿多头名义调到 `k × 账户权益 × 0.5 × 投票`；偏离 < 10% 满仓名义不调；先减后加；按信号日去重，失败 15 分钟后重试。
-- 参数：`basket_multiplier k=2.5`、交易所杠杆 `5x` 逐仓、篮子保证金上限 `0.5 × 权益`（满票两条腿约占 50%）。
+- **2026-11-20 起腿权重不等**：`basket_multiplier 2.1`、黄金 `weight 0.2857`、QQQ `weight 0.7143` → 满票名义 黄金 **0.6x**、QQQ **1.5x** 权益
+  （此前 k=2.5 等权，两腿各 1.25x）。原因是资金费：实测 2026-08-19 → 11-19 OKX 资金费 **QQQ 5.2%/年、XAU 9.6%/年**，
+  按实测费率旧配置 2007 起 CAGR 12.4% / MDD 46.4% / Calmar 0.27（还不如 QQQ 1 倍买入持有 0.29）；新配置 14.3% / 35.6% / 0.40，
+  2012 起 17.5%/35.6% vs 14.2%/36.2%，2021 起 25.9%/30.0% vs 26.1%/29.2%。黄金名义 0.45–0.75x 是平滑高原（Calmar 0.38–0.41），不是挑出来的点，
+  资金费压力（8%/14%）下同样成立。见 §5「资金费与腿权重」。
+- 参数：交易所杠杆 `5x` 逐仓、篮子保证金上限 `0.5 × 权益`（满票名义 2.1x，占保证金约 42%）。
   **注意**：5x 下 k=2.5 需要 2.5x 名义；若沿用旧上限 0.25，`plan_leg_orders` 会把名义砍到 1.25x，回测的 57.6% 不成立。上限提到 0.5 是为了保住研究口径，不是加杠杆。
 - 依据（同账户逐日模拟，2022-01 → 2026-10，含 6% 资金费/8bp 成本）：当前 **k=2.5 + 5x + scalp×0.25** 历史年化 **57.6%**、最大回撤 **46.5%**、Calmar 1.24；h50（只把 scalp edge 打五折）5 年中位年化 **21.3%**、腰斩概率 **2%**。对照：旧 **k=2 + scalp 1.0 + 10x** 历史年化 75.0%、回撤 87.4%，h50 中位约 2.5%、腰斩 36%。
 - 代价：篮子自身历史回撤约 41%（2006 起，主要是 2008）；10x 下 2006 起被强平 3 次（2008-10 黄金、2011-10 QQQ）；5x 强平线约翻倍，2022 起 0 次。强平不自动补保证金。
 - 与 scalp 的保证金关系：scalp 0.25 倍风险最大约 3.8x 有效杠杆（保证金约 19%）；篮子满票两条腿约 50%，合计约 69%，留约 31% 缓冲。
-- 资金费实测（2026-07~10）：XAU 7.9%/年，QQQ 3.7%/年（研究里按 6%/年，压力测试 2 倍）。
+- 资金费实测：2026-07~10 XAU 7.9%/年、QQQ 3.7%/年；**2026-08-19 → 11-19 XAU 9.6%/年、QQQ 5.2%/年**（研究里旧口径按 6%/年；两腿应分别计）。
+  上面 k=2.5 的 57.6% / 46.5% 等数字是旧配置 + 6% 统一费率口径，已不代表当前配置。
 
 ## 4. 回测口径（硬规则）
 
@@ -95,6 +112,19 @@ ETF 日线本机访问 Yahoo 会 403，需在东京跑 `scripts/fetch_public_etf
 - 唯一稳健的改进是把 QQQ 腿换成 **SMA200 单规则**：同账户模拟（k=2、10x、含强平与 scalp 拒单）2022 起 +1709% vs V5 +1481%，回撤 65.5% vs 65.9%，日盈亏比 1.190 vs 1.184；篮子单独 2007 起 +777%/回撤 36.7% vs +467%/41.0%，强平 1 次 vs 3 次；20 年里 13 年更好；调仓日 131 vs 1046。弱点：2007-13 更差（QQQ 单腿 Sharpe 0.26 vs 0.33）；且是在 52 个候选里看过结果后选的，有选择偏差。
 - 资金费是 QQQ 腿最大的成本：按 12%/年，所有方案年化收益≈0；当前实测 3.7%/年（92 天均值），但 2026-10-14 即时费率折合约 14%/年。
 - 实现：腿配置 `signal_rule`（`v5` / `sma200`，`strategy/trend_vote.py`）。**2026-10-14 起实盘 QQQ 腿用 `sma200`，黄金腿仍 `v5`。**
+
+### 资金费与腿权重（`research/basket_legs/funding_vs_buyhold.py`、`leg_weight_funding.py`，2026-11-19）
+
+`sim_basket_liquidation.simulate` 的 `E.LONG_FUNDING_PER_DAY` 现支持按腿的 dict。
+- 资金费是篮子最大的成本：同一信号 2007 起 0 资金费 CAGR 22.5% / Calmar 0.60，6% 统一费率 13.7% / 0.31。择时本身有效（QQQ 买入持有 Calmar 0.29），大部分被资金费吃掉。
+- 黄金 V5 单腿即使 0 资金费 Calmar 也只有 0.16（2007 起），9.6% 费率下 1.25x 名义 CAGR 约 2%、MDD 54%；它的价值只在分散（与 QQQ 日相关 0.08），所以应当低配。
+- 黄金若改用零资金费载体（OKX `XAUT-USDT` 现货，日成交约 $10M），同权重 CAGR 12.4% → 18.2%。但账户是单币种保证金，XAUT 不能当合约保证金，可行性未验证。
+
+### scalp 执行与留存（`research/execution/`，2026-11-20）
+
+- 实盘 482 笔 BTC 成交全是 taker（5bp，maker 2bp）；入场实际成交比信号收盘差约 2bp，成交在收盘后 40~100 秒。出场 219/236 是止损触发，只有入场腿能省。
+- `maker_entry_study.py`（真实 1m 回放）：post-only 挂信号收盘价、3–5 分钟未穿价则市价追 → mean R 0.171 → 0.195；**不追更差**（未成交的恰是大赢单：原 R 0.67–0.75 vs 成交笔 0.08–0.14）。2020-21 样本外仍为负。
+- `scalp_keep_or_retire.py`：见 §3，结论停用 + 前向测试（`scalp_forward_test.py`）。
 
 scalp 引擎此前的参数扫描（`scripts/scan_btc_scalp_optimization.py`）结论：vol-target 仓位、ATR 止损钳制、乖离下限门等 4 个候选均被否决，无新 edge；`config/config.candidate.btc-scalp-optimized-20260921.json` 是回撤更低（42%）但收益更低的备选，未上线。
 

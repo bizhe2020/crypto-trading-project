@@ -10,18 +10,18 @@
       "name": "gold",
       "signal_symbol": "GLD",
       "execution_symbol": "XAU/USDT:USDT",
-      "weight": 0.5,
+      "weight": 0.2857,
       "signal_rule": "v5"
     },
     {
       "name": "qqq",
       "signal_symbol": "QQQ",
       "execution_symbol": "QQQ/USDT:USDT",
-      "weight": 0.5,
+      "weight": 0.7143,
       "signal_rule": "sma200"
     }
   ],
-  "basket_multiplier": 2.5,
+  "basket_multiplier": 2.1,
   "leverage": 5,
   "margin_mode": "isolated",
   "rebalance_band_frac": 0.1,
