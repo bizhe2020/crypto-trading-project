@@ -54,7 +54,7 @@ def simulate(
     skip_mask: np.ndarray | None = None,
 ) -> dict:
     fee = E.FEE_SLIP
-    fund = E.LONG_FUNDING_PER_DAY
+    fund = E.LONG_FUNDING_PER_DAY  # 标量，或 {腿名: 日费率} 按腿计
     cash = 1.0
     st = {n: {"q": 0.0, "A": 0.0, "M": 0.0} for n in legs}
     last_close = {n: np.nan for n in legs}
@@ -108,7 +108,7 @@ def simulate(
                     liqs.append((n, str(day.date())))
                     s.update(q=0.0, A=0.0, M=0.0)
                 else:
-                    cash -= s["q"] * c * fund
+                    cash -= s["q"] * c * (fund.get(n, 0.0) if isinstance(fund, dict) else fund)
             last_close[n] = c
         eq_basket_close = cash + upl()
         # 2) scalp：当日平仓的逐笔按开仓时权益复利（被拒单的跳过）
